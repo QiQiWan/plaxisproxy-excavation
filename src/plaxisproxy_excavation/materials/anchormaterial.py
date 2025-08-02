@@ -1,48 +1,34 @@
-import uuid
 from enum import Enum, auto
+from ..core.plaxisobject import PlaxisObject
 
 class AnchorType(Enum):
     Elastic = auto()
     Elastoplastic = auto()
     ElastoPlasticResidual = auto()
 
-class ElasticAnchor:
-    
-    def __init__(self, name, type: AnchorType, comment, EA) -> None:
-        self._id = uuid.uuid4()
-        self._plx_id = None
-        self._name = name
+class ElasticAnchor(PlaxisObject):
+    """
+    Defines an elastic anchor material.
+    """
+    def __init__(self, name, type: AnchorType, comment, EA):
+        """
+        Initializes the elastic anchor material.
+
+        Args:
+            name (str): The name of the material.
+            EA (float): Axial stiffness of the anchor material [kN].
+        """
+        super.__init__(name, comment)
         self._type = type
-        self._comment = comment
         self._EA = EA
 
     def __repr__(self) -> str:
         return f"<plx.materials.elastic_anchor>"
     
     @property
-    def id(self):
-        """Unique identifier (UUID)."""
-        return self._id
-
-    @property
-    def plx_id(self):
-        """PLAXIS internal ID or reference (can be None or int)."""
-        return self._plx_id
-
-    @property
-    def name(self):
-        """Name of the object/material."""
-        return self._name
-
-    @property
     def type(self):
         """Type of the object/material."""
         return self._type
-
-    @property
-    def comment(self):
-        """Comment or description."""
-        return self._comment
 
     @property
     def EA(self):

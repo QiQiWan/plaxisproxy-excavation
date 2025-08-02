@@ -8,7 +8,7 @@ class Anchor(BaseStructure):
     and an anchor material/type.
     """
 
-    def __init__(self, line: Line3D, anchor_type) -> None:
+    def __init__(self, name: str, line: Line3D, anchor_type) -> None:
         """
         Initialize the anchor with a 3D line and anchor material/type.
 
@@ -19,7 +19,7 @@ class Anchor(BaseStructure):
         Raises:
             ValueError: If the line does not have exactly two points.
         """
-        super().__init__()
+        super().__init__(name)
         if len(line) != 2:
             raise ValueError("Anchor line must have exactly two points!")
         self._line = line

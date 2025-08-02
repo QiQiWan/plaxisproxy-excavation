@@ -1,11 +1,11 @@
-import uuid
+from ..core.plaxisobject import PlaxisObject
 
-class BaseMaterial:
+class BaseMaterial(PlaxisObject):
     
+    __slots__ = ("_id", "_plx_id", "_name", "type", "comment", "gamma", "E", "nu")
+
     def __init__(self, name, type, comment, gamma, E, nu) -> None:
-        self._id = uuid.uuid4()
-        self._plx_id = None
-        self._name = name
+        super().__init__(name, comment)
         self._type = type
         self._comment = comment
         self._gamma = gamma
@@ -13,23 +13,7 @@ class BaseMaterial:
         self._nu = nu
 
     def __repr__(self) -> str:
-        return f"<plx.materials.base>"
-    
-    @property
-    def id(self):
-        return self._id
-    
-    @property
-    def plx_id(self):
-        return self._plx_id
-    
-    @plx_id.setter
-    def plx_id(self, value):
-        self._plx_id = value
-
-    @property
-    def name(self):
-        return self._name
+        return f"<plx.materials.BaseMaterial>"
     
     @property
     def mat_type(self):

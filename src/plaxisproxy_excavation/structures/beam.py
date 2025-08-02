@@ -8,7 +8,7 @@ class Beam(BaseStructure):
     and a beam material/type.
     """
 
-    def __init__(self, line: Line3D, beam_type) -> None:
+    def __init__(self, name: str, line: Line3D, beam_type) -> None:
         """
         Initialize the beam with a 3D line and beam material/type.
 
@@ -19,7 +19,7 @@ class Beam(BaseStructure):
         Raises:
             ValueError: If the line does not have exactly two points.
         """
-        super().__init__()
+        super().__init__(name)
         if len(line) != 2:
             raise ValueError("Beam line must have exactly two points!")
         self._line = line

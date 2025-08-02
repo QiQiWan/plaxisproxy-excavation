@@ -18,7 +18,14 @@ class ElasticBeam(BaseMaterial):
 
     def __init__(self, name, type, comment, gamma, E, nu, cross_section, len1, len2) -> None:
         super().__init__(name, type, comment, gamma, E, nu)
-
+        """
+        Args:
+            name (str): The name of the material.
+            beam_type (BeamType): The type of beam behavior (e.g., elastic).
+            E (float): Young's modulus [kN/m²].
+            nu (float): Poisson's ratio (dimensionless).
+            len1, len2 are the input parameter related to the cross_section.
+        """
         self._cross_section = cross_section
         self._len1 = len1
         self._len2 = len2

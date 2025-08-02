@@ -34,7 +34,7 @@ class ElasticPile(ElasticBeam):
         """Maximum allowable force (kN)."""
         return self._F_max
 
-class ElastpplasticPile(ElasticPile, ElastoplasticBeam):
+class ElastoplasticPile(ElasticPile, ElastoplasticBeam):
 
     def __init__(self, name, type, comment, gamma, E, nu, cross_section, len1, len2,
                  laterial_type, fric_table_Tmax, F_max, sigma_y, yield_dir):

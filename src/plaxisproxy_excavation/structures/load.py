@@ -315,6 +315,16 @@ class PointLoad(_BaseLoad):
         My: float = 0.0,
         Mz: float = 0.0,
     ) -> None:
+        """
+        Args:
+            ...
+            Fx (float): Force component in the x-direction [kN].
+            Fy (float): Force component in the y-direction [kN].
+            Fz (float): Force component in the z-direction [kN].
+            Mx (float): Bending moment in the x-direction [kN m].
+            My (float): Bending moment in the y-direction [kN m].
+            Mz (float): Bending moment in the z-direction [kN m].
+        """
         super().__init__(
             name,
             stage,
@@ -392,6 +402,13 @@ class LineLoad(_BaseLoad):
         qz_end: float = 0.0,
         
     ) -> None:
+        """
+        Args:
+            ...
+            qx (float): Load component in the x-direction [kN/m].
+            qy (float): Load component in the y-direction [kN/m].
+            qz (float): Load component in the z-direction [kN/m].
+        """
         # Assuming line object has a __len__ method
         if hasattr(line, '__len__') and len(line) < 2:
             raise ValueError("LineLoad requires at least two points.")
@@ -489,6 +506,20 @@ class SurfaceLoad(_BaseLoad):
         gradients: Optional[Dict[str, float]] = None,
         ref_point: Optional[Tuple[float, float, float]] = None,
     ) -> None:
+        """
+        Args:
+            ...
+            sigmax (float): Load component in the x-direction [kN/m2].
+            sigmay (float): Load component in the y-direction [kN/m2].
+            sigmaz (float): Load component in the z-direction [kN/m2].
+            gradients (Optional[Dict[str, float]]):
+                A dictionary defining stress gradients.
+                Keys are strings like 'gz_z' (gradient of sigma_z along z-axis).
+                Values are the rate of change. [kN/m²/m]
+            ref_point (Optional[Tuple[float, float, float]]):
+                The 3D reference point (x, y, z) from which gradients or linear
+                distributions are calculated. [m]
+        """
         # Assuming surface object has as_tuple_list method
         if hasattr(surface, "as_tuple_list") and not callable(getattr(surface, "as_tuple_list")):
              raise ValueError("Surface polygon object must provide as_tuple_list().")
@@ -692,6 +723,22 @@ class XAlignedIncrementSurfaceLoad(SurfaceLoad):
         z_ref: float = 0.0,
         stage: LoadStage = LoadStage.STATIC, # Default to STATIC
     ) -> None:
+        """
+        Args:
+            surface (Any): The 3D geometry surface on which the load is applied.
+            name (str): The name of the load object.
+            distribution (DistributionType): The distribution type of the stress.
+            stage (LoadStage): The calculation stage in which the load is active.
+            sigmax (float): Base normal stress in the x-direction at the reference point. [kN/m²]
+            sigmay (float): Base normal stress in the y-direction at the reference point. [kN/m²]
+            sigmaz (float): Base normal stress in the z-direction at the reference point. [kN/m²]
+            sigmax_inc_x (float): The rate of change (gradient) of sigmax along the x-axis. [kN/m²/m]
+            sigmay_inc_x (float): The rate of change (gradient) of sigmay along the x-axis. [kN/m²/m]
+            sigmaz_inc_x (float): The rate of change (gradient) of sigmaz along the x-axis. [kN/m²/m]
+            x_ref (float): The x-coordinate of the reference point where base stresses are defined. [m]
+            y_ref (float): The y-coordinate of the reference point where base stresses are defined. [m]
+            z_ref (float): The z-coordinate of the reference point where base stresses are defined. [m]
+        """
         # Map new parameter names to internal gradient keys expected by _BaseLoad
         grads = {"gx_x": sigmax_inc_x, "gy_x": sigmay_inc_x, "gz_x": sigmaz_inc_x}
         # Combine individual ref point parameters into a tuple for _BaseLoad
@@ -736,6 +783,22 @@ class YAlignedIncrementSurfaceLoad(SurfaceLoad):
         z_ref: float = 0.0,
         stage: LoadStage = LoadStage.STATIC, # Default to STATIC
     ) -> None:
+        """
+        Args:
+            surface (Any): The 3D geometry surface on which the load is applied.
+            name (str): The name of the load object.
+            distribution (DistributionType): The distribution type of the stress.
+            stage (LoadStage): The calculation stage in which the load is active.
+            sigmax (float): Base normal stress in the x-direction at the reference point. [kN/m²]
+            sigmay (float): Base normal stress in the y-direction at the reference point. [kN/m²]
+            sigmaz (float): Base normal stress in the z-direction at the reference point. [kN/m²]
+            sigmax_inc_x (float): The rate of change (gradient) of sigmax along the x-axis. [kN/m²/m]
+            sigmay_inc_x (float): The rate of change (gradient) of sigmay along the x-axis. [kN/m²/m]
+            sigmaz_inc_x (float): The rate of change (gradient) of sigmaz along the x-axis. [kN/m²/m]
+            x_ref (float): The x-coordinate of the reference point where base stresses are defined. [m]
+            y_ref (float): The y-coordinate of the reference point where base stresses are defined. [m]
+            z_ref (float): The z-coordinate of the reference point where base stresses are defined. [m]
+        """
         # Map new parameter names to internal gradient keys expected by _BaseLoad
         grads = {"gx_y": sigmax_inc_y, "gy_y": sigmay_inc_y, "gz_y": sigmaz_inc_y}
         # Combine individual ref point parameters into a tuple for _BaseLoad
@@ -780,6 +843,22 @@ class ZAlignedIncrementSurfaceLoad(SurfaceLoad):
         z_ref: float = 0.0,
         stage: LoadStage = LoadStage.STATIC, # Default to STATIC
     ) -> None:
+        """
+        Args:
+            surface (Any): The 3D geometry surface on which the load is applied.
+            name (str): The name of the load object.
+            distribution (DistributionType): The distribution type of the stress.
+            stage (LoadStage): The calculation stage in which the load is active.
+            sigmax (float): Base normal stress in the x-direction at the reference point. [kN/m²]
+            sigmay (float): Base normal stress in the y-direction at the reference point. [kN/m²]
+            sigmaz (float): Base normal stress in the z-direction at the reference point. [kN/m²]
+            sigmax_inc_x (float): The rate of change (gradient) of sigmax along the x-axis. [kN/m²/m]
+            sigmay_inc_x (float): The rate of change (gradient) of sigmay along the x-axis. [kN/m²/m]
+            sigmaz_inc_x (float): The rate of change (gradient) of sigmaz along the x-axis. [kN/m²/m]
+            x_ref (float): The x-coordinate of the reference point where base stresses are defined. [m]
+            y_ref (float): The y-coordinate of the reference point where base stresses are defined. [m]
+            z_ref (float): The z-coordinate of the reference point where base stresses are defined. [m]
+        """
         # Map new parameter names to internal gradient keys expected by _BaseLoad
         grads = {"gx_z": sigmax_inc_z, "gy_z": sigmay_inc_z, "gz_z": sigmaz_inc_z}
         # Combine individual ref point parameters into a tuple for _BaseLoad
@@ -828,6 +907,26 @@ class VectorAlignedIncrementSurfaceLoad(SurfaceLoad):
         sigmaz_inc_v: float = 0.0,
         stage: LoadStage = LoadStage.STATIC, # Default to STATIC
     ) -> None:
+        """
+        Initializes a surface load with a vector-aligned stress gradient.
+
+        Args:
+            surface (Any): The 3D geometry surface on which the load is applied.
+            name (str): The unique name of the load object.
+            sigmax (float): The base normal stress in the x-direction at the reference point. **[kN/m²]**
+            sigmay (float): The base normal stress in the y-direction at the reference point. **[kN/m²]**
+            sigmaz (float): The base normal stress in the z-direction at the reference point. **[kN/m²]**
+            x_ref (float): The x-coordinate of the reference point where the base stresses (sigmax, sigmay, sigmaz) are defined. **[m]**
+            y_ref (float): The y-coordinate of the reference point. **[m]**
+            z_ref (float): The z-coordinate of the reference point. **[m]**
+            vector_x (float): The x-component of the direction vector for the gradient. This defines the 'v' direction. **[Dimensionless]**
+            vector_y (float): The y-component of the direction vector. **[Dimensionless]**
+            vector_z (float): The z-component of the direction vector. **[Dimensionless]**
+            sigmax_inc_v (float): The rate of change (gradient) of sigmax per unit distance along the defined vector 'v'. **[kN/m²/m]**
+            sigmay_inc_v (float): The rate of change (gradient) of sigmay per unit distance along the defined vector 'v'. **[kN/m²/m]**
+            sigmaz_inc_v (float): The rate of change (gradient) of sigmaz per unit distance along the defined vector 'v'. **[kN/m²/m]**
+            stage (LoadStage): The calculation stage in which the load is active (e.g., STATIC, INITIAL).
+        """
         # Map increment parameters to internal gradient keys for vector alignment
         grads = {
             "gx_v": sigmax_inc_v,
@@ -888,6 +987,29 @@ class FreeIncrementSurfaceLoad(SurfaceLoad):
         sigmaz_inc_z: float = 0.0,
         stage: LoadStage = LoadStage.STATIC, # Default to STATIC
     ) -> None:
+        """
+        Initializes a surface load with fully independent stress gradients.
+
+        Args:
+            surface (Any): The 3D geometry surface on which the load is applied.
+            name (str): The unique name of the load object.
+            sigmax (float): The base normal stress in the x-direction at the reference point. **[kN/m²]**
+            sigmay (float): The base normal stress in the y-direction at the reference point. **[kN/m²]**
+            sigmaz (float): The base normal stress in the z-direction at the reference point. **[kN/m²]**
+            x_ref (float): The x-coordinate of the reference point where base stresses are defined. **[m]**
+            y_ref (float): The y-coordinate of the reference point. **[m]**
+            z_ref (float): The z-coordinate of the reference point. **[m]**
+            sigmax_inc_x (float): The rate of change of sigmax along the x-axis. **[kN/m²/m]**
+            sigmay_inc_x (float): The rate of change of sigmay along the x-axis. **[kN/m²/m]**
+            sigmaz_inc_x (float): The rate of change of sigmaz along the x-axis. **[kN/m²/m]**
+            sigmax_inc_y (float): The rate of change of sigmax along the y-axis. **[kN/m²/m]**
+            sigmay_inc_y (float): The rate of change of sigmay along the y-axis. **[kN/m²/m]**
+            sigmaz_inc_y (float): The rate of change of sigmaz along the y-axis. **[kN/m²/m]**
+            sigmax_inc_z (float): The rate of change of sigmax along the z-axis. **[kN/m²/m]**
+            sigmay_inc_z (float): The rate of change of sigmay along the z-axis. **[kN/m²/m]**
+            sigmaz_inc_z (float): The rate of change of sigmaz along the z-axis. **[kN/m²/m]**
+            stage (LoadStage): The calculation stage in which the load is active.
+        """
         # Combine individual ref point parameters into a tuple for _BaseLoad
         ref_point_tuple = (x_ref, y_ref, z_ref)
         # Combine all gradient components into a single dictionary
