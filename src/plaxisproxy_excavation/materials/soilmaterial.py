@@ -303,7 +303,6 @@ class MCMaterial(BaseSoilMaterial):
         return self._tensile_strength
     #endregion
 
-
 class MCCMaterial(BaseSoilMaterial):
 
     def __init__(self, name, type, comment, gamma, E, nu, gamma_sat, e_init, lam, kar, M_CSL) -> None:
