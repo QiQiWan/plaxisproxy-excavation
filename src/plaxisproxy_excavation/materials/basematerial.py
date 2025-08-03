@@ -16,7 +16,7 @@ class BaseMaterial(PlaxisObject):
         return f"<plx.materials.BaseMaterial>"
     
     @property
-    def mat_type(self):
+    def type(self):
         return self._type
     
     @property

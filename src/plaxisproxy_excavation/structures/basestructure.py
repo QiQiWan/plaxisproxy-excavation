@@ -1,5 +1,3 @@
-import uuid
-from typing import Optional
 from ..core.plaxisobject import PlaxisObject
 
 class BaseStructure(PlaxisObject):
@@ -9,14 +7,14 @@ class BaseStructure(PlaxisObject):
     """
     __slots__ = ("_id", "_plx_id", "_name")
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, comment: str = "") -> None:
         """
         Initialize the base structure.
 
         Args:
             name (str): Name or label for the structure.
         """
-        super().__init__(name=name)
+        super().__init__(name=name, comment=comment)
 
 
     def __repr__(self) -> str:

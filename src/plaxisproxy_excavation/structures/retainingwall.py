@@ -1,8 +1,7 @@
 from typing import Any
 from ..geometry import Polygon3D
 from .basestructure import BaseStructure
-# Assuming PlateMaterial is a defined class in the materials module
-from ..materials.platematerials import ElasticPlate
+from ..materials.platematerial import ElasticPlate
 
 class RetainingWall(BaseStructure):
     """

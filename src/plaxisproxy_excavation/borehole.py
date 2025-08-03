@@ -1,16 +1,9 @@
-import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict
+from core.plaxisobject import PlaxisObject
+from materials.soilmaterial import BaseSoilMaterial
 
-# Assuming BaseMaterial is a defined class
-class BaseMaterial:
-    """A base class for representing soil or other materials."""
-    def __init__(self, name: str):
-        self.name = name
-        self.id = uuid.uuid4()
-    def __repr__(self) -> str:
-        return f"<plx.materials.BaseMaterial name='{self.name}'>"
 
-class Borehole:
+class Borehole(PlaxisObject):
     """
     Represents a single borehole with its geological layers.
 
@@ -24,8 +17,9 @@ class Borehole:
         _soil_list (List[BaseMaterial]): A list of BaseMaterial objects representing the soil types.
     """
 
-    def __init__(self, x: float, y: float, h: float, top_list: List[float], bottom_list: List[float], soil_list: List[BaseMaterial]) -> None:
-        self._id = uuid.uuid4()
+    def __init__(self, name: str, comment: str, x: float, y: float, h: float, 
+                 top_list: List[float], bottom_list: List[float], soil_list: List[BaseSoilMaterial]) -> None:
+        super().__init__(name, comment)
         self._x = x
         self._y = y
         self._h = h
@@ -34,11 +28,6 @@ class Borehole:
         self._soil_list = soil_list
 
     # --- Properties ---
-    @property
-    def id(self) -> uuid.UUID:
-        """Unique identifier (UUID)."""
-        return self._id
-
     @property
     def x(self) -> float:
         """X-coordinate (position or location)."""
@@ -65,7 +54,7 @@ class Borehole:
         return self._bottom_list
 
     @property
-    def soil_table(self) -> List[BaseMaterial]:
+    def soil_table(self) -> List[BaseSoilMaterial]:
         """Reference to the soil table data or object."""
         return self._soil_list
 
@@ -74,7 +63,7 @@ class Borehole:
         # A unified and informative string representation
         return f"<plx.materials.Borehole id={str(self._id)[:8]} @({self.x:.2f}, {self.y:.2f}) n_layers={len(self._soil_list)}>"
 
-class BoreholeSet:
+class BoreholeSet(PlaxisObject):
     """
     An aggregate object for a collection of boreholes.
 
@@ -84,7 +73,7 @@ class BoreholeSet:
 
     def __init__(self, borehole_list: List[Borehole]) -> None:
         self._borehole_list = borehole_list
-        self._soils: Dict[uuid.UUID, BaseMaterial] = {}
+        self._soils: Dict[str, BaseSoilMaterial] = {}
         self.pick_up_soils()
 
     def pick_up_soils(self) -> None:
@@ -100,7 +89,7 @@ class BoreholeSet:
         return self._borehole_list
 
     @property
-    def soils(self) -> Dict[uuid.UUID, BaseMaterial]:
+    def soils(self) -> Dict[str, BaseSoilMaterial]:
         """Dictionary of soils collected from all boreholes (key: soil.id, value: soil object)."""
         return self._soils
 

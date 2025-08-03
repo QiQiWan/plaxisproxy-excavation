@@ -1,6 +1,7 @@
-import uuid
 from enum import Enum, auto
 from typing import Optional, Dict, Tuple, List, Any
+from core.plaxisobject import PlaxisObject
+from ..geometry import Point, Line3D, Polygon3D
 
 # =============================================================================
 #  Enumerations
@@ -39,7 +40,7 @@ class SignalType(Enum):
     HARMONIC = "Harmonic"         # Harmonic signal (Amplitude, Phase, Frequency)
     TABLE = "Table"               # Table/Time History curve (List of Time-Multiplier pairs)
 
-class LoadMultiplier:
+class LoadMultiplier(PlaxisObject):
     """
     Represents a load multiplier, defining a time or frequency function
     to be applied to dynamic loads.
@@ -47,6 +48,7 @@ class LoadMultiplier:
     def __init__(
         self,
         name: str,
+        comment: str,
         signal_type: SignalType,
         amplitude: float = 1.0,
         phase: float = 0.0,
@@ -54,10 +56,9 @@ class LoadMultiplier:
         table_data: Optional[List[Tuple[float, float]]] = None,
         **kwargs: Any
     ) -> None:
-        self._id = uuid.uuid4()
-        self._name = name
+        
+        super().__init__(name, comment)
         self._signal_type = signal_type
-
         self._amplitude: Optional[float] = None
         self._phase: Optional[float] = None
         self._frequency: Optional[float] = None
@@ -89,20 +90,6 @@ class LoadMultiplier:
             self._table_data = table_data
         else:
             raise NotImplementedError(f"Signal type '{signal_type.value}' is not yet fully implemented.")
-
-    @property
-    def id(self) -> uuid.UUID:
-        return self._id
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @name.setter
-    def name(self, value: str) -> None:
-        if not isinstance(value, str) or not value:
-            raise ValueError("Multiplier name cannot be empty.")
-        self._name = value
 
     @property
     def signal_type(self) -> SignalType:
@@ -155,7 +142,7 @@ class LoadMultiplier:
 # =============================================================================
 #  Base class (forces + optional moments) – moments used by PointLoad only
 # =============================================================================
-class _BaseLoad:
+class _BaseLoad(PlaxisObject):
     """Shared attributes for load entities (no direct instantiation)."""
 
     # ------------------------------------------------------------------
@@ -164,6 +151,7 @@ class _BaseLoad:
     def __init__(
         self,
         name: str,
+        comment: str,
         stage: LoadStage,
         distribution: DistributionType,
         # —— primary force components ——
@@ -182,9 +170,8 @@ class _BaseLoad:
         gradients: Optional[Dict[str, float]] = None,
         ref_point: Optional[Tuple[float, float, float]] = None
     ) -> None:
-        self._id = uuid.uuid4()
-        self._plx_id = None
-        self._name = name
+        
+        super().__init__(name, comment)
         self._stage = stage
         self._distribution = distribution
 
@@ -229,10 +216,6 @@ class _BaseLoad:
         self._plx_id = value
 
     @property
-    def name(self):
-        return self._name
-
-    @property
     def stage(self):
         return self._stage
 
@@ -240,6 +223,63 @@ class _BaseLoad:
     def distribution(self):
         return self._distribution
     
+    @property
+    def Fx(self) -> float:
+        """Gets the force component in the X-direction (start/uniform value)."""
+        return self._Fx
+
+    @property
+    def Fy(self) -> float:
+        """Gets the force component in the Y-direction (start/uniform value)."""
+        return self._Fy
+
+    @property
+    def Fz(self) -> float:
+        """Gets the force component in the Z-direction (start/uniform value)."""
+        return self._Fz
+
+    @property
+    def Mx(self) -> float:
+        """Gets the moment component around the X-axis (start/uniform value)."""
+        return self._Mx
+
+    @property
+    def My(self) -> float:
+        """Gets the moment component around the Y-axis (start/uniform value)."""
+        return self._My
+
+    @property
+    def Mz(self) -> float:
+        """Gets the moment component around the Z-axis (start/uniform value)."""
+        return self._Mz
+
+    @property
+    def Fx_end(self) -> float:
+        """Gets the force component in the X-direction at the end of the line."""
+        return self._Fx_end
+
+    @property
+    def Fy_end(self) -> float:
+        """Gets the force component in the Y-direction at the end of the line."""
+        return self._Fy_end
+
+    @property
+    def Fz_end(self) -> float:
+        """Gets the force component in the Z-direction at the end of the line."""
+        return self._Fz_end
+
+    # --- Surface Gradients --------------------------------------------------------
+
+    @property
+    def grad(self) -> dict:
+        """Gets the dictionary defining force/moment gradients over a surface."""
+        return self._grad
+
+    @property
+    def ref_point(self) -> tuple:
+        """Gets the reference point (x, y, z) for gradient calculations."""
+        return self._ref_point
+
 class _DynBaseLoad(_BaseLoad):
     """Shared attributes for dynamic load entities (no direct instantiation)."""
 
@@ -292,6 +332,14 @@ class _DynBaseLoad(_BaseLoad):
     def bind_obj(self, value):
         self._bind_obj = value
 
+    @property
+    def mult(self):
+        return self._mult
+    
+    @mult.setter
+    def mult(self, value):
+        self._mult = value
+
     def __repr__(self) -> str:
         return f"<{self.__class__.__module__}.{self.__class__.__name__}>"
         
@@ -305,8 +353,9 @@ class PointLoad(_BaseLoad):
     # ----- ctor ---------------------------------------------------------
     def __init__(
         self,
-        point: Any, # Assuming Point is from ..geometry, using Any for standalone code
         name: str,
+        comment: str, 
+        point: Point,
         stage: LoadStage = LoadStage.STATIC,
         Fx: float = 0.0,
         Fy: float = 0.0,
@@ -327,6 +376,7 @@ class PointLoad(_BaseLoad):
         """
         super().__init__(
             name,
+            comment,
             stage,
             DistributionType.UNIFORM,
             Fx,
@@ -390,8 +440,9 @@ class LineLoad(_BaseLoad):
     # ----- ctor ---------------------------------------------------------
     def __init__(
         self,
-        line: Any, # Assuming Line3D is from ..geometry, using Any for standalone code
         name: str,
+        comment: str,
+        line: Any, # Assuming Line3D is from ..geometry, using Any for standalone code
         distribution: DistributionType = DistributionType.UNIFORM,
         stage: LoadStage = LoadStage.STATIC,
         qx: float = 0.0,
@@ -416,21 +467,52 @@ class LineLoad(_BaseLoad):
             raise ValueError("LineLoad supports only UNIFORM or LINEAR distribution.")
         super().__init__(
             name,
+            comment,
             stage,
-            distribution,
-            qx,
-            qy,
-            qz,
-            Fx_end=qx_end,
-            Fy_end=qy_end,
-            Fz_end=qz_end,
+            distribution
         )
         self._line = line
+        self._qx = qx
+        self._qy = qy
+        self._qz = qz
+        self._qx_end = qx_end
+        self._qy_end = qy_end
+        self._qz_end = qz_end
 
     # ----- properties ---------------------------------------------------
     @property
     def line(self):
         return self._line
+
+    @property
+    def qx(self) -> float:
+        """Gets the distributed load component in the X-direction (start/uniform value)."""
+        return self._qx
+
+    @property
+    def qy(self) -> float:
+        """Gets the distributed load component in the Y-direction (start/uniform value)."""
+        return self._qy
+
+    @property
+    def qz(self) -> float:
+        """Gets the distributed load component in the Z-direction (start/uniform value)."""
+        return self._qz
+
+    @property
+    def qx_end(self) -> float:
+        """Gets the distributed load component in the X-direction at the end of the line."""
+        return self._qx_end
+
+    @property
+    def qy_end(self) -> float:
+        """Gets the distributed load component in the Y-direction at the end of the line."""
+        return self._qy_end
+
+    @property
+    def qz_end(self) -> float:
+        """Gets the distributed load component in the Z-direction at the end of the line."""
+        return self._qz_end
 
     # ----- representation ----------------------------------------------
     def __repr__(self):
@@ -490,8 +572,9 @@ class SurfaceLoad(_BaseLoad):
 
     def __init__(
         self,
-        surface: Any, # Assuming Polygon3D is from ..geometry, using Any for standalone code
         name: str,
+        comment: str,
+        surface: Polygon3D, # Assuming Polygon3D is from ..geometry, using Any for standalone code
         distribution: DistributionType = DistributionType.UNIFORM,
         stage: LoadStage = LoadStage.STATIC, # Default to STATIC
         # constant stresses (kN/m²)
@@ -525,18 +608,21 @@ class SurfaceLoad(_BaseLoad):
              raise ValueError("Surface polygon object must provide as_tuple_list().")
         super().__init__(
             name,
+            comment, 
             stage,
             distribution,
-            sigmax,
-            sigmay,
-            sigmaz,
-            Fx_end=sigmax_end,
-            Fy_end=sigmay_end,
-            Fz_end=sigmaz_end,
             gradients=gradients,
             ref_point=ref_point,
         )
         self._surface = surface
+        self._sigmax = sigmax
+        self._sigmay = sigmay
+        self._sigmaz = sigmaz
+        self._sigmax_end = sigmax_end
+        self._sigmay_end = sigmay_end
+        self._sigmaz_end = sigmaz_end
+
+        
         # Multiplier logic removed from SurfaceLoad
 
     # Multiplier helpers (_allowed_mul_keys, multiplier, set_multiplier, _mult_str)
@@ -547,10 +633,40 @@ class SurfaceLoad(_BaseLoad):
     def surface(self):
         return self._surface
 
+    @property
+    def sigmax(self) -> float:
+        """Gets the normal stress component in the X-direction (start/uniform value)."""
+        return self._sigmax
+
+    @property
+    def sigmay(self) -> float:
+        """Gets the normal stress component in the Y-direction (start/uniform value)."""
+        return self._sigmay
+
+    @property
+    def sigmaz(self) -> float:
+        """Gets the normal stress component in the Z-direction (start/uniform value)."""
+        return self._sigmaz
+
+    @property
+    def sigmax_end(self) -> float:
+        """Gets the normal stress component in the X-direction at the end of the line."""
+        return self._sigmax_end
+
+    @property
+    def sigmay_end(self) -> float:
+        """Gets the normal stress component in the Y-direction at the end of the line."""
+        return self._sigmay_end
+
+    @property
+    def sigmaz_end(self) -> float:
+        """Gets the normal stress component in the Z-direction at the end of the line."""
+        return self._sigmaz_end
+
     # ------------------------------------------------------------------
     def __repr__(self) -> str:
         # Assuming _surface has a 'name' attribute or a good __repr__
-        surface_repr = self._surface.name if hasattr(self._surface, 'name') else str(self._surface)
+        surface_repr = str(self._surface)
         return (
             f"<plx.structures.SurfaceLoad {self._name}: {self._force_str()}, {self._distribution.name}, "
             f"{self._stage.value} @ {surface_repr}>"
@@ -610,7 +726,7 @@ class _DynSurfaceLoadBase(SurfaceLoad, _DynBaseLoad):
 
     def __repr__(self) -> str:
         mult_info = self._mult_str()
-        surface_repr = self._surface.name if hasattr(self._surface, 'name') else str(self._surface)
+        surface_repr = str(self._surface)
         base_load_info = (
             f"{self._name}: {self._force_str()}, {self._distribution.name}, "
             f"{self._stage.value} @ {surface_repr}"
@@ -644,16 +760,18 @@ class UniformSurfaceLoad(SurfaceLoad):
 
     def __init__(
         self,
-        surface: Any,
         name: str,
+        comment: str,
+        surface: Polygon3D,
         sigmax: float = 0.0,
         sigmay: float = 0.0,
         sigmaz: float = 0.0,
         stage: LoadStage = LoadStage.STATIC, # Default to STATIC
     ) -> None:
         super().__init__(
-            surface,
             name,
+            comment,
+            surface,
             distribution=DistributionType.UNIFORM,
             stage=stage,
             sigmax=sigmax,
@@ -673,8 +791,9 @@ class LinearSurfaceLoad(SurfaceLoad):
 
     def __init__(
         self,
-        surface: Any,
         name: str,
+        comment: str,
+        surface: Polygon3D,
         sigmax_start: float = 0.0,
         sigmay_start: float = 0.0,
         sigmaz_start: float = 0.0,
@@ -684,8 +803,9 @@ class LinearSurfaceLoad(SurfaceLoad):
         stage: LoadStage = LoadStage.STATIC, # Default to STATIC
     ) -> None:
         super().__init__(
-            surface,
             name,
+            comment,
+            surface,
             distribution=DistributionType.LINEAR,
             stage=stage,
             sigmax=sigmax_start,
@@ -708,8 +828,9 @@ class XAlignedIncrementSurfaceLoad(SurfaceLoad):
 
     def __init__(
         self,
-        surface: Any,
         name: str,
+        comment: str,
+        surface: Polygon3D,
         sigmax: float = 0.0,
         sigmay: float = 0.0,
         sigmaz: float = 0.0,
@@ -744,8 +865,9 @@ class XAlignedIncrementSurfaceLoad(SurfaceLoad):
         # Combine individual ref point parameters into a tuple for _BaseLoad
         ref_point_tuple = (x_ref, y_ref, z_ref)
         super().__init__(
-            surface,
             name,
+            comment,
+            surface,
             distribution=DistributionType.X_ALIGNED_INC,
             stage=stage,
             sigmax=sigmax,
@@ -768,8 +890,9 @@ class YAlignedIncrementSurfaceLoad(SurfaceLoad):
 
     def __init__(
         self,
-        surface: Any,
         name: str,
+        comment: str,
+        surface: Polygon3D,
         sigmax: float = 0.0,
         sigmay: float = 0.0,
         sigmaz: float = 0.0,
@@ -804,8 +927,9 @@ class YAlignedIncrementSurfaceLoad(SurfaceLoad):
         # Combine individual ref point parameters into a tuple for _BaseLoad
         ref_point_tuple = (x_ref, y_ref, z_ref)
         super().__init__(
-            surface,
             name,
+            comment,
+            surface,
             distribution=DistributionType.Y_ALIGNED_INC,
             stage=stage,
             sigmax=sigmax,
@@ -828,8 +952,9 @@ class ZAlignedIncrementSurfaceLoad(SurfaceLoad):
 
     def __init__(
         self,
-        surface: Any,
         name: str,
+        comment: str,
+        surface: Polygon3D,
         sigmax: float = 0.0,
         sigmay: float = 0.0,
         sigmaz: float = 0.0,
@@ -864,8 +989,9 @@ class ZAlignedIncrementSurfaceLoad(SurfaceLoad):
         # Combine individual ref point parameters into a tuple for _BaseLoad
         ref_point_tuple = (x_ref, y_ref, z_ref)
         super().__init__(
-            surface,
             name,
+            comment,
+            surface,
             distribution=DistributionType.Z_ALIGNED_INC,
             stage=stage,
             sigmax=sigmax,
@@ -888,8 +1014,9 @@ class VectorAlignedIncrementSurfaceLoad(SurfaceLoad):
 
     def __init__(
         self,
-        surface: Any,
         name: str,
+        comment: str,
+        surface: Polygon3D,
         sigmax: float = 0.0,
         sigmay: float = 0.0,
         sigmaz: float = 0.0,
@@ -940,8 +1067,9 @@ class VectorAlignedIncrementSurfaceLoad(SurfaceLoad):
         }
         ref_point_tuple = (x_ref, y_ref, z_ref)
         super().__init__(
-            surface,
             name,
+            comment,
+            surface,
             distribution=DistributionType.VECTOR_ALIGNED_INC,
             stage=stage,
             sigmax=sigmax,
@@ -964,8 +1092,9 @@ class FreeIncrementSurfaceLoad(SurfaceLoad):
 
     def __init__(
         self,
-        surface: Any,
         name: str,
+        comment: str,
+        surface: Polygon3D,
         sigmax: float = 0.0,
         sigmay: float = 0.0,
         sigmaz: float = 0.0,
@@ -1019,8 +1148,9 @@ class FreeIncrementSurfaceLoad(SurfaceLoad):
             "gx_z": sigmax_inc_z, "gy_z": sigmay_inc_z, "gz_z": sigmaz_inc_z,
         }
         super().__init__(
-            surface,
             name,
+            comment,
+            surface,
             distribution=DistributionType.FREE_INCREMENT,
             stage=stage,
             sigmax=sigmax,
@@ -1043,14 +1173,16 @@ class PerpendicularSurfaceLoad(SurfaceLoad):
 
     def __init__(
         self,
-        surface: Any,
         name: str,
+        comment: str,
+        surface: Polygon3D,
         pressure: float,
         stage: LoadStage = LoadStage.STATIC, # Default to STATIC
     ) -> None:
         super().__init__(
-            surface,
             name,
+            comment,
+            surface,
             distribution=DistributionType.PERPENDICULAR,
             stage=stage,
             sigmaz=pressure,  # Plaxis uses σn; map to σz (convention)

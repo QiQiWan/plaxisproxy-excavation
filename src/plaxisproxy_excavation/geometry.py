@@ -1,6 +1,8 @@
+from __future__ import annotations
 import uuid
 import math
 from typing import List, Iterator, Optional, Tuple, Dict, Any
+from core.helper import *
 
 """plx.geometry - core geometric primitives with optional Shapely support
 --------------------------------------------------------------------------
@@ -24,10 +26,41 @@ except ModuleNotFoundError:
     _shp_union, _shp_polygonize = None, None
 
 
+class GeometryBase:
+    
+    _id: uuid.UUID = uuid.uuid4()
+    _plx_id: Optional[str] = None
+
+    @property
+    def id(self):
+        return self._id
+    
+    @id.setter
+    def id(self, value):
+        self._id = value
+
+    @property
+    def plx_id(self):
+        return self._plx_id
+    
+    @plx_id.setter
+    def plx_id(self, value):
+        self.plx_id = value
+
+    @staticmethod
+    def _uuid_to_str(u: uuid.UUID | None) -> str | None:
+        """Converts a UUID object to a string, handling None values."""
+        return str(u) if u is not None else None
+
+    @staticmethod
+    def _str_to_uuid(s: str | None) -> uuid.UUID | None:
+        """Converts a string to a UUID object, handling None values."""
+        return uuid.UUID(s) if s is not None and s != '' else None
+
 # ---------------------------------------------------------------------------
 # Core Primitives -----------------------------------------------------------
 # ---------------------------------------------------------------------------
-class Point:
+class Point(GeometryBase):
     """
     Immutable three-dimensional point.
 
@@ -70,6 +103,21 @@ class Point:
     # ------------------------------------------------------------------
     # Dunder / Properties
     # ------------------------------------------------------------------
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "x": self.x, "y": self.y, "z": self.z,
+            "id": self._uuid_to_str(getattr(self, "_id", None))
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Point":
+        pt = cls(data["x"], data["y"], data["z"])
+        if "id" in data:
+            pt.id = cls._str_to_uuid(data["id"])         # type: ignore[attr-defined]
+        return pt
+
+
     def __repr__(self):
         # Updated repr format
         return f"<plx.geometry.Point x={self._x:.3f}, y={self._y:.3f}, z={self._z:.3f}>"
@@ -99,7 +147,7 @@ class Point:
         return self._z
 
 
-class PointSet:
+class PointSet(GeometryBase):
     """
     Mutable ordered collection of :class:`Point`.
 
@@ -134,6 +182,15 @@ class PointSet:
         return _ShpLine([(p.x, p.y) for p in self._points])
 
     # ---------------- container magic --------------------------------
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"points": [p.to_dict() for p in self._points]}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PointSet":
+        pts = [Point.from_dict(p) for p in data["points"]]
+        return cls(pts)
+    
     def __len__(self) -> int:
         return len(self._points)
 
@@ -151,7 +208,7 @@ class PointSet:
 # ---------------------------------------------------------------------------
 # Line3D --------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-class Line3D:
+class Line3D(GeometryBase):
     """
     Polyline in 3-D space.
 
@@ -164,8 +221,6 @@ class Line3D:
     def __init__(self, point_set: PointSet):
         if not isinstance(point_set, PointSet):
             raise TypeError("Line3D must be initialized with a PointSet instance.")
-        self._id = uuid.uuid4()
-        self._plx_id: Optional[str] = None
         self._point_set = point_set
 
     # --------------- delegation ---------------------------------------
@@ -238,6 +293,21 @@ class Line3D:
     def __len__(self) -> int:
         return len(self._point_set)
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self._uuid_to_str(self._id),
+            "plx_id": self._plx_id,
+            "points": [p.to_dict() for p in self._point_set.get_points()]
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Line3D":
+        pts = [Point.from_dict(p) for p in data["points"]]
+        line = cls(PointSet(pts))
+        line.id = cls._str_to_uuid(data["id"])   
+        line.plx_id = data.get("plx_id")
+        return line
+
     def __iter__(self) -> Iterator[Point]:
         return iter(self._point_set)
 
@@ -258,7 +328,7 @@ class Line3D:
 # ---------------------------------------------------------------------------
 # Polygon3D ------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-class Polygon3D:
+class Polygon3D(GeometryBase):
     """
     Planar polygon (outer + optional inner rings).
 
@@ -267,16 +337,16 @@ class Polygon3D:
     representing inner holes.
     """
 
-    __slots__ = ("_id", "_plx_id", "_lines")
+    __slots__ = ("_id", "_plx_id", "_lines", "_point_set")
 
     def __init__(self, lines: Optional[List[Line3D]] = None):
-        self._id = uuid.uuid4()
-        self._plx_id: Optional[str] = None
         self._lines: List[Line3D] = lines if lines else []
 
         if not self._lines:
             return
         
+        self.update_points()
+
         # Validation for all rings
         for i, ln in enumerate(self._lines):
             if not ln.is_valid_ring():
@@ -327,6 +397,7 @@ class Polygon3D:
         if not line.is_valid_ring():
             raise ValueError("Hole to add is an invalid ring.")
         self._lines.append(line)
+        self.update_points()
 
     # ---------------- shapely interop --------------------------------
     def to_shapely(self):
@@ -373,6 +444,10 @@ class Polygon3D:
             pts.extend(ln.get_points())
         return pts
     
+    def update_points(self) -> None:
+        """Update the point set in the Polygon3D"""
+        self._point_set = PointSet(self.get_all_points())
+
     @property
     def outer_ring(self) -> Line3D:
         """Return the outer boundary Line3D."""
@@ -387,6 +462,21 @@ class Polygon3D:
 
     def __len__(self) -> int:
         return len(self._lines)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self._uuid_to_str(self._id),
+            "plx_id": self._plx_id,
+            "rings": [ln.to_dict() for ln in self._lines]
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Polygon3D":
+        rings = [Line3D.from_dict(r) for r in data["rings"]]
+        poly = cls(rings)
+        poly.id = cls._str_to_uuid(data["id"])
+        poly.plx_id = data.get("plx_id")
+        return poly
 
     def __iter__(self) -> Iterator[Line3D]:
         return iter(self._lines)
@@ -403,7 +493,7 @@ class Polygon3D:
 # ---------------------------------------------------------------------------
 # Volume Models (Plaxis 3D Compatible) --------------------------------------
 # ---------------------------------------------------------------------------
-class Volume:
+class Volume(GeometryBase):
     """
     Abstract base class for a 3D geometric volume.
     Represents a closed body in 3D space.
@@ -428,7 +518,7 @@ class Volume:
     def centroid(self) -> Point:
         """Calculate the geometric centroid of the body."""
         raise NotImplementedError("Subclass must implement the centroid() method.")
-
+    
     def __repr__(self) -> str:
         # Updated repr format
         return f"<plx.geometry.{self.__class__.__name__} id={self._id}>"
@@ -476,6 +566,25 @@ class Cube(Volume):
     @property
     def max_point(self) -> Point:
         return self._max_point
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "type": "Cube",
+            "id": self._uuid_to_str(self._id),
+            "plx_id": self._plx_id,
+            "min_point": self._min_point.to_dict(),
+            "max_point": self._max_point.to_dict()
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Cube":
+        cube = cls(
+            Point.from_dict(data["min_point"]),
+            Point.from_dict(data["max_point"])
+        )
+        cube.id = cls._str_to_uuid(data["id"])
+        cube.plx_id = data.get("plx_id")
+        return cube
 
     def __repr__(self) -> str:
         # Updated repr format
@@ -581,6 +690,22 @@ class Polyhedron(Volume):
         avg_z = sum(p.z for p in all_points) / len(all_points)
         
         return Point(avg_x, avg_y, avg_z)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "type": "Polyhedron",
+            "id": self._uuid_to_str(self._id),
+            "plx_id": self._plx_id,
+            "faces": [f.to_dict() for f in self._faces]
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Polyhedron":
+        faces = [Polygon3D.from_dict(f) for f in data["faces"]]
+        poly = cls(faces)
+        poly.id = cls._str_to_uuid(data["id"])
+        poly.plx_id = data.get("plx_id")
+        return poly
 
     def __repr__(self) -> str:
         # Updated repr format
