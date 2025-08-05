@@ -1,0 +1,10 @@
+name: plxscripting
+dependencies:
+- pip=8.1.2=py34_0
+- pycrypto=2.6.1=py34_4
+- python=3.4.5=0
+- setuptools=26.1.1=py34_0
+- vs2010_runtime=10.00.40219.1=2
+- wheel=0.29.0=py34_0
+- pip:
+  - --editable=file://../../encryption
