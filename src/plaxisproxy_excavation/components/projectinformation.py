@@ -16,8 +16,9 @@ its public read-only property interface backward-compatible.
 from __future__ import annotations
 
 import uuid
-from enum import Enum, auto
-from typing import Dict, Any
+from enum import Enum
+from typing import Dict, Any, Type
+from ..core.plaxisobject import SerializableBase
 
 __all__ = ["Units", "ProjectInformation"]
 
@@ -40,7 +41,7 @@ class Units:
         H = "h"
 
 
-class ProjectInformation:
+class ProjectInformation(SerializableBase):
     """Read-only container for model metadata."""
 
     __slots__ = (
@@ -100,13 +101,44 @@ class ProjectInformation:
         self._y_min = float(y_min)
         self._y_max = float(y_max)
 
+    @classmethod
+    def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
+        """
+        Creates a ProjectInformation instance from a dictionary.
+
+        Args:
+            data (Dict[str, Any]): A dictionary containing the project information data.
+
+        Returns:
+            ProjectInformation: An instance of the ProjectInformation class.
+        """
+        # Create a copy to avoid modifying the original dictionary
+        constructor_args = data.copy()
+
+        # Convert unit strings back to Enum members
+        constructor_args['length_unit'] = Units.Length(constructor_args['length_unit'])
+        constructor_args['internal_force_unit'] = Units.Force(constructor_args['internal_force_unit'])
+        constructor_args['time_unit'] = Units.Time(constructor_args['time_unit'])
+
+        # Store the id to be set after instantiation
+        instance_id = constructor_args.pop('id', None)
+
+        # Create the instance
+        instance = cls(**constructor_args)
+
+        # Set the id from the original data
+        if instance_id:
+            instance._id = uuid.UUID(instance_id)
+
+        return instance
+
     # ------------------------------------------------------------------
     # Convenience helpers
     # ------------------------------------------------------------------
     def bounding_box(self):
         """Return domain bounding box as ``(x_min, x_max, y_min, y_max)``."""
         return self._x_min, self._x_max, self._y_min, self._y_max
-
+    
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to plain Python dict (for JSON / YAML export)."""
         return {

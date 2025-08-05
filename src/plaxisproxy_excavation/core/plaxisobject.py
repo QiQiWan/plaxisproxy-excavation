@@ -40,7 +40,7 @@ class SerializableBase(metaclass=SerializableMeta):
     object instances. It automatically handles primitive types, datetime, date,
     UUID, lists, and nested SerializableBase objects.
     """
-
+    _SERIAL_VERSION: int = 1
     __serialize_fields__: ClassVar[List[str]]
 
     # ---------------------------------------------------------------------------
@@ -93,6 +93,9 @@ class SerializableBase(metaclass=SerializableMeta):
                 if key.startswith('_'):
                     continue
                 obj_dict[key] = self._serialize_value(value)
+
+        obj_dict["__type__"] = f"{self.__class__.__module__}.{self.__class__.__name__}"
+        obj_dict["__version__"] = getattr(self, "_SERIAL_VERSION", 1)
 
         return obj_dict
 

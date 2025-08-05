@@ -2,7 +2,7 @@ from __future__ import annotations
 import uuid
 import math
 from typing import List, Iterator, Optional, Tuple, Dict, Any
-from core.helper import *
+
 
 """plx.geometry - core geometric primitives with optional Shapely support
 --------------------------------------------------------------------------

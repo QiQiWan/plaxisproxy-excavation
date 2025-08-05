@@ -1,33 +1,10 @@
 from __future__ import annotations
-import uuid
 from enum import Enum, auto
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Union, Any
-
-# ----------------------------------------------------------------------
-# 0) Base classes and placeholders
-# ----------------------------------------------------------------------
-# Note: These are placeholders. In a real project, they would be imported.
-class BaseStructure:
-    """A base class for general structural objects."""
-    def __init__(self, name: str):
-        self.name = name
-    def __repr__(self) -> str:
-        return f"<plx.structures.BaseStructure name='{self.name}'>"
-
-class SoilBlock:
-    """A placeholder for a soil block object."""
-    def __init__(self, name: str):
-        self.name = name
-    def __repr__(self) -> str:
-        return f"<plx.materials.SoilBlock name='{self.name}'>"
-
-class WaterLevelTable:
-    """A placeholder for a water level table object."""
-    def __init__(self, label: str):
-        self.label = label
-    def __repr__(self) -> str:
-        return f"<plx.components.WaterLevelTable label='{self.label}'>"
+from ..core.plaxisobject import PlaxisObject
+from watertable import WaterLevelTable
+from ..structures.soilblock import SoilBlock
 
 # ----------------------------------------------------------------------
 # 1) StageSettings Enums
@@ -75,7 +52,7 @@ class SolverType(Enum):
 # 2) StageSettings Dataclass and Factory Methods
 # ----------------------------------------------------------------------
 @dataclass
-class StageSettings:
+class StageSettings(PlaxisObject):
     """
     A dataclass for storing calculation settings.
     This class is intended to be created via factory methods to ensure parameter consistency.
@@ -230,9 +207,40 @@ class StageSettings:
         return cls(calc_type=CalcType.DynamicConsolidation, settings=settings_dict)
 
 
-    def as_dict(self) -> Dict:
-        """Serializes the settings to a dictionary for API use."""
-        return self.settings
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        JSON-safe serialize：
+        """
+        return {
+            "__type__": f"{self.__class__.__module__}.{self.__class__.__name__}",
+            "__version__": getattr(self, "_SERIAL_VERSION", 1),
+            "calc_type": self.calc_type.value,
+            "settings": self.settings 
+        }
+
+    # ---------- Deserialize ----------
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StageSettings":
+        """
+        Automatically select the corresponding factory method based on calc_type → then write back all parameters.
+        """
+        calc_type_str = data.get("calc_type", CalcType.Plastic.value)
+        settings_dict = data.get("settings", {})
+
+        # --- Route to the appropriate factory ---
+        factory_map = {
+            CalcType.Plastic.value: cls.create_plastic_settings,
+            CalcType.Consolidation.value: cls.create_consolidation_settings,
+            CalcType.FlowConsolidation.value: cls.create_flow_consolidation_settings,
+            CalcType.Safety.value: cls.create_safety_settings,
+            CalcType.Dynamic.value: cls.create_dynamic_settings,
+            CalcType.DynamicConsolidation.value: cls.create_dynamic_consolidation_settings
+        }
+
+        factory = factory_map.get(calc_type_str, cls.create_plastic_settings)
+        obj = factory(**settings_dict)
+        obj.settings.update(settings_dict)
+        return obj
 
     def __repr__(self) -> str:
         """Provides a unified and informative string representation."""
@@ -252,9 +260,9 @@ class PhaseType(Enum):
     LOAD = "Load"
     OTHER = "Other"
 
-ActionTarget = Union[str, BaseStructure]
+ActionTarget = Union[str, PlaxisObject]
 
-class ConstructionStage:
+class ConstructionStage(PlaxisObject):
     """
     An object representing a single construction phase or stage.
 
@@ -265,6 +273,7 @@ class ConstructionStage:
 
     def __init__(self,
                  name: str,
+                 comment: str,
                  phase_type: PhaseType = PhaseType.OTHER,
                  duration: float = 0.0,
                  settings: Optional[StageSettings] = None,
@@ -281,9 +290,7 @@ class ConstructionStage:
             notes (Optional[str], optional): Optional notes for the phase.
             water_table (Optional[WaterLevelTable], optional): The water table associated with this phase.
         """
-        self._id = uuid.uuid4()
-        self._name = name
-        self._plx_id: Optional[str] = None  # ID of the corresponding object in Plaxis
+        super().__init__(name, comment)
         self._phase_type = phase_type
         self._duration = duration
         self.settings  = settings or StageSettings()
@@ -299,24 +306,6 @@ class ConstructionStage:
         self._backfill : List[SoilBlock] = []
 
     # --- Properties ---
-    @property
-    def id(self) -> uuid.UUID:
-        """The unique identifier for this object."""
-        return self._id
-
-    @property
-    def name(self) -> str:
-        """The name of the phase."""
-        return self._name
-
-    @property
-    def plx_id(self) -> Optional[str]:
-        """The unique ID of the corresponding object in Plaxis."""
-        return self._plx_id
-
-    @plx_id.setter
-    def plx_id(self, value: str):
-        self._plx_id = value
 
     @property
     def phase_type(self) -> PhaseType:
@@ -376,7 +365,7 @@ class ConstructionStage:
             "type": self._phase_type.value,
             "plx_id": self._plx_id,
             "duration": self._duration,
-            "settings": self.settings.as_dict(),
+            "settings": self.settings.to_dict(),
             "activate":   [getattr(x, "name", str(x)) for x in self._activate],
             "deactivate": [getattr(x, "name", str(x)) for x in self._deactivate],
             "excavate":   [b.name for b in self._excavate],
@@ -386,7 +375,97 @@ class ConstructionStage:
             "water_table": self._water_table.label if self._water_table else None,
             "notes": self._notes
         }
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "__type__": f"{self.__class__.__module__}.{self.__class__.__name__}",
+            "__version__": getattr(self, "_SERIAL_VERSION", 1),
+            "name": self._name,
+            "comment": self._comment,
+            "phase_type": self._phase_type.value,
+            "duration": self._duration,
+            "settings": self.settings.to_dict(),
+            "notes": self._notes,
+            "water_table": (
+                self._water_table.label if self._water_table else None
+            ),
+            
+            "activate":   [getattr(x, "name", str(x)) for x in self._activate],
+            "deactivate": [getattr(x, "name", str(x)) for x in self._deactivate],
+            "excavate":   [blk.name for blk in self._excavate],
+            "freeze":     [blk.name for blk in self._freeze],
+            "thaw":       [blk.name for blk in self._thaw],
+            "backfill":   [blk.name for blk in self._backfill],
+            "plx_id": self._plx_id
+        }
 
+    # ----------------- Deserialize -----------------
+    @classmethod
+    def from_dict(
+        cls,
+        data: Dict[str, Any],
+        registry: Optional[Dict[str, "SoilBlock"]] = None
+    ) -> "ConstructionStage":
+        registry = registry or {}
+
+        # ---------- 工具函数 ----------
+        def _ensure_soil_block(obj: Union["SoilBlock", "PlaxisObject", str]) -> "SoilBlock":
+            """
+            If obj is already a SoilBlock → return it as is; otherwise, create a placeholder SoilBlock based on the name.
+            The return value is always a SoilBlock, meeting the requirements of the static checker.
+            """
+            if isinstance(obj, SoilBlock):
+                return obj
+            # 兜底：将任何其它对象或字符串包成占位 SoilBlock
+            return SoilBlock(getattr(obj, "name", str(obj)))
+
+        def _resolve(name_or_id: str) -> ActionTarget:
+            """resolve 用于结构件激活/停用，可返回 str 或 PlaxisObject"""
+            return registry.get(name_or_id, name_or_id)
+
+        # ---------- settings ----------
+        settings_obj = StageSettings.from_dict(data["settings"])
+
+        # ---------- 实例化 ----------
+        stage = cls(
+            name=data["name"],
+            comment=data.get("comment", ""),
+            phase_type=PhaseType(data.get("phase_type", PhaseType.OTHER.value)),
+            duration=float(data.get("duration", 0.0)),
+            settings=settings_obj,
+            notes=data.get("notes"),
+            water_table=(
+                WaterLevelTable(data["water_table"])
+                if data.get("water_table") else None
+            )
+        )
+
+        for act in data.get("activate", []):
+            stage.activate(_resolve(act))
+        for dea in data.get("deactivate", []):
+            stage.deactivate(_resolve(dea))
+
+        # ---------- SoilBlock 容器 ----------
+        for blk in data.get("excavate", []):
+            target_obj = registry.get(blk) or blk
+            stage.excavate_block(_ensure_soil_block(target_obj))
+
+        for blk in data.get("freeze", []):
+            target_obj = registry.get(blk) or blk
+            stage.freeze_block(_ensure_soil_block(target_obj))
+
+        for blk in data.get("thaw", []):
+            target_obj = registry.get(blk) or blk
+            stage.thaw_block(_ensure_soil_block(target_obj))
+
+        for blk in data.get("backfill", []):
+            target_obj = registry.get(blk) or blk
+            stage.backfill_block(_ensure_soil_block(target_obj))
+
+        # ---------- plx_id ----------
+        stage._plx_id = data.get("plx_id")
+        return stage
+    
     def __repr__(self) -> str:
         """Provides a unified and informative string representation."""
         plx_id_info = f"plx_id={self._plx_id}" if self._plx_id else "no_plx_id"
