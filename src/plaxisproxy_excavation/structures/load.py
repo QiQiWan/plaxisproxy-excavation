@@ -1,6 +1,6 @@
 from enum import Enum, auto
 from typing import Optional, Dict, Tuple, List, Any
-from core.plaxisobject import PlaxisObject
+from ..core.plaxisobject import PlaxisObject
 from ..geometry import Point, Line3D, Polygon3D
 
 # =============================================================================
@@ -144,33 +144,24 @@ class LoadMultiplier(PlaxisObject):
 # =============================================================================
 class _BaseLoad(PlaxisObject):
     """Shared attributes for load entities (no direct instantiation)."""
-
-    # ------------------------------------------------------------------
-    #  Constructor
-    # ------------------------------------------------------------------
     def __init__(
         self,
         name: str,
         comment: str,
         stage: LoadStage,
         distribution: DistributionType,
-        # —— primary force components ——
         Fx: float = 0.0,
         Fy: float = 0.0,
         Fz: float = 0.0,
-        # —— optional moment components (PointLoad only) ——
         Mx: float = 0.0,
         My: float = 0.0,
         Mz: float = 0.0,
-        # —— end values (Line / Surface, linear only) ——
         Fx_end: float = 0.0,
         Fy_end: float = 0.0,
         Fz_end: float = 0.0,
-        # —— gradients dictionary (Surface) ——
         gradients: Optional[Dict[str, float]] = None,
         ref_point: Optional[Tuple[float, float, float]] = None
     ) -> None:
-        
         super().__init__(name, comment)
         if not isinstance(stage, LoadStage):
             raise TypeError("stage must be a LoadStage value.")

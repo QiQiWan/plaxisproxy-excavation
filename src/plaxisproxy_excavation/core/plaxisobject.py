@@ -54,12 +54,12 @@ class SerializableBase(metaclass=SerializableMeta):
     # not intended for direct external use.
 
     @staticmethod
-    def _uuid_to_str(u: uuid.UUID | None) -> str | None:
+    def _uuid_to_str(u: Optional[uuid.UUID]) -> Optional[str]:
         """Converts a UUID object to a string, handling None values."""
         return str(u) if u is not None else None
 
     @staticmethod
-    def _str_to_uuid(s: str | None) -> uuid.UUID | None:
+    def _str_to_uuid(s: Optional[str]) -> Optional[uuid.UUID]:
         """Converts a string to a UUID object, handling None values."""
         return uuid.UUID(s) if s is not None and s != '' else None
 
@@ -162,7 +162,7 @@ class SerializableBase(metaclass=SerializableMeta):
         if origin_type is tuple:
             # Handles Tuple[type, type, ...] and Tuple[type, ...]
             item_types = get_args(expected_type)
-            if len(item_types) == 2 and item_types[1] is Ellipsis: # Variadic tuple e.g. Tuple[int, ...]
+            if len(item_types) == 2 and item_types[1] is Ellipsis:  # Variadic tuple e.g. Tuple[int, ...]
                 return tuple(cls._deserialize_value(item, item_types[0]) for item in value)
             # Fixed-length tuple e.g. Tuple[str, int]
             return tuple(cls._deserialize_value(item, item_types[i]) for i, item in enumerate(value))
@@ -223,10 +223,6 @@ class PlaxisObject(SerializableBase):
     def __init__(self, name: str, comment: str):
         """
         Initialize PlaxisObject。
-
-        Args:
-            name (str): name of the Plaxis object.
-            comment (str): comment of the Plaxis object.
         """
         if not isinstance(name, str) or not name:
             raise ValueError("The type of name must be a string!")

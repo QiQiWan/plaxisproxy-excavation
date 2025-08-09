@@ -1,10 +1,10 @@
-from basematerial import BaseMaterial
+from .basematerial import BaseMaterial
 from enum import Enum, auto
 
 class SoilMaterialsType(Enum):
-    MC = auto() # Mohr Coulomb
-    MCC = auto() # Modified Cambridge Clay
-    HSS = auto() # Harden Small Strain
+    MC = auto()  # Mohr Coulomb
+    MCC = auto()  # Modified Cambridge Clay
+    HSS = auto()  # Hardening Small Strain
 
 class MCGWType(Enum):
     Standard = auto()
@@ -21,7 +21,6 @@ class RayleighInputMethod(Enum):
     SDOFEquivalent = "SDOFEquivalent"
 
 class BaseSoilMaterial(BaseMaterial):
-
     def __init__(self, name, type, comment, gamma, E, nu, gamma_sat, e_init, **kwargs) -> None:
         super().__init__(name, type, comment, gamma, E, nu)
         """
@@ -47,7 +46,6 @@ class BaseSoilMaterial(BaseMaterial):
         self._alpha: float = 0.0
         self._beta: float = 0.0
 
-
     # Set the super pore stress parameters
     def set_super_pore_stress_parameters(self, pore_stress_type=0, vu=0, value=None):
         """
@@ -66,7 +64,7 @@ class BaseSoilMaterial(BaseMaterial):
         self._pore_stress_type = pore_stress_type
         self._vu = vu
         self._water_value = value
-        
+
     # Set additional underground water parameters
     def set_under_ground_water(self, type: MCGWType, SWCC_method: MCGwSWCC, soil_posi, soil_fine, Gw_defaults, 
                                infiltration, default_method, kx, ky, kz, Gw_Psiunsat):
@@ -96,7 +94,7 @@ class BaseSoilMaterial(BaseMaterial):
         self._cross_permeability = cross_permeability
         self._drainage_conduct1 = drainage_conduct1
         self._drainage_conduct2 = drainage_conduct2
-    
+
     # Set additional initial parameters
     def set_additional_initial_parameters(self, K_0_define, K_0_x=0.5, K_0_y=0.5):
         self._set_additional_initial = True
@@ -107,15 +105,15 @@ class BaseSoilMaterial(BaseMaterial):
     def __repr__(self) -> str:
         return "<plx.materials.soilbase>"
     
-    #region property
+    # region property
     @property
     def gamma_sat(self):
         return self._gamma_sat
-    
+
     @property
     def e_init(self):
         return self._e_init
-    
+
     @property
     def n_init(self):
         return self._n_init
@@ -123,7 +121,7 @@ class BaseSoilMaterial(BaseMaterial):
     @property
     def pore_stress_type(self):
         return self._pore_stress_type
-    
+
     @property
     def vu(self):
         return self._vu
@@ -235,7 +233,7 @@ class BaseSoilMaterial(BaseMaterial):
     def drainage_conduct2(self):
         """Get the secondary drainage conductivity."""
         return self._drainage_conduct2
-    
+
     @property
     def K_0_define(self):
         """Get the definition method for the at-rest earth pressure coefficient (K₀)."""
@@ -250,12 +248,11 @@ class BaseSoilMaterial(BaseMaterial):
     def K_0_y(self):
         """Get the at-rest earth pressure coefficient in the y-direction (K₀ᵧ)."""
         return self._K_0_y
-    #endregion
+    # endregion
 
 class MCMaterial(BaseSoilMaterial):
-    
-    def __init__(self, name, type, comment, gamma, E, nu, gamma_sat, e_init, # general
-                 E_ref, c_ref, phi, psi, tensile_strength) -> None: # Mechanics 
+    def __init__(self, name, type, comment, gamma, E, nu, gamma_sat, e_init,  # general
+                 E_ref, c_ref, phi, psi, tensile_strength) -> None:  # Mechanics 
         """
         Args:
             name (str): as the software
@@ -278,7 +275,7 @@ class MCMaterial(BaseSoilMaterial):
         self._psi = psi
         self._tensile_strength = tensile_strength
 
-    #region property
+    # region property
     def __repr__(self) -> str:
         return f"<plx.materials.MCSoil>"
     
@@ -301,10 +298,9 @@ class MCMaterial(BaseSoilMaterial):
     @property
     def tensile_strength(self):
         return self._tensile_strength
-    #endregion
+    # endregion
 
 class MCCMaterial(BaseSoilMaterial):
-
     def __init__(self, name, type, comment, gamma, E, nu, gamma_sat, e_init, lam, kar, M_CSL) -> None:
         super().__init__(name, type, comment, gamma, E, nu, gamma_sat, e_init)
         """
@@ -336,11 +332,9 @@ class MCCMaterial(BaseSoilMaterial):
         return self._M_CSL
 
 class HSSMaterial(BaseSoilMaterial):
-
     def __init__(self, name, type, comment, gamma, E, nu, gamma_sat, e_init, E_oed, E_ur, m, P_ref, 
                  G0, gamma_07, c, phi, psi) -> None:
         """
-        
         Args:
             E (float): E50_ref, Reference secant stiffness in triaxial test [kN/m²].
             Eoed_ref (float): Reference tangent stiffness for oedometer loading [kN/m²].
@@ -362,7 +356,7 @@ class HSSMaterial(BaseSoilMaterial):
         self._phi = phi
         self._psi = psi
 
-    #region property
+    # region property
     def __repr__(self) -> str:
         return "<plx.materials.HSSSoil>"
     
@@ -410,11 +404,12 @@ class HSSMaterial(BaseSoilMaterial):
     def psi(self):
         """Get the dilation angle (ψ) for plastic flow rule [degrees]."""
         return self._psi
-    #endregion
+    # endregion
 
 # =============================================================================
 #  Factory Class for Soil Material Creation
 # =============================================================================
+
 class SoilMaterialFactory:
     """
     A factory class to simplify the creation of different soil material objects.
@@ -442,7 +437,7 @@ class SoilMaterialFactory:
 
         Returns:
             BaseSoilMaterial: An instance of the requested soil material class
-                              (e.g., MCMaterial, HSSMaterial).
+                               (e.g., MCMaterial, HSSMaterial).
         """
         if material_type == SoilMaterialsType.MC:
             # For Mohr-Coulomb, we expect specific parameters

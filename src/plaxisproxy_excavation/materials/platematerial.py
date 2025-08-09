@@ -1,4 +1,4 @@
-from basematerial import BaseMaterial
+from .basematerial import BaseMaterial
 from enum import Enum, auto
 
 class PlateType(Enum):

@@ -1,25 +1,20 @@
 from ..materials.anchormaterial import *
 from ..geometry import *
-from basestructure import BaseStructure
+from .basestructure import BaseStructure
 
 class Anchor(BaseStructure):
     """
     Anchor (tieback) object for Plaxis 3D, defined by a 3D line (with exactly two points)
     and an anchor material/type.
     """
-
     def __init__(self, name: str, line: Line3D, anchor_type) -> None:
         """
         Initialize the anchor with a 3D line and anchor material/type.
 
         Args:
-            line (Line3D): The 3D line defining the anchor (must be exactly two points).
+            line (Line3D): The 3D line defining the anchor (must have exactly two points).
             anchor_type: The anchor material or type.
-
-        Raises:
-            ValueError: If the line does not have exactly two points.
         """
-
         super().__init__(name)
         if not isinstance(line, Line3D):
             raise TypeError("Anchor line must be a Line3D instance.")
@@ -47,4 +42,3 @@ class Anchor(BaseStructure):
 
     def __repr__(self) -> str:
         return f"<plx.structures.Anchor name='{self.name}' type='{self._anchor_type}'>"
-

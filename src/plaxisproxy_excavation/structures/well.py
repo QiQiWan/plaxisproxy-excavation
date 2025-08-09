@@ -1,4 +1,4 @@
-from basestructure import BaseStructure
+from .basestructure import BaseStructure
 from ..geometry import *
 from enum import Enum
 
@@ -34,19 +34,7 @@ class Well(BaseStructure):
         self._h_min = h_min
 
     def move(self, dx: float, dy: float, dz: float = 0.0) -> None:
-        """
-        Moves the well by a given displacement in the x, y, and z directions.
-
-        This method calculates the new coordinates for the well's top and bottom
-        points based on the provided displacements, and then reconstructs the
-        internal Line3D object to reflect the new position.
-
-        Args:
-            dx (float): The displacement in the X-direction.
-            dy (float): The displacement in the Y-direction.
-            dz (float, optional): The displacement in the Z-direction. Defaults to 0.0.
-        """
-        # Get the current top and bottom points of the well.
+        """Moves the well by a given displacement in the x, y, and z directions."""
         if not all(isinstance(d, (int, float)) for d in (dx, dy, dz)):
             raise TypeError("Move displacements dx, dy, dz must be numeric.")
         try:
@@ -61,9 +49,7 @@ class Well(BaseStructure):
         # Create a new Line3D object with the new points.
         new_line = Line3D(PointSet([new_top, new_bottom]))
 
-        # Use the existing line setter to update the well's state.
-        #    This is the best practice as it ensures that both the internal
-        #    _line and the cached _pos are updated consistently.
+        # Update the well's internal line and position
         self.line = new_line
 
     @property

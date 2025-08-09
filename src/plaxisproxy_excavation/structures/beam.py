@@ -1,13 +1,12 @@
 from ..materials.beammaterial import *
 from ..geometry import *
-from basestructure import BaseStructure
+from .basestructure import BaseStructure
 
 class Beam(BaseStructure):
     """
     Beam object for Plaxis 3D, defined by a 3D line (with exactly two points)
     and a beam material/type.
     """
-
     def __init__(self, name: str, line: Line3D, beam_type) -> None:
         """
         Initialize the beam with a 3D line and beam material/type.
@@ -15,9 +14,6 @@ class Beam(BaseStructure):
         Args:
             line (Line3D): The 3D line defining the beam (must be exactly two points).
             beam_type: The beam material or type.
-
-        Raises:
-            ValueError: If the line does not have exactly two points.
         """
         super().__init__(name)
         if not isinstance(line, Line3D):
@@ -45,4 +41,3 @@ class Beam(BaseStructure):
 
     def __repr__(self) -> str:
         return f"<plx.structures.Beam name='{self.name}' type='{self._beam_type}'>"
-
