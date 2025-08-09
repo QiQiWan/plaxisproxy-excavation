@@ -172,17 +172,29 @@ class _BaseLoad(PlaxisObject):
     ) -> None:
         
         super().__init__(name, comment)
+        if not isinstance(stage, LoadStage):
+            raise TypeError("stage must be a LoadStage value.")
+        if not isinstance(distribution, DistributionType):
+            raise TypeError("distribution must be a DistributionType value.")
+        if any(not isinstance(v, (int, float)) for v in [Fx, Fy, Fz, Mx, My, Mz, Fx_end, Fy_end, Fz_end]):
+            raise TypeError("Force and moment components must be numeric.")
+        if gradients is not None:
+            if not isinstance(gradients, dict):
+                raise TypeError("'gradients' must be a dict of str to float values.")
+            for k, val in gradients.items():
+                if not isinstance(k, str) or not isinstance(val, (int, float)):
+                    raise ValueError("Gradient entries must have string keys and numeric values.")
+        if ref_point is not None:
+            if not (isinstance(ref_point, (tuple, list)) and len(ref_point) == 3 and 
+                    all(isinstance(c, (int, float)) for c in ref_point)):
+                raise ValueError("ref_point must be a tuple of three numbers.")
         self._stage = stage
         self._distribution = distribution
-
-        # force & (optional) moment (start / uniform values)
+        # force & moment assignments remain unchanged...
         self._Fx, self._Fy, self._Fz = Fx, Fy, Fz
         self._Mx, self._My, self._Mz = Mx, My, Mz
-
-        # linear end values (if applicable)
         self._Fx_end, self._Fy_end, self._Fz_end = Fx_end, Fy_end, Fz_end
-
-        # surface gradients
+        # ... (Mx/My/Mz and end values assignments unchanged)
         self._grad = gradients or {}
         self._ref_point = ref_point or (0.0, 0.0, 0.0)
 
@@ -290,10 +302,11 @@ class _DynBaseLoad(_BaseLoad):
         *args, 
         **kwargs
     ) -> None:
+        if multiplier is not None and not isinstance(multiplier, dict):
+            raise TypeError("multiplier must be a dictionary of LoadMultiplier objects.")
         kwargs["stage"] = LoadStage.DYNAMIC
         super().__init__(*args, **kwargs)
         self._bind_obj = bind_obj
-        # multiplier curves - now stores LoadMultiplier objects
         self._mult: Dict[str, LoadMultiplier] = multiplier.copy() if multiplier else {}
 
     # ------------------------------------------------------------------
@@ -386,7 +399,11 @@ class PointLoad(_BaseLoad):
             My,
             Mz,
         )
+        super().__init__(name, comment, stage, DistributionType.UNIFORM, Fx, Fy, Fz, Mx, My, Mz)
+        if not isinstance(point, Point):
+            raise TypeError("PointLoad requires a Point object for 'point'.")
         self._point = point
+
 
 
     # ----- properties ---------------------------------------------------
@@ -461,16 +478,13 @@ class LineLoad(_BaseLoad):
             qz (float): Load component in the z-direction [kN/m].
         """
         # Assuming line object has a __len__ method
+        if not isinstance(line, Line3D):
+            raise TypeError("LineLoad requires a Line3D object for 'line'.")
         if hasattr(line, '__len__') and len(line) < 2:
             raise ValueError("LineLoad requires at least two points.")
         if distribution not in (DistributionType.UNIFORM, DistributionType.LINEAR):
             raise ValueError("LineLoad supports only UNIFORM or LINEAR distribution.")
-        super().__init__(
-            name,
-            comment,
-            stage,
-            distribution
-        )
+        super().__init__(name, comment, stage, distribution)
         self._line = line
         self._qx = qx
         self._qy = qy
@@ -604,16 +618,11 @@ class SurfaceLoad(_BaseLoad):
                 distributions are calculated. [m]
         """
         # Assuming surface object has as_tuple_list method
-        if hasattr(surface, "as_tuple_list") and not callable(getattr(surface, "as_tuple_list")):
-             raise ValueError("Surface polygon object must provide as_tuple_list().")
-        super().__init__(
-            name,
-            comment, 
-            stage,
-            distribution,
-            gradients=gradients,
-            ref_point=ref_point,
-        )
+        if not isinstance(surface, Polygon3D):
+            raise TypeError("surface must be a Polygon3D instance.")
+        if not hasattr(surface, "as_tuple_list") or not callable(surface.as_tuple_list):
+            raise ValueError("Surface polygon object must implement as_tuple_list().")
+        super().__init__(name, comment, stage, distribution, gradients=gradients, ref_point=ref_point)
         self._surface = surface
         self._sigmax = sigmax
         self._sigmay = sigmay

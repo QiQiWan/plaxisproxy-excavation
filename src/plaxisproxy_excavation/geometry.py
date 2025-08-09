@@ -380,6 +380,12 @@ class Polygon3D(GeometryBase):
             for p in ln:
                 if not math.isclose(normal[0] * p.x + normal[1] * p.y + normal[2] * p.z, D, abs_tol=1e-9):
                     raise ValueError("All points in a Polygon3D must be co-planar.")
+                
+    def as_tuple_list(self) -> List[Tuple[float, float, float]]:
+        """Return all vertex coordinates as a list of (x, y, z) tuples."""
+        if not self._lines:
+            return []
+        return [p.get_point() for p in self.get_all_points()]
 
     @classmethod
     def from_points(cls, point_set: PointSet):

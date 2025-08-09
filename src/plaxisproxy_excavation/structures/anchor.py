@@ -19,10 +19,16 @@ class Anchor(BaseStructure):
         Raises:
             ValueError: If the line does not have exactly two points.
         """
+
         super().__init__(name)
+        if not isinstance(line, Line3D):
+            raise TypeError("Anchor line must be a Line3D instance.")
         if len(line) != 2:
             raise ValueError("Anchor line must have exactly two points!")
         self._line = line
+        if not (isinstance(anchor_type, AnchorType) or isinstance(anchor_type, ElasticAnchor) or 
+                isinstance(anchor_type, ElastoplasticAnchor) or isinstance(anchor_type, ElastoPlasticResidualAnchor)):
+            raise TypeError("anchor_type must be an AnchorType or AnchorMaterial instance.")
         self._anchor_type = anchor_type
 
     @property
@@ -40,4 +46,5 @@ class Anchor(BaseStructure):
         return self._line.get_points()
 
     def __repr__(self) -> str:
-        return "<plx.structures.anchor>"
+        return f"<plx.structures.Anchor name='{self.name}' type='{self._anchor_type}'>"
+

@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plaxisproxy-excavation"
+version = "0.1.0"
+description = "Plaxis proxy"
+requires-python = "==3.9"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

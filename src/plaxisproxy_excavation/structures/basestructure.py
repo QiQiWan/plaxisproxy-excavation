@@ -13,6 +13,7 @@ class BaseStructure(PlaxisObject):
 
         Args:
             name (str): Name or label for the structure.
+            comment (str, optional): An optional comment or description for the structure.
         """
         super().__init__(name=name, comment=comment)
 

@@ -29,9 +29,18 @@ class SoilBlock(PlaxisObject):
             geometry (Optional[...], optional): The geometric definition of the soil volume.
         """
         super().__init__(name, comment)
+        if material is not None and not isinstance(material, BaseSoilMaterial):
+            raise TypeError("material must be a BaseSoilMaterial instance or None.")
+        if geometry is not None:
+            if isinstance(geometry, list):
+                for point in geometry:
+                    if not (isinstance(point, (tuple, list)) and len(point) == 3 and 
+                            all(isinstance(coord, (int, float)) for coord in point)):
+                        raise ValueError("Each coordinate must be a tuple of three numbers.")
+            elif not isinstance(geometry, (Polyhedron, Polygon3D)):
+                raise TypeError("geometry must be a Polyhedron, Polygon3D, or list of point tuples.")
         self._material = material
         self._geometry = geometry
-        # The unique ID of the corresponding volume in the Plaxis software, synced later.
         self._plx_volume_id: Optional[str] = None
 
     # ----------------- Properties & Methods -----------------
@@ -67,5 +76,5 @@ class SoilBlock(PlaxisObject):
         """Provides a developer-friendly string representation of the object."""
         mat = self._material.name if self._material else "None"
         plx_id = self._plx_volume_id or "unsynced"
-        return (f"<plx.materials.SoilBlock name='{self._name}', "
+        return (f"<plx.structures.SoilBlock name='{self._name}', "
                 f"mat='{mat}', geom={'set' if self._geometry else 'None'} | {plx_id}>")

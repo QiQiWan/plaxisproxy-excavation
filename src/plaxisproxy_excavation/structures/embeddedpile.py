@@ -24,10 +24,15 @@ class EmbeddedPile(BaseStructure):
             ValueError: If the line does not have exactly two points.
         """
         super().__init__(name)
-        if not isinstance(line, Line3D) or len(line) != 2:
-            raise ValueError("Embedded pile line must be a Line3D instance with exactly two points!")
+        if not isinstance(line, Line3D):
+            raise TypeError("Embedded pile line must be a Line3D instance.")
+        if len(line) != 2:
+            raise ValueError("Embedded pile line must have exactly two points!")
         self._line = line
+        if not isinstance(pile_type, ElasticPile):
+            raise TypeError("pile_type must be an ElasticPile instance.")
         self._pile_type = pile_type
+
 
     @property
     def line(self) -> Line3D:

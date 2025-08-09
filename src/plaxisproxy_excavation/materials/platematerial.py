@@ -7,7 +7,8 @@ class PlateType(Enum):
 
 class ElasticPlate(BaseMaterial):
 
-    def __init__(self, name, type, comment, gamma, E, nu, preventpunch, isotropic, E2=0, G12=0, G13=0, G23=0) -> None:
+    def __init__(self, name, type, comment, gamma, E, nu, preventpunch, isotropic, 
+                 E2=0.0, G12=0.0, G13=0.0, G23=0.0) -> None:
         super().__init__(name, type, comment, gamma, E, nu)
 
         self._preventpuch = preventpunch
@@ -52,8 +53,9 @@ class ElasticPlate(BaseMaterial):
     
 class ElastoplasticPlate(ElasticPlate):
 
-    def __init__(self, name, type, comment, gamma, E, nu, preventpunch, isotropic, E2=0, G12=0, G13=0, G23=0,
-                 sigma_y_11=0, W_11=0, sigma_y_22=0, W_22=0) -> None:
+    def __init__(self, name, type, comment, gamma, E, nu, preventpunch, isotropic, 
+                 E2=0.0, G12=0.0, G13=0.0, G23=0.0,
+                 sigma_y_11=0.0, W_11=0.0, sigma_y_22=0.0, W_22=0.0) -> None:
         super().__init__(name, type, comment, gamma, E, nu, preventpunch, isotropic, E2, G12, G13, G23)
 
         self._sigma_y_11 = sigma_y_11

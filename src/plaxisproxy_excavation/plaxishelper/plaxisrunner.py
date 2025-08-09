@@ -1,15 +1,19 @@
-# src/plaxisproxy_excavation/plaxisrunner.py
+# src/plaxisproxy_excavation/plaxishelper/plaxisrunner.py
 
 import time
 from typing import List, Dict, Any, Optional
 
-# Import the core Plaxis server and its required components for manual setup
-from plxscripting.server import Server
-from plxscripting.connection import HttpConnection
-from plxscripting.proxy import ProxyFactory
-from plxscripting.input_proc import InputProcessor
+# Import the core Plaxis server and its required components from the local source
+# This ensures we are using the exact version provided in the codebase.
+# CORRECTED: Relative import path changed from 3 dots to 4 dots to correctly
+# navigate from src/plaxisproxy_excavation/plaxishelper/ up to the root and then
+# into third_party/.
+from ....third_party.plxscripting.server import Server
+from ....third_party.plxscripting.connection import HttpConnection
+from ....third_party.plxscripting.plxproxyfactory import PlxProxyFactory
+from ....third_party.plxscripting.tokenizer import PlxTokenizer
 
-# Import the main data structure and the mapper class
+# Import the main data structure and the mapper class from your library
 from ..plaxisexcavation import PlaxisFoundationPit
 from .plaxismapper import PlaxisMapper
 
@@ -21,7 +25,7 @@ class PlaxisRunner:
     This class handles connecting to the Plaxis remote scripting server,
     orchestrating the model creation via the PlaxisMapper, initiating mesh
     generation and calculations, saving the project, and retrieving results.
-    It uses the core 'plxscripting' library components for full control.
+    It is designed based on the provided plxscripting source code for full compatibility.
     """
     
     def __init__(self, input_port: int, output_port: int, password: str, host: str = 'localhost'):
@@ -38,13 +42,18 @@ class PlaxisRunner:
         self.input_port = input_port
         self.output_port = output_port
         self.password = password
+        
         self.input_server: Optional[Server] = None  # The Server object for the Input application
+        self.output_server: Optional[Server] = None # The Server object for the Output application
         self.g_i: Optional[Any] = None             # The global input object (for modeling)
         self.g_o: Optional[Any] = None             # The global output object (for results)
 
     def connect(self, start_new_project: bool = True) -> bool:
         """
         Establishes connections with both the Plaxis Input and Output servers.
+        
+        This method manually constructs the necessary components required by the
+        core `plxscripting.server.Server` constructor, as revealed by the source code.
         
         Args:
             start_new_project (bool): If True, a new Plaxis project will be created upon connection.
@@ -56,20 +65,18 @@ class PlaxisRunner:
             # --- Connect to Input Server ---
             print(f"Attempting to connect to Plaxis Input at {self.host}:{self.input_port}...")
             input_connection = HttpConnection(self.host, self.input_port, password=self.password)
-            self.input_server = Server(input_connection, ProxyFactory(), InputProcessor())
+            self.input_server = Server(input_connection, PlxProxyFactory(), PlxTokenizer())
             self.g_i = self.input_server.get_global_input()
             print("Successfully connected to Plaxis Input.")
 
             # --- Connect to Output Server ---
             print(f"Attempting to connect to Plaxis Output at {self.host}:{self.output_port}...")
             output_connection = HttpConnection(self.host, self.output_port, password=self.password)
-            # A separate Server instance is needed for the output connection.
-            output_server = Server(output_connection, ProxyFactory(), InputProcessor())
+            self.output_server = Server(output_connection, PlxProxyFactory(), PlxTokenizer())
             
             # IMPORTANT: The method is still called get_global_input(), but because it's
             # connected to the output port, it correctly returns the global OUTPUT object (g_o).
-            # This is a known convention of the Plaxis API.
-            self.g_o = output_server.get_global_input()
+            self.g_o = self.output_server.get_global_input()
             print("Successfully connected to Plaxis Output.")
 
             if start_new_project and self.g_i:
@@ -78,7 +85,7 @@ class PlaxisRunner:
             
             return True
             
-        except ConnectionRefusedError as e:
+        except ConnectionRefusedError:
             print(f"ERROR: Connection refused. Please ensure Plaxis is running and the scripting server is enabled on both ports ({self.input_port} and {self.output_port}) with the correct password.")
             return False
         except Exception as e:
@@ -221,11 +228,12 @@ class PlaxisRunner:
 
     def close(self):
         """
-        Closes the connection to the server.
+        Closes the connections to the servers.
         Note: This does NOT close the Plaxis application itself.
         """
-        if self.input_server:
-            print("\nClosing connection to Plaxis server.")
+        if self.input_server or self.output_server:
+            print("\nClosing connections to Plaxis servers.")
             self.input_server = None
+            self.output_server = None
             self.g_i = None
             self.g_o = None

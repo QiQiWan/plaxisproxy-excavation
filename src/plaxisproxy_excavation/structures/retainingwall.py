@@ -23,6 +23,8 @@ class RetainingWall(BaseStructure):
         if not isinstance(surface, Polygon3D):
             raise TypeError("Surface must be a Polygon3D instance.")
         self._surface = surface
+        if not isinstance(plate_type, ElasticPlate):
+            raise TypeError("plate_type must be an ElasticPlate instance.")
         self._plate_type = plate_type
 
     @property

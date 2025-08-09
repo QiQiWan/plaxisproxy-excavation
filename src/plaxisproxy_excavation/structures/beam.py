@@ -20,9 +20,13 @@ class Beam(BaseStructure):
             ValueError: If the line does not have exactly two points.
         """
         super().__init__(name)
+        if not isinstance(line, Line3D):
+            raise TypeError("Beam line must be a Line3D instance.")
         if len(line) != 2:
             raise ValueError("Beam line must have exactly two points!")
         self._line = line
+        if not (isinstance(beam_type, BeamType) or isinstance(beam_type, ElasticBeam) or isinstance(beam_type, ElastoplasticBeam)):
+            raise TypeError("beam_type must be a BeamType or BeamMaterial instance.")
         self._beam_type = beam_type
 
     @property
@@ -40,4 +44,5 @@ class Beam(BaseStructure):
         return self._line.get_points()
 
     def __repr__(self) -> str:
-        return "<plx.structures.beam>"
+        return f"<plx.structures.Beam name='{self.name}' type='{self._beam_type}'>"
+

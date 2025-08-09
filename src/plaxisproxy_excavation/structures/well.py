@@ -18,10 +18,16 @@ class Well(BaseStructure):
         h_min: float = 0.0,
     ) -> None:
         super().__init__(name)
+        if not isinstance(line, Line3D):
+            raise TypeError("Well line must be a Line3D instance.")
         if len(line) != 2:
             raise ValueError("Well line must have exactly two points (well top and bottom)!")
+        if not isinstance(well_type, WellType):
+            raise TypeError("well_type must be a WellType enum value.")
         if well_type not in (WellType.Extraction, WellType.Infiltration):
             raise ValueError("well_type must be WellType.Extraction or WellType.Infiltration")
+        if not isinstance(h_min, (int, float)):
+            raise TypeError("h_min must be a numeric value.")
         self._line = line
         self._pos = line.xy_location()
         self._well_type = well_type
@@ -41,11 +47,11 @@ class Well(BaseStructure):
             dz (float, optional): The displacement in the Z-direction. Defaults to 0.0.
         """
         # Get the current top and bottom points of the well.
+        if not all(isinstance(d, (int, float)) for d in (dx, dy, dz)):
+            raise TypeError("Move displacements dx, dy, dz must be numeric.")
         try:
             p_top, p_bottom = self.get_points()
         except ValueError:
-            # Handle cases where the line might not have exactly two points, though
-            # the __init__ should prevent this.
             raise ValueError("Cannot move well: internal line is not properly defined.")
 
         # Calculate the new coordinates for both points.
@@ -67,7 +73,8 @@ class Well(BaseStructure):
 
     @line.setter
     def line(self, new_line: Line3D):
-        """Replace the well's line object and update position info."""
+        if not isinstance(new_line, Line3D):
+            raise TypeError("Well line must be a Line3D instance.")
         if len(new_line) != 2:
             raise ValueError("Well line must have exactly two points!")
         self._line = new_line
@@ -82,12 +89,12 @@ class Well(BaseStructure):
     def x(self, value):
         if self._pos is None:
             raise ValueError("Well position undefined, cannot set x.")
+        if not isinstance(value, (int, float)):
+            raise TypeError("x coordinate must be a number.")
         y = self._pos[1]
-        # Modify the x value of the line, and keep y value and z value.
         pts = self._line.get_points()
         if len(pts) != 2:
             raise ValueError("Well line must have exactly two points!")
-        # Create PointSet/Line3D，to prevent direct modification of the object from affecting other references
         new_pts = [Point(value, y, pts[0].z), Point(value, y, pts[1].z)]
         self._line = Line3D(PointSet(new_pts))
         self._pos = (value, y)
@@ -101,6 +108,8 @@ class Well(BaseStructure):
     def y(self, value):
         if self._pos is None:
             raise ValueError("Well position undefined, cannot set y.")
+        if not isinstance(value, (int, float)):
+            raise TypeError("y coordinate must be a number.")
         x = self._pos[0]
         pts = self._line.get_points()
         if len(pts) != 2:
@@ -119,6 +128,8 @@ class Well(BaseStructure):
 
     @well_type.setter
     def well_type(self, value):
+        if not isinstance(value, WellType):
+            raise TypeError("well_type must be a WellType enum value.")
         if value not in (WellType.Extraction, WellType.Infiltration):
             raise ValueError("well_type must be WellType.Extraction or WellType.Infiltration")
         self._well_type = value
@@ -129,10 +140,12 @@ class Well(BaseStructure):
 
     @h_min.setter
     def h_min(self, value: float):
+        if not isinstance(value, (int, float)):
+            raise TypeError("h_min must be a numeric value.")
         self._h_min = value
 
     def get_points(self):
         return self._line.get_points()
 
     def __repr__(self) -> str:
-        return "<plx.structures.well>"
+        return f"<plx.structures.Well name='{self.name}' type='{self._well_type}'>"
