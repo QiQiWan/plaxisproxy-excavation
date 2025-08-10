@@ -32,7 +32,7 @@ class TestBeam(unittest.TestCase):
     def test_repr(self):
         """__repr__ returns the expected constant string for Beam."""
         beam = Beam("BeamRepr", self.line2, beam_type="TypeY")
-        self.assertEqual(repr(beam), "<plx.structures.beam>")
+        self.assertEqual(repr(beam), "<plx.structures.Beam>")
 
 if __name__ == '__main__':
     unittest.main()

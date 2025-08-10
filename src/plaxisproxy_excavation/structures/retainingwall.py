@@ -22,9 +22,9 @@ class RetainingWall(BaseStructure):
         super().__init__(name)
         if not isinstance(surface, Polygon3D):
             raise TypeError("Surface must be a Polygon3D instance.")
+        if not isinstance(plate_type, (ElasticPlate, str)):
+            raise TypeError("plate_type must be an ElasticPlate or str.")
         self._surface = surface
-        if not isinstance(plate_type, ElasticPlate):
-            raise TypeError("plate_type must be an ElasticPlate instance.")
         self._plate_type = plate_type
 
     @property
@@ -38,4 +38,5 @@ class RetainingWall(BaseStructure):
         return self._plate_type
 
     def __repr__(self) -> str:
-        return f"<plx.structures.RetainingWall name='{self.name}' type='{self._plate_type}'>"
+        p = self._plate_type if isinstance(self._plate_type, str) else self._plate_type.__class__.__name__
+        return f"<plx.structures.RetainingWall name='{self._name}' plate='{p}'>"

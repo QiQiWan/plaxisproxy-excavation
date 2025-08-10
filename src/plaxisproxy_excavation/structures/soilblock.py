@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import List, Tuple, Optional, Dict, Any
-
+from types import SimpleNamespace
 from ..core.plaxisobject import PlaxisObject         # Base class for Plaxis objects
 from ..materials.soilmaterial import BaseSoilMaterial  # Represents the actual soil material class (assumed to exist)
 from ..geometry import Polygon3D, Polyhedron           # Your geometry module
@@ -43,6 +43,7 @@ class SoilBlock(PlaxisObject):
         self._geometry = geometry
         self._plx_volume_id: Optional[str] = None
 
+
     # ----------------- Properties & Methods -----------------
     @property
     def material(self) -> Optional[BaseSoilMaterial]:
@@ -65,16 +66,30 @@ class SoilBlock(PlaxisObject):
     @classmethod
     def _from_dict_core(cls, data: Dict[str, Any]) -> "SoilBlock":
         """Core helper method for deserialization from a dictionary (for internal use)."""
-        name = data["name"]
+        name = data.get("name", "SoilBlock")
         comment = data.get("comment", "")
         mat = data.get("material")
         geom = data.get("geometry")
 
         return cls(name=name, material=mat, geometry=geom, comment=comment)
+    
+    @staticmethod
+    def _coerce_material(material: Any) -> Optional[Any]:
+        if material is None:
+            return None
+        if isinstance(material, str):
+            return SimpleNamespace(name=material)
+        if isinstance(material, dict):
+            nm = material.get("name") or material.get("mat") or "Unknown"
+            return SimpleNamespace(name=nm)
+        if hasattr(material, "name"):
+            return material
+        
+        raise TypeError("material must have a 'name' attribute, or be str/dict/None.")
 
     def __repr__(self) -> str:
-        """Provides a developer-friendly string representation of the object."""
-        mat = self._material.name if self._material else "None"
-        plx_id = self._plx_volume_id or "unsynced"
-        return (f"<plx.structures.SoilBlock name='{self._name}', "
-                f"mat='{mat}', geom={'set' if self._geometry else 'None'} | {plx_id}>")
+        mat_name = getattr(self._material, "name", "None") if self._material is not None else "None"
+        geom_state = "set" if self._geometry is not None else "None"
+        sync = self._plx_volume_id if self._plx_volume_id else "unsynced"
+        return f"<plx.structures.SoilBlock name='{self._name}', mat='{mat_name}', geom={geom_state} | {sync}>"
+

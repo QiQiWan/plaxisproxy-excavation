@@ -3,6 +3,18 @@ from typing import Optional, Dict, Tuple, List, Any
 from ..core.plaxisobject import PlaxisObject
 from ..geometry import Point, Line3D, Polygon3D
 
+__all__ = [
+    "LoadStage",
+    "DistributionType",
+    "SignalType",
+    "LoadMultiplier",
+    "PointLoad",
+    "LineLoad",
+    "SurfaceLoad",
+    "DynPointLoad",
+    "DynLineLoad",
+]
+
 # =============================================================================
 #  Enumerations
 # =============================================================================
@@ -77,19 +89,25 @@ class LoadMultiplier(PlaxisObject):
             self._frequency = frequency
 
         elif signal_type == SignalType.TABLE:
-            if table_data is None:
-                raise ValueError("Table signal requires 'table_data'.")
-            if not isinstance(table_data, list):
-                raise ValueError("'table_data' must be a list.")
-            for i, point in enumerate(table_data):
-                if not (isinstance(point, (tuple, list)) and len(point) == 2 and
-                        isinstance(point[0], (int, float)) and isinstance(point[1], (int, float))):
-                    raise ValueError(f"Table data point at index {i} must be a (time, value) tuple of numbers.")
-                if i > 0 and point[0] < table_data[i-1][0]:
-                    raise ValueError(f"Table data must be ordered by time (ascending). Error at index {i}.")
-            self._table_data = table_data
+            if table_data is None or not isinstance(table_data, list):
+                raise ValueError("Table signal requires 'table_data' list.")
+            last_t: Optional[float] = None
+            clean: List[Tuple[float, float]] = []
+            for idx, point in enumerate(table_data):
+                if not (isinstance(point, (tuple, list)) and len(point) == 2):
+                    raise ValueError(f"Table data point at index {idx} must be a (time, value) pair.")
+                t, v = point
+                if not isinstance(t, (int, float)) or not isinstance(v, (int, float)):
+                    raise ValueError(f"Table data values at index {idx} must be numeric.")
+                t_f = float(t)
+                v_f = float(v)
+                if last_t is not None and t_f < last_t:
+                    raise ValueError(f"Table data must be ordered by time (ascending). Error at index {idx}.")
+                last_t = t_f
+                clean.append((t_f, v_f))
+            self._table_data = clean
         else:
-            raise NotImplementedError(f"Signal type '{signal_type.value}' is not yet fully implemented.")
+            raise NotImplementedError(f"Signal type '{signal_type.value}' is not implemented.")
 
     @property
     def signal_type(self) -> SignalType:
@@ -113,28 +131,21 @@ class LoadMultiplier(PlaxisObject):
 
     def __repr__(self) -> str:
         base_repr = (
-            f"<plx.structures.LoadMultiplier(name='{self._name}', "
-            f"signal='{self._signal_type.value}')"
+            f"<plx.structures.LoadMultiplier(name='{self.name}', signal='{self._signal_type.value}')"
         )
         if self._signal_type == SignalType.HARMONIC:
             return (
-                f"{base_repr}, "
-                f"amplitude={self._amplitude:.3f}, "
-                f"phase={self._phase:.1f}°, "
-                f"frequency={self._frequency:.3f} Hz>"
+                f"{base_repr}, amplitude={self._amplitude:.3f}, "
+                f"phase={self._phase:.1f}°, frequency={self._frequency:.3f} Hz>"
             )
         elif self._signal_type == SignalType.TABLE:
             if self._table_data and len(self._table_data) > 4:
-                table_str = (
-                    f"[{self._table_data[0]}, {self._table_data[1]}, ..., "
-                    f"{self._table_data[-2]}, {self._table_data[-1]}]"
-                )
+                first, second = self._table_data[0], self._table_data[1]
+                penultimate, last = self._table_data[-2], self._table_data[-1]
+                data_str = f"[{first}, {second}, ..., {penultimate}, {last}]"
             else:
-                table_str = str(self._table_data)
-            return (
-                f"{base_repr}, "
-                f"table_data={table_str}>"
-            )
+                data_str = str(self._table_data)
+            return f"{base_repr}, table_data={data_str}>"
         else:
             return f"{base_repr}>"
 
@@ -167,38 +178,41 @@ class _BaseLoad(PlaxisObject):
             raise TypeError("stage must be a LoadStage value.")
         if not isinstance(distribution, DistributionType):
             raise TypeError("distribution must be a DistributionType value.")
-        if any(not isinstance(v, (int, float)) for v in [Fx, Fy, Fz, Mx, My, Mz, Fx_end, Fy_end, Fz_end]):
-            raise TypeError("Force and moment components must be numeric.")
+        
+        for val in (Fx, Fy, Fz, Mx, My, Mz, Fx_end, Fy_end, Fz_end):
+            if not isinstance(val, (int, float)):
+                raise TypeError("Force and moment components must be numeric.")
+
         if gradients is not None:
             if not isinstance(gradients, dict):
                 raise TypeError("'gradients' must be a dict of str to float values.")
-            for k, val in gradients.items():
-                if not isinstance(k, str) or not isinstance(val, (int, float)):
+            for key, value in gradients.items():
+                if not isinstance(key, str) or not isinstance(value, (int, float)):
                     raise ValueError("Gradient entries must have string keys and numeric values.")
+
         if ref_point is not None:
-            if not (isinstance(ref_point, (tuple, list)) and len(ref_point) == 3 and 
-                    all(isinstance(c, (int, float)) for c in ref_point)):
+            if not (
+                isinstance(ref_point, (tuple, list)) and len(ref_point) == 3
+                and all(isinstance(c, (int, float)) for c in ref_point)
+            ):
                 raise ValueError("ref_point must be a tuple of three numbers.")
-        self._stage = stage
-        self._distribution = distribution
-        # force & moment assignments remain unchanged...
-        self._Fx, self._Fy, self._Fz = Fx, Fy, Fz
-        self._Mx, self._My, self._Mz = Mx, My, Mz
-        self._Fx_end, self._Fy_end, self._Fz_end = Fx_end, Fy_end, Fz_end
-        # ... (Mx/My/Mz and end values assignments unchanged)
-        self._grad = gradients or {}
-        self._ref_point = ref_point or (0.0, 0.0, 0.0)
+        
+        self._stage: LoadStage = stage
+        self._distribution: DistributionType = distribution
+        self._Fx, self._Fy, self._Fz = float(Fx), float(Fy), float(Fz)
+        self._Mx, self._My, self._Mz = float(Mx), float(My), float(Mz)
+        self._Fx_end, self._Fy_end, self._Fz_end = float(Fx_end), float(Fy_end), float(Fz_end)
+        self._grad: Dict[str, float] = gradients or {}
+        self._ref_point: Tuple[float, float, float] = ref_point if ref_point else (0.0, 0.0, 0.0)
 
     # ------------------------------------------------------------------
     #  Pretty helpers
     # ------------------------------------------------------------------
     def _force_str(self) -> str:
-        s = f"F=({self._Fx:+.2f},{self._Fy:+.2f},{self._Fz:+.2f})"
-        if self._distribution is DistributionType.LINEAR:
-            s += f"→({self._Fx_end:+.2f},{self._Fy_end:+.2f},{self._Fz_end:+.2f})"
-        if self._grad:
-            s += f", grad={self._grad}"
-        return s
+        return (
+            f"F=({self._Fx:+.2f}, {self._Fy:+.2f}, {self._Fz:+.2f}); "
+            f"M=({self._Mx:+.2f}, {self._My:+.2f}, {self._Mz:+.2f})"
+        )
 
     def _moment_str(self) -> str:
         return f"M=({self._Mx:+.2f},{self._My:+.2f},{self._Mz:+.2f})"
@@ -321,12 +335,25 @@ class _DynBaseLoad(_BaseLoad):
             raise TypeError(f"Multiplier for component '{comp}' must be a LoadMultiplier instance.")
         self._mult[comp] = multiplier_obj
 
+    def _init_multiplier(self, allowed: set, multiplier: Optional[Dict[str, LoadMultiplier]]) -> None:
+        self._mult: Dict[str, LoadMultiplier] = {}
+        if multiplier is None:
+            return
+        if not isinstance(multiplier, dict):
+            raise TypeError("multiplier must be a dictionary of LoadMultiplier objects.")
+        for k, v in multiplier.items():
+            if k not in allowed:
+                raise ValueError(f"Invalid multiplier key '{k}'. Allowed: {sorted(allowed)}")
+            if not isinstance(v, LoadMultiplier):
+                raise TypeError(f"Multiplier for '{k}' must be a LoadMultiplier.")
+            self._mult[k] = v
+
     def _mult_str(self) -> str: # Updated logic to show multiplier names
         if not self._mult:
             return ""
         # Example: "mult={Fx: LoadMultiplier_1, Fy: LoadMultiplier_2}"
-        mult_parts = [f"{comp}: {m.name}" for comp, m in self._mult.items()]
-        return f"mult={{{', '.join(mult_parts)}}}"
+        items = ", ".join(f"{k}: {v._name}" for k, v in self._mult.items())
+        return f" mult={{ {items} }}"
 
     @property
     def bind_obj(self):
@@ -361,6 +388,7 @@ class PointLoad(_BaseLoad):
         comment: str, 
         point: Point,
         stage: LoadStage = LoadStage.STATIC,
+        distribution: DistributionType = DistributionType.UNIFORM,
         Fx: float = 0.0,
         Fy: float = 0.0,
         Fz: float = 0.0,
@@ -379,18 +407,17 @@ class PointLoad(_BaseLoad):
             Mz (float): Bending moment in the z-direction [kN m].
         """
         super().__init__(
-            name,
-            comment,
-            stage,
-            DistributionType.UNIFORM,
-            Fx,
-            Fy,
-            Fz,
-            Mx,
-            My,
-            Mz,
+            name=name,
+            comment=comment,
+            stage=stage,
+            distribution=distribution,
+            Fx=Fx,
+            Fy=Fy,
+            Fz=Fz,
+            Mx=Mx,
+            My=My,
+            Mz=Mz
         )
-        super().__init__(name, comment, stage, DistributionType.UNIFORM, Fx, Fy, Fz, Mx, My, Mz)
         if not isinstance(point, Point):
             raise TypeError("PointLoad requires a Point object for 'point'.")
         self._point = point
@@ -401,12 +428,11 @@ class PointLoad(_BaseLoad):
         return self._point
 
     # ----- representation ----------------------------------------------
-    def __repr__(self):
-        # Assuming _point has a get_point() method or similar for representation
-        point_repr = self._point.get_point() if hasattr(self._point, 'get_point') else str(self._point)
+    def __repr__(self) -> str:
         return (
-            f"<plx.structures.PointLoad {self._name}: {self._force_str()}, {self._moment_str()}, "
-            f"{self._stage.value} @ {point_repr}>"
+            f"<PointLoad name='{self.name}' stage='{self._stage.value}' "
+            f"dist='{self._distribution.name}' {self._force_str()} "
+            f"at=({self._point.x:.2f}, {self._point.y:.2f}, {self._point.z:.2f})>"
         )
 
 class DynPointLoad(PointLoad, _DynBaseLoad):
@@ -414,17 +440,29 @@ class DynPointLoad(PointLoad, _DynBaseLoad):
 
     _MUL_KEYS: Tuple[str, ...] = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
 
-    def __init__(self, multiplier, *args, **kwargs):
-        mul_dict = kwargs.pop("multiplier", None)
-        self._mult = mul_dict.copy() if mul_dict else {}
-        # ensure stage is dynamic
-        kwargs["stage"] = LoadStage.DYNAMIC
+    def __init__(
+        self,
+        name: str,
+        comment: str,
+        point: Point,
+        Fx: float = 0.0,
+        Fy: float = 0.0,
+        Fz: float = 0.0,
+        Mx: float = 0.0,
+        My: float = 0.0,
+        Mz: float = 0.0,
+        multiplier: Optional[Dict[str, LoadMultiplier]] = None
+    ):
+        if multiplier is not None and not isinstance(multiplier, dict):
+            raise TypeError("multiplier must be a dictionary of LoadMultiplier objects.")
+        
+        super().__init__(name, comment, point=point, stage=LoadStage.DYNAMIC,
+                         Fx=Fx, Fy=Fy, Fz=Fz, Mx=Mx, My=My, Mz=Mz)
 
-        super().__init__(*args, **kwargs)
-        # validate multiplier keys - this loop now expects LoadMultiplier objects in _mult
-        # The _mult is initialized in _DynBaseLoad's __init__
-        for k, mul_obj in self._mult.items(): # Iterate over items to get both key and object
-            self.set_multiplier(k, mul_obj)  # will raise if key invalid or type invalid
+        self._mult: Dict[str, LoadMultiplier] = multiplier.copy() if multiplier else {}
+        for comp, mul_obj in self._mult.items():
+            self.set_multiplier(comp, mul_obj)
+
 
     # ----- multiplier key list -----------------------------------------
     def _allowed_mul_keys(self) -> Tuple[str, ...]:
@@ -452,7 +490,7 @@ class LineLoad(_BaseLoad):
         self,
         name: str,
         comment: str,
-        line: Any, # Assuming Line3D is from ..geometry, using Any for standalone code
+        line: Line3D, # Assuming Line3D is from ..geometry, using Any for standalone code
         distribution: DistributionType = DistributionType.UNIFORM,
         stage: LoadStage = LoadStage.STATIC,
         qx: float = 0.0,
@@ -461,7 +499,6 @@ class LineLoad(_BaseLoad):
         qx_end: float = 0.0,
         qy_end: float = 0.0,
         qz_end: float = 0.0,
-        
     ) -> None:
         """
         Args:
@@ -470,15 +507,14 @@ class LineLoad(_BaseLoad):
             qy (float): Load component in the y-direction [kN/m].
             qz (float): Load component in the z-direction [kN/m].
         """
-        # Assuming line object has a __len__ method
         if not isinstance(line, Line3D):
             raise TypeError("LineLoad requires a Line3D object for 'line'.")
-        if hasattr(line, '__len__') and len(line) < 2:
+        if len(line) < 2:
             raise ValueError("LineLoad requires at least two points.")
         if distribution not in (DistributionType.UNIFORM, DistributionType.LINEAR):
             raise ValueError("LineLoad supports only UNIFORM or LINEAR distribution.")
         super().__init__(name, comment, stage, distribution)
-        self._line = line
+        self._line: Line3D = line
         self._qx = qx
         self._qy = qy
         self._qz = qz
@@ -522,48 +558,61 @@ class LineLoad(_BaseLoad):
         return self._qz_end
 
     # ----- representation ----------------------------------------------
-    def __repr__(self):
-        # Assuming _line has a 'name' attribute or a good __repr__
-        line_repr = self._line.name if hasattr(self._line, 'name') else str(self._line)
-        return (
-            f"<plx.structures.LineLoad {self._name}: {self._force_str()}, {self._distribution.name}, "
-            f"{self._stage.value} @ {line_repr}>"
+    def __repr__(self) -> str:
+        base_info = (
+            f"<LineLoad name='{self.name}' stage='{self._stage.value}' "
+            f"dist='{self._distribution.name}' q=({self._Fx:.2f}, {self._Fy:.2f}, {self._Fz:.2f})"
         )
+        if self._distribution == DistributionType.LINEAR:
+            return (
+                f"{base_info} end=({self._Fx_end:.2f}, {self._Fy_end:.2f}, {self._Fz_end:.2f})>"
+            )
+        return f"{base_info}>"
 
 class DynLineLoad(LineLoad, _DynBaseLoad):
     """Distrubuted dynamic line load along a line (uniform or linear)."""
 
     _MUL_KEYS: Tuple[str, ...] = ("qx", "qy", "qz")
 
-    def __init__(self, *args, **kwargs):
-        kwargs["stage"] = LoadStage.DYNAMIC
-        super().__init__(*args, **kwargs)
-        # validate multiplier keys - this loop now expects LoadMultiplier objects in _mult
-        for k, mul_obj in self._mult.items():
-            self.set_multiplier(k, mul_obj)  # will raise if key invalid or type invalid
+    def __init__(
+        self,
+        name: str,
+        comment: str,
+        line: Line3D,
+        distribution: DistributionType = DistributionType.UNIFORM,
+        qx: float = 0.0,
+        qy: float = 0.0,
+        qz: float = 0.0,
+        qx_end: float = 0.0,
+        qy_end: float = 0.0,
+        qz_end: float = 0.0,
+        multiplier: Optional[Dict[str, LoadMultiplier]] = None
+    ):
+        if multiplier is not None and not isinstance(multiplier, dict):
+            raise TypeError("multiplier must be a dictionary of LoadMultiplier objects.")
+        
+        super().__init__(name, comment, line=line, distribution=distribution, stage=LoadStage.DYNAMIC,
+                         qx=qx, qy=qy, qz=qz, qx_end=qx_end, qy_end=qy_end, qz_end=qz_end)
+        
+        self._mult: Dict[str, LoadMultiplier] = multiplier.copy() if multiplier else {}
+        for comp, mul_obj in self._mult.items():
+            self.set_multiplier(comp, mul_obj)
 
     # ----- multiplier key list -----------------------------------------
     def _allowed_mul_keys(self) -> Tuple[str, ...]:
         return self._MUL_KEYS
     
     # ----- representation ----------------------------------------------
-    def __repr__(self) -> str: 
-        mult_info = self._mult_str() 
-        # Assuming _line has a 'name' attribute or a good __repr__
-        line_repr = self._line.name if hasattr(self._line, 'name') else str(self._line)
-        base_load_info = (
-            f"{self._name}: {self._force_str()}, "
-            f"{self._distribution.name}, {self._stage.value} @ {line_repr}"
+    def __repr__(self) -> str:
+        extra = ""
+        if self._distribution == DistributionType.LINEAR:
+            extra = f" end=({self._Fx_end:.2f}, {self._Fy_end:.2f}, {self._Fz_end:.2f})"
+        return (
+            f"<DynLineLoad name='{self.name}' stage='{self._stage.value}' "
+            f"dist='{self._distribution.name}' q=({self._Fx:.2f}, {self._Fy:.2f}, {self._Fz:.2f})"
+            f"{extra}>"
+            f"{self._mult_str()}"
         )
-        if mult_info:
-            final_repr = (
-                f"<plx.structures.DynLineLoad {base_load_info}, {mult_info}>"
-            )
-        else:
-            final_repr = (
-                f"<plx.structures.DynLineLoad {base_load_info}>"
-            )
-        return final_repr
     
 # =============================================================================
 #  Surface Load – distributed stresses (σ) with 3 multipliers (sigmax/sigmay/sigmaz)
@@ -667,11 +716,9 @@ class SurfaceLoad(_BaseLoad):
 
     # ------------------------------------------------------------------
     def __repr__(self) -> str:
-        # Assuming _surface has a 'name' attribute or a good __repr__
-        surface_repr = str(self._surface)
         return (
-            f"<plx.structures.SurfaceLoad {self._name}: {self._force_str()}, {self._distribution.name}, "
-            f"{self._stage.value} @ {surface_repr}>"
+            f"<SurfaceLoad name='{self.name}' stage='{self._stage.value}' "
+            f"dist='{self._distribution.name}' s=({self._Fx:.2f}, {self._Fy:.2f}, {self._Fz:.2f})>"
         )
 
 # =============================================================================

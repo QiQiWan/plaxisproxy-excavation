@@ -1,4 +1,4 @@
-from beammaterial import ElasticBeam, ElastoplasticBeam
+from .beammaterial import ElasticBeam, ElastoplasticBeam
 from enum import Enum, auto
 
 class LaterialResistanceType(Enum):

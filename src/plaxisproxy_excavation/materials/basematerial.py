@@ -2,10 +2,11 @@ from ..core.plaxisobject import PlaxisObject
 
 class BaseMaterial(PlaxisObject):
     
-    __slots__ = ("_id", "_plx_id", "_name", "type", "comment", "gamma", "E", "nu")
+    __slots__ = ("_id", "_plx_id", "_name", "_type", "_comment", "_gamma", "_E", "_nu")
 
     def __init__(self, name, type, comment, gamma, E, nu) -> None:
         super().__init__(name, comment)
+        # 使用内部属性名存储，避免与property冲突
         self._type = type
         self._comment = comment
         self._gamma = gamma

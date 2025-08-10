@@ -221,6 +221,8 @@ class Line3D(GeometryBase):
     def __init__(self, point_set: PointSet):
         if not isinstance(point_set, PointSet):
             raise TypeError("Line3D must be initialized with a PointSet instance.")
+        self._id = uuid.uuid4()
+        self._plx_id = None
         self._point_set = point_set
 
     # --------------- delegation ---------------------------------------

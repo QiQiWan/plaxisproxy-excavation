@@ -2,7 +2,7 @@ from typing import List, Any
 from ..geometry import Line3D
 from .basestructure import BaseStructure
 # Assuming PileMaterial is a defined class in the materials module
-from ..materials.pilematerial import ElasticPile
+from ..materials.pilematerial import ElasticPile, ElastoplasticPile
 
 class EmbeddedPile(BaseStructure):
     """
@@ -24,13 +24,11 @@ class EmbeddedPile(BaseStructure):
             ValueError: If the line does not have exactly two points.
         """
         super().__init__(name)
-        if not isinstance(line, Line3D):
-            raise TypeError("Embedded pile line must be a Line3D instance.")
-        if len(line) != 2:
-            raise ValueError("Embedded pile line must have exactly two points!")
+        if not isinstance(line, Line3D) or len(line) != 2:
+            raise ValueError("Line must be Line3D with exactly two points.")
         self._line = line
-        if not isinstance(pile_type, ElasticPile):
-            raise TypeError("pile_type must be an ElasticPile instance.")
+        if not isinstance(pile_type, (ElasticPile, ElastoplasticPile, str)):
+            raise TypeError("pile_type must be a PileMaterial or str.")
         self._pile_type = pile_type
 
 
@@ -53,4 +51,5 @@ class EmbeddedPile(BaseStructure):
         return self._line.length
 
     def __repr__(self) -> str:
-        return f"<plx.structures.EmbeddedPile name='{self.name}' type='{self._pile_type}'>"
+        t = self._pile_type if isinstance(self._pile_type, str) else self._pile_type.__class__.__name__
+        return f"<plx.structures.EmbeddedPile name='{self._name}' type='{t}'>"

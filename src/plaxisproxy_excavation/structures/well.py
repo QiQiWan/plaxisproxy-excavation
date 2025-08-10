@@ -22,9 +22,8 @@ class Well(BaseStructure):
             raise TypeError("Well line must be a Line3D instance.")
         if len(line) != 2:
             raise ValueError("Well line must have exactly two points (well top and bottom)!")
-        if not isinstance(well_type, WellType):
-            raise TypeError("well_type must be a WellType enum value.")
-        if not isinstance(well_type, WellType) or well_type not in (WellType.Extraction, WellType.Infiltration):
+
+        if well_type not in (WellType.Extraction, WellType.Infiltration):
             raise ValueError("well_type must be WellType.Extraction or WellType.Infiltration")
         if not isinstance(h_min, (int, float)):
             raise TypeError("h_min must be a numeric value.")
@@ -114,8 +113,6 @@ class Well(BaseStructure):
 
     @well_type.setter
     def well_type(self, value):
-        if not isinstance(value, WellType):
-            raise TypeError("well_type must be a WellType enum value.")
         if value not in (WellType.Extraction, WellType.Infiltration):
             raise ValueError("well_type must be WellType.Extraction or WellType.Infiltration")
         self._well_type = value
