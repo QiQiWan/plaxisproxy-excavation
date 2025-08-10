@@ -24,7 +24,7 @@ class Well(BaseStructure):
             raise ValueError("Well line must have exactly two points (well top and bottom)!")
         if not isinstance(well_type, WellType):
             raise TypeError("well_type must be a WellType enum value.")
-        if well_type not in (WellType.Extraction, WellType.Infiltration):
+        if not isinstance(well_type, WellType) or well_type not in (WellType.Extraction, WellType.Infiltration):
             raise ValueError("well_type must be WellType.Extraction or WellType.Infiltration")
         if not isinstance(h_min, (int, float)):
             raise TypeError("h_min must be a numeric value.")
@@ -134,4 +134,4 @@ class Well(BaseStructure):
         return self._line.get_points()
 
     def __repr__(self) -> str:
-        return f"<plx.structures.Well name='{self.name}' type='{self._well_type}'>"
+        return "<plx.structures.well>"

@@ -395,8 +395,6 @@ class PointLoad(_BaseLoad):
             raise TypeError("PointLoad requires a Point object for 'point'.")
         self._point = point
 
-
-
     # ----- properties ---------------------------------------------------
     @property
     def point(self):
@@ -416,8 +414,12 @@ class DynPointLoad(PointLoad, _DynBaseLoad):
 
     _MUL_KEYS: Tuple[str, ...] = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, multiplier, *args, **kwargs):
+        mul_dict = kwargs.pop("multiplier", None)
+        self._mult = mul_dict.copy() if mul_dict else {}
+        # ensure stage is dynamic
         kwargs["stage"] = LoadStage.DYNAMIC
+
         super().__init__(*args, **kwargs)
         # validate multiplier keys - this loop now expects LoadMultiplier objects in _mult
         # The _mult is initialized in _DynBaseLoad's __init__
