@@ -29,20 +29,9 @@ class SoilBlock(PlaxisObject):
             geometry (Optional[...], optional): The geometric definition of the soil volume.
         """
         super().__init__(name, comment)
-        if material is not None and not isinstance(material, BaseSoilMaterial):
-            raise TypeError("material must be a BaseSoilMaterial instance or None.")
-        if geometry is not None:
-            if isinstance(geometry, list):
-                for point in geometry:
-                    if not (isinstance(point, (tuple, list)) and len(point) == 3 and 
-                            all(isinstance(coord, (int, float)) for coord in point)):
-                        raise ValueError("Each coordinate must be a tuple of three numbers.")
-            elif not isinstance(geometry, (Polyhedron, Polygon3D)):
-                raise TypeError("geometry must be a Polyhedron, Polygon3D, or list of point tuples.")
-        self._material = material
+        self._material = self._coerce_material(material)
         self._geometry = geometry
         self._plx_volume_id: Optional[str] = None
-
 
     # ----------------- Properties & Methods -----------------
     @property

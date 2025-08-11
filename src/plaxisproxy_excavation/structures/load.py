@@ -302,7 +302,6 @@ class _DynBaseLoad(_BaseLoad):
 
     def __init__(
         self, 
-        bind_obj, 
         multiplier: Optional[Dict[str, LoadMultiplier]] = None, # Updated type hint
         *args, 
         **kwargs
@@ -311,7 +310,6 @@ class _DynBaseLoad(_BaseLoad):
             raise TypeError("multiplier must be a dictionary of LoadMultiplier objects.")
         kwargs["stage"] = LoadStage.DYNAMIC
         super().__init__(*args, **kwargs)
-        self._bind_obj = bind_obj
         self._mult: Dict[str, LoadMultiplier] = multiplier.copy() if multiplier else {}
 
     # ------------------------------------------------------------------
@@ -354,14 +352,6 @@ class _DynBaseLoad(_BaseLoad):
         # Example: "mult={Fx: LoadMultiplier_1, Fy: LoadMultiplier_2}"
         items = ", ".join(f"{k}: {v._name}" for k, v in self._mult.items())
         return f" mult={{ {items} }}"
-
-    @property
-    def bind_obj(self):
-        return self._bind_obj
-    
-    @bind_obj.setter
-    def bind_obj(self, value):
-        self._bind_obj = value
 
     @property
     def mult(self):
@@ -432,10 +422,11 @@ class PointLoad(_BaseLoad):
         return (
             f"<PointLoad name='{self.name}' stage='{self._stage.value}' "
             f"dist='{self._distribution.name}' {self._force_str()} "
-            f"at=({self._point.x:.2f}, {self._point.y:.2f}, {self._point.z:.2f})>"
+            f"at=({self._point.x:.1f}, {self._point.y:.1f}, {self._point.z:.1f})>"
         )
 
-class DynPointLoad(PointLoad, _DynBaseLoad):
+
+class DynPointLoad(PointLoad):
     """DynPointLoad is a extra object to bind a general point load"""
 
     _MUL_KEYS: Tuple[str, ...] = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
@@ -459,25 +450,36 @@ class DynPointLoad(PointLoad, _DynBaseLoad):
         super().__init__(name, comment, point=point, stage=LoadStage.DYNAMIC,
                          Fx=Fx, Fy=Fy, Fz=Fz, Mx=Mx, My=My, Mz=Mz)
 
-        self._mult: Dict[str, LoadMultiplier] = multiplier.copy() if multiplier else {}
-        for comp, mul_obj in self._mult.items():
-            self.set_multiplier(comp, mul_obj)
+        self._mult: Dict[str, LoadMultiplier] = {}
+        if multiplier is not None:
+            if not isinstance(multiplier, dict):
+                raise TypeError("multiplier must be a dictionary of LoadMultiplier objects.")
+            for key, val in multiplier.items():
+                self.set_multiplier(key, val)
 
+    def multiplier(self, comp: str) -> Optional[LoadMultiplier]: # Updated return type
+        """Return multiplier LoadMultiplier object for component."""
+        return self._mult.get(comp)
+
+    def set_multiplier(self, key: str, value: LoadMultiplier) -> None:
+        if key not in self._MUL_KEYS:
+            raise ValueError(f"Invalid multiplier key '{key}'. Allowed: {sorted(self._MUL_KEYS)}")
+        if not isinstance(value, LoadMultiplier):
+            raise TypeError(f"Multiplier for '{key}' must be a LoadMultiplier.")
+        self._mult[key] = value
 
     # ----- multiplier key list -----------------------------------------
     def _allowed_mul_keys(self) -> Tuple[str, ...]:
         return self._MUL_KEYS
 
     def __repr__(self) -> str:
-        mult_info = self._mult_str()
-        # Assuming _point has a get_point() method or similar for representation
-        point_repr = self._point.get_point() if hasattr(self._point, 'get_point') else str(self._point)
-        return (
-            f"<plx.structures.DynPointLoad {self._name}: "
-            f"{self._force_str()}, {self._moment_str()}, "
-            f"{self._stage.value} @ {point_repr}"
-            f"{', ' + mult_info if mult_info else ''}>"
-        )
+        base = (f"<DynPointLoad name='{self.name}' stage='{self._stage.value}' "
+                f"dist='{self._distribution.name}' {self._force_str()} "
+                f"at=({self._point.x:.1f}, {self._point.y:.1f}, {self._point.z:.1f})>")
+        if self._mult:
+            parts = [f"{k}: {v.name}" for k, v in self._mult.items()]
+            return f"{base} mult={{ {'; '.join(parts)} }}"
+        return base
 
 # =============================================================================
 #  Line Load – distributed forces (q) with 3 multipliers (qx/qy/qz)
@@ -569,7 +571,7 @@ class LineLoad(_BaseLoad):
             )
         return f"{base_info}>"
 
-class DynLineLoad(LineLoad, _DynBaseLoad):
+class DynLineLoad(LineLoad):
     """Distrubuted dynamic line load along a line (uniform or linear)."""
 
     _MUL_KEYS: Tuple[str, ...] = ("qx", "qy", "qz")
@@ -591,17 +593,43 @@ class DynLineLoad(LineLoad, _DynBaseLoad):
         if multiplier is not None and not isinstance(multiplier, dict):
             raise TypeError("multiplier must be a dictionary of LoadMultiplier objects.")
         
-        super().__init__(name, comment, line=line, distribution=distribution, stage=LoadStage.DYNAMIC,
-                         qx=qx, qy=qy, qz=qz, qx_end=qx_end, qy_end=qy_end, qz_end=qz_end)
+        LineLoad.__init__(
+            self, name, comment, line,
+            stage=LoadStage.DYNAMIC,
+            distribution=distribution,
+            qx=qx, qy=qy, qz=qz,
+            qx_end=qx_end, qy_end=qy_end, qz_end=qz_end
+        )
         
-        self._mult: Dict[str, LoadMultiplier] = multiplier.copy() if multiplier else {}
-        for comp, mul_obj in self._mult.items():
-            self.set_multiplier(comp, mul_obj)
+        self._mult: Dict[str, LoadMultiplier] = {}
+        if multiplier is not None:
+            if not isinstance(multiplier, dict):
+                raise TypeError("multiplier must be a dictionary of LoadMultiplier objects.")
+            for key, val in multiplier.items():
+                self.set_multiplier(key, val)
+
+    def multiplier(self, comp: str) -> Optional[LoadMultiplier]: # Updated return type
+        """Return multiplier LoadMultiplier object for component."""
+        return self._mult.get(comp)
+
+    def set_multiplier(self, key: str, value: LoadMultiplier) -> None:
+        if key not in self._MUL_KEYS:
+            raise ValueError(f"Invalid multiplier key '{key}'. Allowed: {sorted(self._MUL_KEYS)}")
+        if not isinstance(value, LoadMultiplier):
+            raise TypeError(f"Multiplier for '{key}' must be a LoadMultiplier.")
+        self._mult[key] = value
 
     # ----- multiplier key list -----------------------------------------
     def _allowed_mul_keys(self) -> Tuple[str, ...]:
         return self._MUL_KEYS
     
+    def _mult_str(self) -> str: # Updated logic to show multiplier names
+        if not self._mult:
+            return ""
+        # Example: "mult={Fx: LoadMultiplier_1, Fy: LoadMultiplier_2}"
+        items = ", ".join(f"{k}: {v._name}" for k, v in self._mult.items())
+        return f" mult={{ {items} }}"
+
     # ----- representation ----------------------------------------------
     def __repr__(self) -> str:
         extra = ""
@@ -660,10 +688,10 @@ class SurfaceLoad(_BaseLoad):
                 distributions are calculated. [m]
         """
         # Assuming surface object has as_tuple_list method
+        if hasattr(surface, "as_tuple_list") and not callable(getattr(surface, "as_tuple_list")):
+            raise ValueError("Surface polygon object must implement as_tuple_list().")
         if not isinstance(surface, Polygon3D):
             raise TypeError("surface must be a Polygon3D instance.")
-        if not hasattr(surface, "as_tuple_list") or not callable(surface.as_tuple_list):
-            raise ValueError("Surface polygon object must implement as_tuple_list().")
         super().__init__(name, comment, stage, distribution, gradients=gradients, ref_point=ref_point)
         self._surface = surface
         self._sigmax = sigmax

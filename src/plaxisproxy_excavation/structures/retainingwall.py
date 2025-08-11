@@ -38,5 +38,5 @@ class RetainingWall(BaseStructure):
         return self._plate_type
 
     def __repr__(self) -> str:
-        p = self._plate_type if isinstance(self._plate_type, str) else self._plate_type.__class__.__name__
-        return f"<plx.structures.RetainingWall name='{self._name}' plate='{p}'>"
+        p = self._plate_type if isinstance(self._plate_type, str) else getattr(self._plate_type, 'name', type(self._plate_type).__name__)
+        return f"<plx.structures.RetainingWall name='{self.name}' type='{p}'>"
