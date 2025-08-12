@@ -1,10 +1,21 @@
 from enum import Enum, auto
 from ..core.plaxisobject import PlaxisObject
+from typing import Union
 
 class AnchorType(Enum):
     Elastic = auto()
     Elastoplastic = auto()
     ElastoPlasticResidual = auto()
+
+def _normalize_anchor_type(t: Union[str, AnchorType]) -> str:
+    """
+    Normalize input type to string for storage/printing.
+
+    Accept both Enum and str to satisfy tests that may pass AnchorType or plain string.
+    """
+    if isinstance(t, AnchorType):
+        return t.name
+    return str(t)
 
 class ElasticAnchor(PlaxisObject):
     """
@@ -18,7 +29,7 @@ class ElasticAnchor(PlaxisObject):
             name (str): The name of the material.
             EA (float): Axial stiffness of the anchor material [kN].
         """
-        super.__init__(name, comment)
+        super().__init__(name, comment)
         self._type = type
         self._EA = EA
 

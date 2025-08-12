@@ -10,7 +10,7 @@ class ElasticPile(ElasticBeam):
     
     def __init__(self, name, type, comment, gamma, E, nu, cross_section, len1, len2,
                  laterial_type: LaterialResistanceType, fric_table_Tmax, F_max, **kwargs) -> None:
-        super().__init__(name, type, comment, gamma, E, nu, cross_section, len1, len2)
+        ElasticBeam.__init__(self, name, type, comment, gamma, E, nu, cross_section, len1, len2)
 
         self._laterial_type = laterial_type
         self._fric_table_Tmax = fric_table_Tmax
@@ -38,12 +38,42 @@ class ElastoplasticPile(ElasticPile, ElastoplasticBeam):
 
     def __init__(self, name, type, comment, gamma, E, nu, cross_section, len1, len2,
                  laterial_type, fric_table_Tmax, F_max, sigma_y, yield_dir):
-        super().__init__(
+        
+        ElasticPile.__init__(self, 
             name=name, type=type, comment=comment, gamma=gamma, E=E, nu=nu,
             cross_section=cross_section, len1=len1, len2=len2,
-            laterial_type=laterial_type, fric_table_Tmax=fric_table_Tmax, F_max=F_max,
-            sigma_y=sigma_y, yield_dir=yield_dir
+            laterial_type=laterial_type, fric_table_Tmax=fric_table_Tmax, F_max=F_max
         )
+
+        ElastoplasticBeam.__init__(
+            self,
+            name=name,
+            type=type,
+            comment=comment,
+            gamma=gamma,
+            E=E,
+            nu=nu,
+            cross_section=cross_section,
+            len1=len1,
+            len2=len2,
+            sigma_y=sigma_y,
+            yield_dir=yield_dir,
+        )
+
+        if not isinstance(sigma_y, (int, float)):
+            raise TypeError("sigma_y must be a number.")
+        if not isinstance(yield_dir, str):
+            raise TypeError("yield_dir must be a string.")
+        self._sigma_y = float(sigma_y)
+        self._yield_dir = yield_dir
+
+    @property
+    def sigma_y(self) -> float:
+        return self._sigma_y
+
+    @property
+    def yield_dir(self) -> str:
+        return self._yield_dir
 
     def __repr__(self) -> str:
         return f"<plx.materials.elastoplastic_pile>"

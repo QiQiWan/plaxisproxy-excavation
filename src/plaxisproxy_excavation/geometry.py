@@ -45,7 +45,7 @@ class GeometryBase:
     
     @plx_id.setter
     def plx_id(self, value):
-        self.plx_id = value
+        self._plx_id = value
 
     @staticmethod
     def _uuid_to_str(u: uuid.UUID | None) -> str | None:
@@ -250,6 +250,47 @@ class Line3D(GeometryBase):
         # Check for at least 3 unique points (excluding the closing point)
         return len({(p.x, p.y) for p in pts[:-1]}) >= 3
 
+    def as_tuple_list(self) -> List[Tuple[float, float, float]]:
+        """
+        Return a list of (x, y, z) float tuples for this Line3D.
+
+        This is tolerant to different point representations:
+        - plx.geometry.Point objects
+        - objects exposing get_point() -> (x, y, z)
+        - objects with attributes x, y, z
+        - any iterable of length 3
+
+        Raises
+        ------
+        TypeError: if a point is of unsupported type or coordinates are non-numeric.
+        ValueError: if a point does not provide exactly 3 coordinates.
+        """
+        tuples: List[Tuple[float, float, float]] = []
+        for p in self._point_set.get_points():
+            if isinstance(p, Point):
+                x, y, z = p.x, p.y, p.z
+            # elif hasattr(p, "get_point") and callable(p.get_point):
+            #     x, y, z = p.get_point()
+            elif hasattr(p, "x") and hasattr(p, "y") and hasattr(p, "z"):
+                x, y, z = p.x, p.y, p.z
+            else:
+                try:
+                    x, y, z = tuple(p)
+                except Exception as exc:
+                    raise TypeError("Unsupported point type in Line3D.") from exc
+
+            if (x, y, z) is None or (len((x, y, z)) != 3):
+                raise ValueError("Each point must provide exactly 3 coordinates (x, y, z).")
+
+            try:
+                fx, fy, fz = float(x), float(y), float(z)
+            except Exception as exc:
+                raise TypeError("Point coordinates must be numeric.") from exc
+
+            tuples.append((fx, fy, fz))
+
+        return tuples
+
     def to_shapely(self):
         """Return *shapely.geometry.LineString* projected to XY plane."""
         if not _SHAPELY_AVAILABLE:
@@ -349,6 +390,15 @@ class Polygon3D(GeometryBase):
         
         self.update_points()
 
+        outer_points = self._lines[0].as_tuple_list() if hasattr(
+            self._lines[0], "as_tuple_list") else list(self._lines[0])
+
+        if len(outer_points) < 3:
+            raise ValueError("Polygon3D requires at least 3 points for the outer ring.")
+
+        if not self._is_coplanar(outer_points):
+            raise ValueError("Polygon3D rings must be coplanar.")
+        
         # Validation for all rings
         for i, ln in enumerate(self._lines):
             if not ln.is_valid_ring():
@@ -439,6 +489,45 @@ class Polygon3D(GeometryBase):
         if _SHAPELY_AVAILABLE:
             return self.to_shapely().is_valid
         return all(ln.is_valid_ring() for ln in self._lines)
+    
+    def _vector_sub(self, a, b):
+        return (a[0]-b[0], a[1]-b[1], a[2]-b[2])
+
+    def _cross(self, a, b):
+        return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+
+    def _dot(self, a, b):
+        return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+
+    def _norm(self, a):
+        return math.sqrt(self._dot(a, a))
+
+    def _is_coplanar(self, points, tol=1e-8):
+        # 取前三个不共线点
+        if len(points) < 3:
+            return False
+        p0 = points[0]
+        # 找到非共线的三个点
+        n = None
+        for i in range(1, len(points)-1):
+            v1 = self._vector_sub(points[i], p0)
+            for j in range(i+1, len(points)):
+                v2 = self._vector_sub(points[j], p0)
+                n_candidate = self._cross(v1, v2)
+                if self._norm(n_candidate) > tol:
+                    n = n_candidate
+                    break
+            if n is not None:
+                break
+        if n is None:
+            # All points are collinear, regarded as an invalid polygonal face.
+            return False
+        # Calculate the distance from all points to the plane (using point multiplication for approximation)
+        for k in range(1, len(points)):
+            vk = self._vector_sub(points[k], p0)
+            if abs(self._dot(n, vk)) > tol:
+                return False
+        return True
 
     # ---------------- container --------------------------------------
     def get_lines(self) -> List[Line3D]:
@@ -512,7 +601,6 @@ class Volume(GeometryBase):
 
     def __init__(self):
         self._id = uuid.uuid4()
-        self._plx_id = None
         self._faces = []
 
     def get_faces(self) -> List["Polygon3D"]:
@@ -578,7 +666,7 @@ class Cube(Volume):
     def to_dict(self) -> Dict[str, Any]:
         return {
             "type": "Cube",
-            "id": self._uuid_to_str(self._id),
+            "id": self._uuid_to_str(getattr(self, "_id", None)),
             "plx_id": self._plx_id,
             "min_point": self._min_point.to_dict(),
             "max_point": self._max_point.to_dict()

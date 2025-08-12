@@ -3,7 +3,7 @@ from enum import Enum, auto
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Union, Any
 from ..core.plaxisobject import PlaxisObject
-from watertable import WaterLevelTable
+from .watertable import WaterLevelTable
 from ..structures.soilblock import SoilBlock
 
 # ----------------------------------------------------------------------

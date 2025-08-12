@@ -9,7 +9,7 @@ class SoilBlock(PlaxisObject):
     """Represents a soil volume, associating a geometry with a soil material."""
 
     # Version number for serialization purposes.
-    _SERIAL_VERSION: int = 1
+    _SERIAL_VERSION: int = 1 
 
     # ----------------- Constructor -----------------
     def __init__(
