@@ -35,10 +35,17 @@ class Units:
         N = "N"
         KN = "kN"
 
+    class Stress(Enum):
+        PA = "Pa"
+        KPA = "kPa"
+        MPA = "MPa"
+        GPA = "GPa"
+
     class Time(Enum):
         S = "s"
         MIN = "min"
         H = "h"
+        DAY = "day"
 
 
 class ProjectInformation(SerializableBase):
@@ -63,7 +70,8 @@ class ProjectInformation(SerializableBase):
         model: str,
         element: str,
         length_unit: Units.Length,
-        internal_force_unit: Units.Force,
+        force_unit: Units.Force,
+        stress_unit: Units.Stress,
         time_unit: Units.Time,
         gamma_water: float,
         x_min: float,
@@ -93,7 +101,8 @@ class ProjectInformation(SerializableBase):
         self._model = model
         self._element = element
         self._length_unit = length_unit
-        self._internal_force_unit = internal_force_unit
+        self._force_unit = force_unit
+        self._stress_unit = stress_unit
         self._time_unit = time_unit
         self._gamma_water = float(gamma_water)
         self._x_min = float(x_min)
@@ -112,26 +121,83 @@ class ProjectInformation(SerializableBase):
         Returns:
             ProjectInformation: An instance of the ProjectInformation class.
         """
-        # Create a copy to avoid modifying the original dictionary
-        constructor_args = data.copy()
+        units_block = data.get("units", {}) or {}
 
-        # Convert unit strings back to Enum members
-        constructor_args['length_unit'] = Units.Length(constructor_args['length_unit'])
-        constructor_args['internal_force_unit'] = Units.Force(constructor_args['internal_force_unit'])
-        constructor_args['time_unit'] = Units.Time(constructor_args['time_unit'])
+        def parse_enum(val, enum_cls, default):
+            if val is None:
+                return default
+            if isinstance(val, enum_cls):
+                return val
+            if isinstance(val, str):
+                s = val.strip()
+                if hasattr(enum_cls, s):
+                    try:
+                        return getattr(enum_cls, s)
+                    except Exception:
+                        pass
+                try:
+                    return enum_cls(s)
+                except Exception:
+                    pass
+            try:
+                return enum_cls(val)
+            except Exception:
+                return default
 
-        # Store the id to be set after instantiation
-        instance_id = constructor_args.pop('id', None)
+        length_unit = parse_enum(
+            data.get("length_unit", units_block.get("length")),
+            Units.Length, Units.Length.M
+        )
+        force_unit = parse_enum(
+            data.get("force_unit", units_block.get("force")),
+            Units.Force, Units.Force.KN
+        )
+        stress_unit = parse_enum(
+            data.get("stress_unit", units_block.get("stress")),
+            Units.Stress, Units.Stress.KPA
+        )
+        time_unit = parse_enum(
+            data.get("time_unit", units_block.get("time")),
+            Units.Time, Units.Time.DAY
+        )
 
-        # Create the instance
-        instance = cls(**constructor_args)
+        # ---- 关键修复：dir 的容错读取 + 非空默认值 ----
+        dir_val = (
+            data.get("dir")
+            or data.get("project_dir")
+            or data.get("directory")
+            or "."
+        )
 
-        # Set the id from the original data
-        if instance_id:
-            instance._id = uuid.UUID(instance_id)
+        # 其余必填字段给出稳妥默认（按你的 __init__ 需要增减）
+        str_default = "C://example_project"
+        gamma_water_default = 10.0
+        x_min_default = 0.0
+        y_min_default = 0.0
+        x_max_default = 80.0
+        y_max_default = 80.0
 
-        return instance
+        constructor_args: Dict[str, Any] = {
+            "title":       data.get("title", str_default),
+            "company":     data.get("company", str_default),
+            "dir":         dir_val,                 # <- 不再为空
+            "file_name":   data.get("file_name", str_default),
+            "comment":     data.get("comment", str_default),
+            "model":       data.get("model", str_default),
+            "element":     data.get("element", str_default),
+            "gamma_water": float(data.get("gamma_water", gamma_water_default)),
+            "x_min":       float(data.get("x_min", x_min_default)),
+            "x_max":       float(data.get("x_max", x_max_default)),
+            "y_min":       float(data.get("y_min", y_min_default)),
+            "y_max":       float(data.get("y_max", y_max_default)),
+            "length_unit": length_unit,
+            "force_unit":  force_unit,
+            "stress_unit": stress_unit,
+            "time_unit":   time_unit,
+        }
 
+        return cls(**constructor_args)
+    
     # ------------------------------------------------------------------
     # Convenience helpers
     # ------------------------------------------------------------------
@@ -151,7 +217,8 @@ class ProjectInformation(SerializableBase):
             "model": self._model,
             "element": self._element,
             "length_unit": self._length_unit.value,
-            "internal_force_unit": self._internal_force_unit.value,
+            "stress_unit": self._stress_unit,
+            "force_unit": self._force_unit.value,
             "time_unit": self._time_unit.value,
             "gamma_water": self._gamma_water,
             "x_min": self._x_min,
@@ -209,8 +276,12 @@ class ProjectInformation(SerializableBase):
         return self._length_unit
 
     @property
-    def internal_force_unit(self):
-        return self._internal_force_unit
+    def force_unit(self):
+        return self._force_unit
+
+    @property
+    def stress_unit(self):
+        return self._stress_unit
 
     @property
     def time_unit(self):

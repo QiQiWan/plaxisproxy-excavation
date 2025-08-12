@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional
 # CORRECTED: Relative import path changed from 3 dots to 4 dots to correctly 
 # navigate from src/plaxisproxy_excavation/plaxishelper/ up to the root and then
 # into third_party/.
-from ....third_party.plxscripting.server import Server
+from plaxisproxy_excavation.third_party.plxscripting.server import Server
 from ....third_party.plxscripting.connection import HttpConnection
 from ....third_party.plxscripting.plxproxyfactory import PlxProxyFactory
 from ....third_party.plxscripting.tokenizer import PlxTokenizer

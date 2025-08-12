@@ -28,8 +28,9 @@ except ModuleNotFoundError:
 
 class GeometryBase:
     
-    _id: uuid.UUID = uuid.uuid4()
-    _plx_id: Optional[str] = None
+    def __init__(self) -> None:
+        self._id: uuid.UUID = uuid.uuid4()
+        self._plx_id: Optional[str] = None
 
     @property
     def id(self):
@@ -382,7 +383,9 @@ class Polygon3D(GeometryBase):
 
     __slots__ = ("_id", "_plx_id", "_lines", "_point_set")
 
-    def __init__(self, lines: Optional[List[Line3D]] = None):
+    def __init__(self, lines: Optional[List[Line3D]] = None, require_horizontal: bool = True):
+
+        super().__init__()
         self._lines: List[Line3D] = lines if lines else []
 
         if not self._lines:
@@ -404,56 +407,188 @@ class Polygon3D(GeometryBase):
             if not ln.is_valid_ring():
                 raise ValueError(f"Ring at index {i} is invalid - must be closed with ≥3 unique planar points.")
         
-        # Check if all rings are co-planar
-        self._check_coplanar()
+        # Check if all rings are co-planar 
+        for idx, ln in enumerate(self._lines):
+            self._validate_ring(ln, idx)
+        self._check_coplanar_general()
+
+        # Coplanarity verification (second modes)
+        if require_horizontal:
+            self._check_constant_z()
+        else:
+            self._check_coplanar_general()
 
     def _check_coplanar(self) -> None:
-        """Internal check to ensure all rings are on the same plane."""
-        if len(self._lines) == 0:
+        """Ensure all rings lie on the same plane. Raise ValueError if degenerate or non-coplanar."""
+        if not getattr(self, "_lines", None):
             return
-        
-        # Use the first 3 points of the outer ring to define a plane
-        p1, p2, p3 = self._lines[0][0], self._lines[0][1], self._lines[0][2]
-        
-        # Calculate the normal vector of the plane
-        vec_a = (p2.x - p1.x, p2.y - p1.y, p2.z - p1.z)
-        vec_b = (p3.x - p1.x, p3.y - p1.y, p3.z - p1.z)
-        normal = (
-            vec_a[1] * vec_b[2] - vec_a[2] * vec_b[1],
-            vec_a[2] * vec_b[0] - vec_a[0] * vec_b[2],
-            vec_a[0] * vec_b[1] - vec_a[1] * vec_b[0]
-        )
-        
-        # Equation of the plane: A*x + B*y + C*z = D
-        D = normal[0] * p1.x + normal[1] * p1.y + normal[2] * p1.z
-        
-        # Check all points in all rings against this plane
+
+        outer = self._lines[0].get_points()
+        if len(outer) < 3:
+            raise ValueError("Polygon3D outer ring must have at least 3 points.")
+
+        tol = 1e-9
+
+        def vsub(a, b):
+            return (a.x - b.x, a.y - b.y, a.z - b.z)
+
+        def cross(u, v):
+            return (u[1]*v[2] - u[2]*v[1],
+                    u[2]*v[0] - u[0]*v[2],
+                    u[0]*v[1] - u[1]*v[0])
+
+        def dot_u_p(u, p):
+            return u[0]*p.x + u[1]*p.y + u[2]*p.z
+
+        def norm(u):
+            return (u[0]*u[0] + u[1]*u[1] + u[2]*u[2]) ** 0.5
+
+        # 1) Find any three points that are not collinear in the outer ring to determine the normal vector.
+        p0 = outer[0]
+        normal = None
+        for i in range(1, len(outer) - 1):
+            v1 = vsub(outer[i], p0)
+            for j in range(i + 1, len(outer)):
+                v2 = vsub(outer[j], p0)
+                n = cross(v1, v2)
+                if norm(n) > tol:
+                    normal = n
+                    break
+            if normal is not None:
+                break
+
+        if normal is None:
+            # The outer ring is completely collinear / degenerated
+            raise ValueError("Polygon3D outer ring is degenerate (all points are collinear).")
+
+        D = dot_u_p(normal, p0)
+
+        # 2) Verify that all rings and all points are within this plane.
         for ln in self._lines:
-            for p in ln:
-                if not math.isclose(normal[0] * p.x + normal[1] * p.y + normal[2] * p.z, D, abs_tol=1e-9):
-                    raise ValueError("All points in a Polygon3D must be co-planar.")
+            for p in ln.get_points():
+                if not math.isclose(dot_u_p(normal, p), D, abs_tol=1e-8):
+                    raise ValueError("Polygon3D rings must be coplanar.")
                 
     def as_tuple_list(self) -> List[Tuple[float, float, float]]:
         """Return all vertex coordinates as a list of (x, y, z) tuples."""
         if not self._lines:
             return []
         return [p.get_point() for p in self.get_all_points()]
+    
+    def _ring_core_points(self, ln) -> List["Point"]:
+        """Return the list of core points after removing the repeated ending points."""
+        pts = ln.get_points()
+        # Assuming that Line3D.is_closed() ensures that the starting and ending points coincide
+        return pts[:-1] if len(pts) >= 2 else pts
+    
+    def _validate_ring(self, ln, idx: int, tol: float = 1e-12) -> None:
+        """The ring must be closed, have at least 3 unique points, and not be collinear. Failure will result in raising a ValueError."""
+        pts = ln.get_points()
+        if not ln.is_closed():
+            raise ValueError(f"Ring {idx} must be closed.")
+        core = self._ring_core_points(ln)
+        if len(core) < 3:
+            raise ValueError(f"Ring {idx} must contain at least 3 points.")
+        # The sole 3D point
+        uniq = {(p.x, p.y, p.z) for p in core}
+        if len(uniq) < 3:
+            raise ValueError(f"Ring {idx} is degenerate (<3 unique points).")
+        # Non-collinear: Attempt to find any three points that are not collinear.
+        if self._non_collinear_triplet(core, tol) is None:
+            raise ValueError(f"Ring {idx} is collinear and cannot form a polygon.")
+
+    def _non_collinear_triplet(self, pts: List["Point"], tol: float = 1e-12) -> Tuple[int, int, int] | None:
+        """Search for any three points within the set that are not collinear, and return their index triple; if no such points exist, return None."""
+        def vsub(a, b): return (a.x - b.x, a.y - b.y, a.z - b.z)
+        def cross(u, v): return (u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0])
+        def norm(u): return (u[0]*u[0] + u[1]*u[1] + u[2]*u[2]) ** 0.5
+
+        n = len(pts)
+        for i in range(n-2):
+            for j in range(i+1, n-1):
+                v1 = vsub(pts[j], pts[i])
+                for k in range(j+1, n):
+                    v2 = vsub(pts[k], pts[i])
+                    nvec = cross(v1, v2)
+                    if norm(nvec) > tol:
+                        return (i, j, k)
+        return None
+
+    def _fit_plane_from_outer(self, tol: float = 1e-12):
+        """
+        Use the outer ring to find three non-collinear points to fit a plane, and return (p0, nvec).
+        If the outer ring is degenerate (no non-collinear points can be found), raise a ValueError.
+        """
+        outer_core = self._ring_core_points(self._lines[0])
+        idxs = self._non_collinear_triplet(outer_core, tol)
+        if idxs is None:
+            raise ValueError("Polygon3D outer ring is degenerate (collinear points).")
+        i, j, k = idxs
+        p0, p1, p2 = outer_core[i], outer_core[j], outer_core[k]
+
+        # 法向
+        def vsub(a, b): return (a.x - b.x, a.y - b.y, a.z - b.z)
+        def cross(u, v): return (u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0])
+        nvec = cross(vsub(p1, p0), vsub(p2, p0))
+        return p0, nvec
+
+    def _point_plane_distance(self, p: "Point", p0: "Point", nvec) -> float:
+        """The distance from the point (p0, nvec) to the plane; nvec does not need to be normalized."""
+        nx, ny, nz = nvec
+        denom = (nx*nx + ny*ny + nz*nz) ** 0.5
+        if denom == 0.0:
+            return float("inf")
+        return abs((p.x - p0.x) * nx + (p.y - p0.y) * ny + (p.z - p0.z) * nz) / denom
+
+    def _check_coplanar_general(self, tol_dist: float = 1e-9) -> None:
+        """
+        Use the outer ring fitting plane to check whether the distance from all points on all rings to the plane is <= tol_dist.
+        If any point exceeds this limit, raise a ValueError. Supports any inclined plane.
+        """
+        p0, nvec = self._fit_plane_from_outer()
+        for ln in self._lines:
+            for p in ln.get_points():
+                if self._point_plane_distance(p, p0, nvec) > tol_dist:
+                    raise ValueError("Polygon3D rings must be coplanar.")
+
+    def _check_constant_z(self, abs_tol: float = 1e-8) -> None:
+        if not self._lines:
+            return
+        ref_z = self._lines[0].get_points()[0].z
+        for ln in self._lines:
+            for p in ln.get_points():
+                if not math.isclose(p.z, ref_z, abs_tol=abs_tol):
+                    raise ValueError("Polygon3D rings must be horizontal (constant z).")
 
     @classmethod
-    def from_points(cls, point_set: PointSet):
-        """Create a Polygon3D from a single PointSet forming the outer boundary."""
+    def from_points(cls, point_set: PointSet) -> "Polygon3D":
         if len(point_set) < 3:
             raise ValueError("Need at least 3 points for a polygon boundary.")
+
         if not point_set.is_closed():
             pts = point_set.get_points()
-            point_set.add_point(pts[0].x, pts[0].y, pts[0].z)
-        return cls([Line3D(point_set)])
+            closed_ps = PointSet(pts + [Point(pts[0].x, pts[0].y, pts[0].z)])
+            return cls([Line3D(closed_ps)])
 
+        # 已闭合直接用
+        return cls([Line3D(point_set)])
+    
     # ---------------- mutation ---------------------------------------
     def add_hole(self, line: Line3D) -> None:
         """Add an inner hole (closed ring) to the polygon."""
         if not line.is_valid_ring():
             raise ValueError("Hole to add is an invalid ring.")
+
+        # 外环参考 z
+        if not self._lines:
+            raise ValueError("Polygon has no outer ring to compare hole plane.")
+        ref_z = self._lines[0].get_points()[0].z
+
+        # 孔洞必须与外环处于同一水平面（常量 z）
+        for p in line.get_points():
+            if not math.isclose(p.z, ref_z, abs_tol=1e-8):
+                raise ValueError("Hole ring must lie on the same horizontal plane as the outer ring.")
+
         self._lines.append(line)
         self.update_points()
 
@@ -595,12 +730,9 @@ class Volume(GeometryBase):
     Abstract base class for a 3D geometric volume.
     Represents a closed body in 3D space.
     """
-    _id: uuid.UUID
-    _plx_id: Optional[str]
-    _faces: List["Polygon3D"]
 
     def __init__(self):
-        self._id = uuid.uuid4()
+        super().__init__()
         self._faces = []
 
     def get_faces(self) -> List["Polygon3D"]:
@@ -612,8 +744,20 @@ class Volume(GeometryBase):
         raise NotImplementedError("Subclass must implement the volume() method.")
     
     def centroid(self) -> Point:
-        """Calculate the geometric centroid of the body."""
-        raise NotImplementedError("Subclass must implement the centroid() method.")
+        total_volume = self.volume()
+        # If the volume is almost zero, then return the average coordinates of all vertices.
+        if math.isclose(total_volume, 0.0, abs_tol=1e-9):
+            all_points = [p for face in self._faces for p in face.get_all_points()]
+            avg_x = sum(p.x for p in all_points) / len(all_points)
+            avg_y = sum(p.y for p in all_points) / len(all_points)
+            avg_z = sum(p.z for p in all_points) / len(all_points)
+            return Point(avg_x, avg_y, avg_z)
+        # When the volume is non-zero, more complex centroid algorithms can be implemented here. For now, the vertex average value is used as an approximation.
+        all_points = [p for face in self._faces for p in face.get_all_points()]
+        avg_x = sum(p.x for p in all_points) / len(all_points)
+        avg_y = sum(p.y for p in all_points) / len(all_points)
+        avg_z = sum(p.z for p in all_points) / len(all_points)
+        return Point(avg_x, avg_y, avg_z)
     
     def __repr__(self) -> str:
         # Updated repr format
@@ -748,37 +892,12 @@ class Polyhedron(Volume):
         
         total_volume = self.volume()
         if math.isclose(total_volume, 0.0, abs_tol=1e-9):
-            raise ValueError("Cannot calculate centroid of a zero-volume polyhedron.")
+            all_points = [p for face in self._faces for p in face.get_all_points()]
+            avg_x = sum(p.x for p in all_points) / len(all_points)
+            avg_y = sum(p.y for p in all_points) / len(all_points)
+            avg_z = sum(p.z for p in all_points) / len(all_points)
+            return Point(avg_x, avg_y, avg_z)
         
-        sum_x, sum_y, sum_z = 0.0, 0.0, 0.0
-        
-        # Pick an arbitrary origin point (e.g., the first point of the first face)
-        origin = self._faces[0][0][0]
-        
-        for face in self._faces:
-            # Create tetrahedra from origin to each face
-            face_centroid = Point(
-                sum(p.x for p in face.get_all_points()) / len(face.get_all_points()),
-                sum(p.y for p in face.get_all_points()) / len(face.get_all_points()),
-                sum(p.z for p in face.get_all_points()) / len(face.get_all_points())
-            )
-            
-            # Tetrahedra centroid
-            tetra_centroid_x = (origin.x + face_centroid.x) / 4
-            tetra_centroid_y = (origin.y + face_centroid.y) / 4
-            tetra_centroid_z = (origin.z + face_centroid.z) / 4
-            
-            # Need to get a tetrahedron volume using a cross-product based method
-            # This is complex. Let's simplify for now to illustrate the concept.
-            # The most robust method for general polyhedra is Green's Theorem-based,
-            # but this would require a major rewrite.
-            
-            # For a placeholder, we can just return a simple average of all points,
-            # but this is not a true centroid for non-uniform shapes.
-            # A more robust implementation is beyond the scope of a simple example,
-            # so we'll leave it as a conceptual placeholder.
-            pass
-            
         # Placeholder for a full centroid calculation.
         all_points = [p for face in self._faces for p in face.get_all_points()]
         avg_x = sum(p.x for p in all_points) / len(all_points)
