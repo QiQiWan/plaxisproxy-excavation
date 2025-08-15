@@ -1,7 +1,8 @@
 import json
 import uuid
 from datetime import datetime, date
-from typing import Any, get_origin, get_args, TypeVar, Type, ClassVar, List, Optional
+from typing import Any, get_origin, get_args, Dict,TypeVar, Type, ClassVar, List, Optional, Sequence, Set, Mapping, MutableSequence, MutableSet
+import copy as _py_copy
 from enum import Enum
 import inspect
 
@@ -232,6 +233,73 @@ class PlaxisObject(SerializableBase):
         self._name: str = name
         self._comment: str = comment
 
+    def copy(
+        self: T,
+        *,
+        name: Optional[str] = None,
+        prefix: str = "",
+        suffix: str = "",
+        deep: bool = True,
+        reset_runtime: bool = True,
+        reset_ids: bool = True,
+        exclude: Sequence[str] = (),
+        memo: Optional[Dict[int, Any]] = None,
+    ) -> T:
+        """
+        Create a copy of this object with optional renaming and scrubbing of runtime/ID fields.
+
+        Parameters
+        ----------
+        name : Optional[str]
+            Explicit new name for the copy. If None, `prefix`/`suffix` will be applied to the
+            original name when available.
+        prefix : str
+            Prefix to prepend to the original name (only used if `name` is None and
+            the object has a `name` attribute).
+        suffix : str
+            Suffix to append to the original name (only used if `name` is None and
+            the object has a `name` attribute).
+        deep : bool
+            If True (default), perform a deep copy. If False, perform a shallow copy.
+        reset_runtime : bool
+            If True (default), scrub runtime-only fields (e.g., `plx_id`, internal handles).
+        reset_ids : bool
+            If True (default), scrub persistent identifiers (e.g., `id`, `uid`, `uuid`).
+        exclude : Sequence[str]
+            Field names to exclude from renaming/scrubbing (e.g., ["name"]).
+        memo : Optional[Dict[int, Any]]
+            Optional memo dictionary forwarded to `copy.deepcopy`.
+
+        Returns
+        -------
+        T
+            A new instance of the same (sub)class with requested adjustments applied.
+        """
+        new_obj = _py_copy.deepcopy(self, memo) if deep else _py_copy.copy(self)
+
+        # (1) Apply renaming if requested
+        if "name" not in exclude:
+            try:
+                old_name = getattr(new_obj, "name", None)
+                if name is not None:
+                    setattr(new_obj, "name", name)
+                elif old_name is not None and (prefix or suffix):
+                    setattr(new_obj, "name", f"{prefix}{old_name}{suffix}")
+            except Exception:
+                # Be tolerant: some subclasses may not have a writable `name`
+                pass
+
+        # (2) Scrub runtime-only fields and/or persistent IDs recursively
+        if reset_runtime or reset_ids:
+            _plaxisobj_scrub(
+                new_obj,
+                reset_runtime=reset_runtime,
+                reset_ids=reset_ids,
+                exclude=set(exclude),
+            )
+
+        return new_obj
+
     @property
     def id(self) -> str:
         """Get the unique ID of the object."""
@@ -262,3 +330,113 @@ class PlaxisObject(SerializableBase):
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__}(name='{self.name}', id='{self.id}')>"
+
+
+# -------- Internal helpers (keep in the same module) ---------------------------------
+
+# Runtime-only fields that should never survive a copy used for new Plaxis mappings
+_RUNTIME_FIELDS: Sequence[str] = (
+    "plx_id",          # Plaxis object reference (assigned at runtime by mappers)
+    "_plaxis_ref",     # possible internal Plaxis reference alias
+    "_g_i", "_g_o",    # Plaxis input/output handles (if present)
+    "_cache", "_log",  # any caches or loggers attached on the instance
+)
+
+# Stable identifier fields that typically should not be duplicated for a new instance
+_ID_FIELDS: Sequence[str] = (
+    "id", "_id", "uid", "_uid", "uuid", "_uuid",
+    "serial", "_serial",
+)
+
+# Treat these as leaves for the scrub walk
+_PRIMITIVES = (str, bytes, int, float, bool, type(None))
+
+
+def _plaxisobj_scrub(
+    obj: Any,
+    *,
+    reset_runtime: bool,
+    reset_ids: bool,
+    exclude: Set[str],
+    _seen: Optional[Set[int]] = None,
+) -> None:
+    """
+    Recursively scrub runtime fields and/or ID fields on `obj`.
+
+    The function traverses:
+      - mappings (dict-like)
+      - sequences/sets
+      - user objects (via `__dict__` and `__slots__`)
+
+    Notes
+    -----
+    - This function assumes `obj` has already been (deep)copied when needed.
+    - It is careful to avoid infinite recursion via an `_seen` set.
+    """
+    if _seen is None:
+        _seen = set()
+
+    oid = id(obj)
+    if oid in _seen:
+        return
+    _seen.add(oid)
+
+    # Primitive leaves: nothing to scrub below
+    if isinstance(obj, _PRIMITIVES):
+        return
+
+    # Mappings: walk values
+    if isinstance(obj, Mapping):
+        for _, v in obj.items():
+            _plaxisobj_scrub(v, reset_runtime=reset_runtime, reset_ids=reset_ids, exclude=exclude, _seen=_seen)
+        return
+
+    # Sequences/sets: walk elements
+    if isinstance(obj, (list, tuple, set, frozenset, MutableSequence, MutableSet)):
+        for v in obj:
+            _plaxisobj_scrub(v, reset_runtime=reset_runtime, reset_ids=reset_ids, exclude=exclude, _seen=_seen)
+        return
+
+    # For user objects: scrub fields, then recurse into attributes
+    if reset_runtime:
+        for f in _RUNTIME_FIELDS:
+            if f in exclude:
+                continue
+            if hasattr(obj, f):
+                try:
+                    setattr(obj, f, None)
+                except Exception:
+                    # Some slots may be read-only; ignore quietly
+                    pass
+
+    if reset_ids:
+        for f in _ID_FIELDS:
+            if f in exclude:
+                continue
+            if hasattr(obj, f):
+                try:
+                    setattr(obj, f, None)
+                except Exception:
+                    pass
+
+    # Recurse attributes exposed via __dict__
+    dct = getattr(obj, "__dict__", None)
+    if isinstance(dct, dict):
+        for k, v in dct.items():
+            if k in exclude:
+                continue
+            _plaxisobj_scrub(v, reset_runtime=reset_runtime, reset_ids=reset_ids, exclude=exclude, _seen=_seen)
+
+    # Recurse attributes exposed via __slots__
+    slots = getattr(obj, "__slots__", None)
+    if slots:
+        # Normalize to iterable
+        slot_names = slots if isinstance(slots, (list, tuple)) else (slots,)
+        for s in slot_names:
+            if s in exclude:
+                continue
+            try:
+                v = getattr(obj, s)
+            except Exception:
+                continue
+            _plaxisobj_scrub(v, reset_runtime=reset_runtime, reset_ids=reset_ids, exclude=exclude, _seen=_seen)

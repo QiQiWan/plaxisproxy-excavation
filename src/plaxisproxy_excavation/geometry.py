@@ -473,7 +473,7 @@ class Polygon3D(GeometryBase):
         """Return all vertex coordinates as a list of (x, y, z) tuples."""
         if not self._lines:
             return []
-        return [p.get_point() for p in self.get_all_points()]
+        return [p.get_point() for p in self.get_points()]
     
     def _ring_core_points(self, ln) -> List["Point"]:
         """Return the list of core points after removing the repeated ending points."""
@@ -559,6 +559,46 @@ class Polygon3D(GeometryBase):
             for p in ln.get_points():
                 if not math.isclose(p.z, ref_z, abs_tol=abs_tol):
                     raise ValueError("Polygon3D rings must be horizontal (constant z).")
+
+    def _is_closed(self, tol: float = 1e-9, outer_only: bool = False) -> bool:
+        """
+        Return True if the polygon's ring(s) are closed within a given tolerance.
+
+        By default, checks the outer ring and all inner rings. If you only need
+        to verify the outer boundary, set `outer_only=True`.
+
+        A ring is considered closed if its first and last vertices coincide
+        in 3D within `tol`.
+
+        Args:
+            tol (float): Absolute tolerance for coordinate comparison.
+            outer_only (bool): If True, only check the outer ring; otherwise all rings.
+
+        Returns:
+            bool: True if closed under the chosen scope, else False.
+        """
+        if not self._lines:
+            return False
+
+        def _ring_closed(ln: Line3D) -> bool:
+            pts = ln.get_points()
+            if len(pts) < 2:
+                return False
+            a, b = pts[0], pts[-1]
+            return (
+                math.isclose(a.x, b.x, abs_tol=tol) and
+                math.isclose(a.y, b.y, abs_tol=tol) and
+                math.isclose(a.z, b.z, abs_tol=tol)
+            )
+
+        if outer_only:
+            return _ring_closed(self._lines[0])
+
+        # check outer + all inner rings
+        for ln in self._lines:
+            if not _ring_closed(ln):
+                return False
+        return True
 
     @classmethod
     def from_points(cls, point_set: PointSet) -> "Polygon3D":
@@ -669,7 +709,7 @@ class Polygon3D(GeometryBase):
         """Return the list of Line3D rings that define the polygon."""
         return self._lines
 
-    def get_all_points(self) -> List[Point]:
+    def get_points(self) -> List[Point]:
         """Return a flat list of all points from all rings."""
         pts: List[Point] = []
         for ln in self._lines:
@@ -678,7 +718,7 @@ class Polygon3D(GeometryBase):
     
     def update_points(self) -> None:
         """Update the point set in the Polygon3D"""
-        self._point_set = PointSet(self.get_all_points())
+        self._point_set = PointSet(self.get_points())
 
     @property
     def outer_ring(self) -> Line3D:
@@ -867,9 +907,9 @@ class Polyhedron(Volume):
             normal_z = (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x)
             
             # Average point of the face (centroid)
-            face_centroid_x = sum(p.x for p in face.get_all_points()) / len(face.get_all_points())
-            face_centroid_y = sum(p.y for p in face.get_all_points()) / len(face.get_all_points())
-            face_centroid_z = sum(p.z for p in face.get_all_points()) / len(face.get_all_points())
+            face_centroid_x = sum(p.x for p in face.get_points()) / len(face.get_points())
+            face_centroid_y = sum(p.y for p in face.get_points()) / len(face.get_points())
+            face_centroid_z = sum(p.z for p in face.get_points()) / len(face.get_points())
             
             # The contribution of this face to the total volume
             total_volume += (
@@ -892,14 +932,14 @@ class Polyhedron(Volume):
         
         total_volume = self.volume()
         if math.isclose(total_volume, 0.0, abs_tol=1e-9):
-            all_points = [p for face in self._faces for p in face.get_all_points()]
+            all_points = [p for face in self._faces for p in face.get_points()]
             avg_x = sum(p.x for p in all_points) / len(all_points)
             avg_y = sum(p.y for p in all_points) / len(all_points)
             avg_z = sum(p.z for p in all_points) / len(all_points)
             return Point(avg_x, avg_y, avg_z)
         
         # Placeholder for a full centroid calculation.
-        all_points = [p for face in self._faces for p in face.get_all_points()]
+        all_points = [p for face in self._faces for p in face.get_points()]
         avg_x = sum(p.x for p in all_points) / len(all_points)
         avg_y = sum(p.y for p in all_points) / len(all_points)
         avg_z = sum(p.z for p in all_points) / len(all_points)

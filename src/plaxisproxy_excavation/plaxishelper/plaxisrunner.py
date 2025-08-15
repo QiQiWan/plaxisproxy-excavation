@@ -1,239 +1,196 @@
 # src/plaxisproxy_excavation/plaxishelper/plaxisrunner.py
 
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union, Iterable, Sequence, Tuple
 
 # Import the core Plaxis server and its required components from the local source
 # This ensures we are using the exact version provided in the codebase.
-# CORRECTED: Relative import path changed from 3 dots to 4 dots to correctly 
-# navigate from src/plaxisproxy_excavation/plaxishelper/ up to the root and then
-# into third_party/.
-from plaxisproxy_excavation.third_party.plxscripting.server import Server
-from ....third_party.plxscripting.connection import HttpConnection
-from ....third_party.plxscripting.plxproxyfactory import PlxProxyFactory
-from ....third_party.plxscripting.tokenizer import PlxTokenizer
+from config.plaxis_config import HOST, PORT, PASSWORD
 
 # Import the main data structure and the mapper class from your library
-from ..plaxisexcavation import PlaxisFoundationPit
-from .plaxismapper import PlaxisMapper
+from ..plaxisexcavation import *  # noqa: F401,F403  (keep existing usage)
+from .plaxismapper import PlaxisMapper  # noqa: F401
+from plxscripting.server import new_server, Server, PlxProxyFactory
+from ..geometry import *  # Point, PointSet, Line3D, Polygon3D, etc.
+
+# NEW: use the static geometry mapper that wraps g_i.point/line/surface
+from .geometrymapper import GeometryMapper
 
 
 class PlaxisRunner:
     """
     Manages the remote session with Plaxis 3D for a complete workflow.
-    
+
     This class handles connecting to the Plaxis remote scripting server,
     orchestrating the model creation via the PlaxisMapper, initiating mesh
     generation and calculations, saving the project, and retrieving results.
-    It is designed based on the provided plxscripting source code for full compatibility.
+
+    Geometry creation (points/lines/surfaces) is delegated to the static
+    utility class GeometryPlaxisMapper to improve separation of concerns.
     """
-    
-    def __init__(self, input_port: int, output_port: int, password: str, host: str = 'localhost'):
+
+    def __init__(self, input_port: int = PORT, password: str = PASSWORD, host: str = HOST):
         """
         Initializes the runner with connection details for the Plaxis server.
-        
+
         Args:
             input_port (int): The port number for the Plaxis Input server.
-            output_port (int): The port number for the Plaxis Output server.
             password (str): The password configured for the server connection.
-            host (str, optional): The host where Plaxis is running. Defaults to 'localhost'.
+            host (str, optional): The host where Plaxis is running. Defaults to HOST.
         """
         self.host = host
         self.input_port = input_port
-        self.output_port = output_port
+        self.output_port = None  # reserved for Output server if needed
         self.password = password
-        
+
+        self.is_connected = False
+
         self.input_server: Optional[Server] = None  # The Server object for the Input application
-        self.output_server: Optional[Server] = None # The Server object for the Output application
-        self.g_i: Optional[Any] = None             # The global input object (for modeling)
-        self.g_o: Optional[Any] = None             # The global output object (for results)
+        self.output_server: Optional[Server] = None  # The Server object for the Output application
+        self.g_i: Optional[PlxProxyFactory] = None  # The global input object (for modeling)
+        self.g_o: Optional[PlxProxyFactory] = None  # The global output object (for results)
 
-    def connect(self, start_new_project: bool = True) -> bool:
+    # ------------------------- connection management -------------------------
+
+    def connect(self) -> bool:
         """
-        Establishes connections with both the Plaxis Input and Output servers.
-        
-        This method manually constructs the necessary components required by the
-        core `plxscripting.server.Server` constructor, as revealed by the source code.
-        
-        Args:
-            start_new_project (bool): If True, a new Plaxis project will be created upon connection.
-        
-        Returns:
-            bool: True if both connections were successful, False otherwise.
+        Establishes connections with the Plaxis Input server.
         """
         try:
-            # --- Connect to Input Server ---
             print(f"Attempting to connect to Plaxis Input at {self.host}:{self.input_port}...")
-            input_connection = HttpConnection(self.host, self.input_port, password=self.password)
-            self.input_server = Server(input_connection, PlxProxyFactory(), PlxTokenizer())
-            self.g_i = self.input_server.get_global_input()
+            # Note: new_server returns (server, g_i)
+            self.input_server, self.g_i = new_server(HOST, PORT, password=PASSWORD)
             print("Successfully connected to Plaxis Input.")
-
-            # --- Connect to Output Server ---
-            print(f"Attempting to connect to Plaxis Output at {self.host}:{self.output_port}...")
-            output_connection = HttpConnection(self.host, self.output_port, password=self.password)
-            self.output_server = Server(output_connection, PlxProxyFactory(), PlxTokenizer())
-            
-            # IMPORTANT: The method is still called get_global_input(), but because it's
-            # connected to the output port, it correctly returns the global OUTPUT object (g_o).
-            self.g_o = self.output_server.get_global_input()
-            print("Successfully connected to Plaxis Output.")
-
-            if start_new_project and self.g_i:
-                print("Starting a new project...")
-                self.g_i.new()
-            
+            time.sleep(1)
+            self.is_connected = True
             return True
-            
+
         except ConnectionRefusedError:
-            print(f"ERROR: Connection refused. Please ensure Plaxis is running and the scripting server is enabled on both ports ({self.input_port} and {self.output_port}) with the correct password.")
+            print("-----------------------------------------------------------------------")
+            print(f"[Error] Connection was refused. Please confirm:")
+            print("1. The Plaxis software has been launched.")
+            print("2. The remote script service has been enabled.")
+            print(f"3. The port number ({PORT}) and password settings are correct.")
+            print("-----------------------------------------------------------------------")
+            print("Please check for any errors and then re-execute the 'connect()' function.")
             return False
+
         except Exception as e:
-            print(f"An unexpected error occurred during connection: {e}")
-            raise
+            print(f"[Error] An unexpected error occurred during connection: {e}")
+            return False
 
-    def build_model(self, model: PlaxisFoundationPit):
+    def new(self) -> bool:
         """
-        Builds the entire geotechnical model in Plaxis using the PlaxisMapper.
-        
-        Args:
-            model (PlaxisFoundationPit): The complete Python object model to be translated into Plaxis.
-        """
-        if not self.g_i:
-            print("Cannot build model: Not connected to Plaxis. Please call connect() first.")
-            return
-            
-        print("\n" + "="*25)
-        print("STEP 1: Building Model Geometry and Phases")
-        print("="*25)
-        mapper = PlaxisMapper(self.g_i)
-        mapper.run(model)
-        print("Model construction finished.")
+        Creates a new project in the Plaxis Input application.
 
-    def generate_mesh(self):
-        """
-        Switches to the mesh mode and generates the finite element mesh.
-        """
-        if not self.g_i:
-            print("Cannot generate mesh: Not connected to Plaxis.")
-            return
-        
-        print("\n" + "="*25)
-        print("STEP 2: Generating Finite Element Mesh")
-        print("="*25)
-        try:
-            self.g_i.gotomesh()
-            print("Switched to mesh mode. Starting mesh generation...")
-            self.g_i.generatemesh()
-            print("Mesh generation successful.")
-        except Exception as e:
-            print(f"ERROR during mesh generation: {e}")
-
-    def calculate(self, phases_to_calculate: Optional[List[str]] = None):
-        """
-        Switches to staged construction mode and starts the calculation process.
-        
-        Args:
-            phases_to_calculate (Optional[List[str]]): 
-                A list of phase names to calculate. If None, all phases marked for
-                calculation in the model will be run.
-        """
-        if not self.g_i:
-            print("Cannot calculate: Not connected to Plaxis.")
-            return
-            
-        print("\n" + "="*25)
-        print("STEP 3: Starting Calculation")
-        print("="*25)
-        try:
-            self.g_i.gotostages()
-            print("Switched to staged construction mode.")
-
-            if phases_to_calculate:
-                print(f"Setting specific phases to calculate: {phases_to_calculate}")
-                for phase in self.g_i.Phases:
-                    phase.ShouldCalculate = False
-                for phase_name in phases_to_calculate:
-                    try:
-                        target_phase = getattr(self.g_i.Phases, phase_name)
-                        target_phase.ShouldCalculate = True
-                    except AttributeError:
-                        print(f"Warning: Phase '{phase_name}' not found in the model. It will be skipped.")
-
-            print("Sending calculation command to Plaxis...")
-            self.g_i.calculate()
-            print("Calculation command sent. Plaxis is now processing.")
-        except Exception as e:
-            print(f"ERROR during calculation setup: {e}")
-            
-    def save(self, file_path: Optional[str] = None):
-        """
-        Saves the Plaxis project.
-        
-        Args:
-            file_path (Optional[str]): The full path where the project should be saved.
-                                       If None, a standard "Save" command is issued.
-        """
-        if not self.g_i:
-            print("Cannot save: Not connected to Plaxis.")
-            return
-        
-        print("\n" + "="*25)
-        print("STEP 4: Saving Project")
-        print("="*25)
-        try:
-            if file_path:
-                self.g_i.save(file_path)
-                print(f"Project saved to {file_path}")
-            else:
-                self.g_i.save()
-                print("Project saved.")
-        except Exception as e:
-            print(f"ERROR while saving project: {e}")
-
-    def get_results(self, monitor_points: List[str]) -> Dict[str, Any]:
-        """
-        Retrieves results for specified curve points from the Plaxis Output.
-        
-        Args:
-            monitor_points (List[str]): A list of monitor point labels (names) to retrieve results for.
-            
         Returns:
-            Dict[str, Any]: A dictionary where keys are monitor point labels and values are the results.
+            bool: True if the new project was created successfully, False otherwise.
         """
-        if not self.g_o:
-            print("Cannot get results: Not connected to Plaxis Output.")
-            return {}
-            
-        print("\n" + "="*25)
-        print("STEP 5: Retrieving Results")
-        print("="*25)
-        results = {}
-        
-        last_phase = self.g_o.Phases[-1]
-        print(f"Retrieving results for the last phase: '{last_phase.Name}'")
-        
-        for point_label in monitor_points:
-            try:
-                # This is a hypothetical command and needs to be adapted to the actual Plaxis API
-                # result_value = self.g_o.getcurveresults(point_label, last_phase, self.g_o.ResultTypes.Displacement.Utot)
-                # results[point_label] = result_value[-1]
-                print(f"  - (Placeholder) Retrieving total displacement for '{point_label}'.")
-                results[point_label] = "Some result value"
-            except Exception as e:
-                print(f"  - ERROR retrieving results for '{point_label}': {e}")
-                results[point_label] = None
-        
-        return results
+        if not self.is_connected or self.g_i is None or self.input_server is None:
+            print("[Error] Cannot create a new project: Not connected to Plaxis server.")
+            print("Please call the connect() method first.")
+            return False
 
-    def close(self):
+        try:
+            print("Sending 'new' command to Plaxis...")
+            result = self.input_server.new()
+            if result == "OK":
+                time.sleep(1)
+                print("New project successfully created.")
+                return True
+            else:
+                raise Exception(f"Bad result: {result}!")
+        except Exception as e:
+            print(f"[Error] An unexpected error occurred while creating a new project: {e}")
+            print("Please check the Plaxis application for any error messages or alerts.")
+            return False
+
+    # ===================== convenience wrappers to GeometryPlaxisMapper =====================
+
+    # ---- Points ----
+    def create_point(self, point: Point) -> Any:
         """
-        Closes the connections to the servers.
-        Note: This does NOT close the Plaxis application itself.
+        Thin wrapper: create a PLAXIS point via GeometryPlaxisMapper and return the handle.
         """
-        if self.input_server or self.output_server:
-            print("\nClosing connections to Plaxis servers.")
-            self.input_server = None
-            self.output_server = None
-            self.g_i = None
-            self.g_o = None
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return GeometryMapper.create_point(self.g_i, point)
+
+    def create_points(
+        self,
+        data: Union[
+            PointSet,
+            Sequence[Point],
+            Sequence[Tuple[float, float, float]],
+            Iterable[Point],
+            Iterable[Tuple[float, float, float]],
+        ],
+        stop_on_error: bool = False,
+    ) -> List[Any]:
+        """
+        Thin wrapper: batch create PLAXIS points via GeometryPlaxisMapper and return handles.
+        """
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return GeometryMapper.create_points(self.g_i, data, stop_on_error=stop_on_error)
+
+    # ---- Lines ----
+    def create_line(
+        self,
+        data: Union[
+            # points-based inputs
+            PointSet,
+            Sequence[Point],
+            Sequence[Tuple[float, float, float]],
+            Iterable[Point],
+            Iterable[Tuple[float, float, float]],
+            Tuple[Point, Point],
+            Tuple[Tuple[float, float, float], Tuple[float, float, float]],
+            # line-based inputs
+            Line3D,
+            Sequence[Line3D],
+            Iterable[Line3D],
+        ],
+        name: Optional[str] = None,
+        stop_on_error: bool = False,
+    ) -> Union[Any, List[Any], Line3D, List[Line3D], None]:
+        """
+        Thin wrapper: create PLAXIS line(s) via GeometryPlaxisMapper.
+        See GeometryPlaxisMapper.create_line for detailed behavior.
+        """
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return GeometryMapper.create_line(self.g_i, data, name=name, stop_on_error=stop_on_error)
+
+    # ---- Surfaces ----
+    def create_surface(
+        self,
+        data: Union[
+            Polygon3D,
+            PointSet,
+            Iterable[Point],
+            Iterable[Tuple[float, float, float]],
+            Sequence[Point],
+            Sequence[Tuple[float, float, float]],
+        ],
+        name: Optional[str] = None,
+        auto_close: bool = True,
+        validate_ring: bool = True,
+        stop_on_error: bool = False,
+        return_polygon: bool = False,
+    ) -> Any:
+        """
+        Thin wrapper: create a PLAXIS surface via GeometryPlaxisMapper.
+        See GeometryPlaxisMapper.create_surface for detailed behavior.
+        """
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return GeometryMapper.create_surface(
+            self.g_i,
+            data,
+            name=name,
+            auto_close=auto_close,
+            validate_ring=validate_ring,
+            stop_on_error=stop_on_error,
+            return_polygon=return_polygon,
+        )
