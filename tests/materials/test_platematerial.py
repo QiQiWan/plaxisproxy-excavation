@@ -14,9 +14,9 @@ class TestElasticPlate(unittest.TestCase):
         self.assertTrue(plate.preventpunch)
         self.assertTrue(plate.isotropic)
         self.assertEqual(plate.E2, 0)
-        self.assertEqual(plate.G12, 0)
-        self.assertEqual(plate.G13, 0)
-        self.assertEqual(plate.G23, 0)
+        self.assertEqual(plate.G12, 12500000.0)
+        self.assertEqual(plate.G13, 50E6)
+        self.assertEqual(plate.G23, 50E6)
         self.assertEqual(repr(plate), "<plx.materials.elastic_plate>")
 
     def test_full_parameters(self):
@@ -47,10 +47,10 @@ class TestElastoplasticPlate(unittest.TestCase):
             gamma=9.0, E=180.0, nu=0.25,
             preventpunch=True, isotropic=True
         )
-        self.assertEqual(plate.sigma_y_11, 0)
-        self.assertEqual(plate.W_11, 0)
-        self.assertEqual(plate.sigma_y_22, 0)
-        self.assertEqual(plate.W_22, 0)
+        self.assertEqual(plate.sigma_y_11, 40e3)
+        self.assertEqual(plate.W_11, 0.05)
+        self.assertEqual(plate.sigma_y_22, 40e3)
+        self.assertEqual(plate.W_22, 0.04)
 
         self.assertTrue(plate.preventpunch)
         self.assertTrue(plate.isotropic)
