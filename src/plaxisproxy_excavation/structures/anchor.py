@@ -1,46 +1,34 @@
-from ..materials.anchormaterial import *
-from ..geometry import *
-from .basestructure import BaseStructure
+from __future__ import annotations
+from typing import Optional, Union
+from ..materials.anchormaterial import (
+    AnchorType, ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor
+)
+from ..geometry import Line3D, Point
+from .basestructure import BaseStructure, TwoPointLineMixin
 
-class Anchor(BaseStructure):
-    """
-    Anchor (tieback) object for Plaxis 3D, defined by a 3D line (with exactly two points)
-    and an anchor material/type.
-    """
-    def __init__(self, name: str, line: Line3D, anchor_type) -> None:
-        """
-        Initialize the anchor with a 3D line and anchor material/type.
+class Anchor(BaseStructure, TwoPointLineMixin):
+    """Anchor (tieback), defined by a 2-point line and an anchor material/type."""
 
-        Args:
-            line (Line3D): The 3D line defining the anchor (must have exactly two points).
-            anchor_type: The anchor material or type.
-        """
+    def __init__(
+        self,
+        name: str,
+        # 兼容两种写法：line 或 p_start/p_end
+        line: Optional[Line3D] = None,
+        *,
+        p_start: Optional[Point] = None,
+        p_end: Optional[Point] = None,
+        anchor_type: Union[AnchorType, ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor, str] = "Elastic"
+    ) -> None:
         super().__init__(name)
-        if not isinstance(line, Line3D):
-            raise TypeError("Anchor line must be a Line3D instance.")
-        if len(line) != 2:
-            raise ValueError("Anchor line must have exactly two points!")
-        self._line = line
-        if not (isinstance(anchor_type, AnchorType) or isinstance(anchor_type, ElasticAnchor) or 
-                isinstance(anchor_type, ElastoplasticAnchor) or isinstance(anchor_type, ElastoPlasticResidualAnchor) 
-                or isinstance(anchor_type, str)):
-            raise TypeError("anchor_type must be an AnchorType or AnchorMaterial instance.")
-
+        self._line = self._init_line_from_args(line=line, p_start=p_start, p_end=p_end)
+        if not isinstance(anchor_type, (AnchorType, ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor, str)):
+            raise TypeError("anchor_type must be AnchorType/AnchorMaterial/str.")
         self._anchor_type = anchor_type
 
     @property
-    def line(self) -> Line3D:
-        """3D line object representing the anchor (must have exactly two points)."""
-        return self._line
-
-    @property
     def anchor_type(self):
-        """Anchor material or type (material object or string/enum)."""
         return self._anchor_type
 
-    def get_points(self):
-        """Get the start and end points of the anchor as a list of Point objects."""
-        return self._line.get_points()
-
     def __repr__(self) -> str:
-        return "<plx.structures.anchor>"
+        t = self._anchor_type if isinstance(self._anchor_type, str) else type(self._anchor_type).__name__
+        return f"<plx.structures.Anchor {self.describe()} type='{t}'>"

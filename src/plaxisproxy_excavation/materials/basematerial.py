@@ -2,7 +2,6 @@ from ..core.plaxisobject import PlaxisObject
 
 class BaseMaterial(PlaxisObject):
     
-    __slots__ = ("_id", "_plx_id", "_name", "_type", "_comment", "_gamma", "_E", "_nu")
 
     def __init__(self, name, type, comment, gamma, E, nu) -> None:
         super().__init__(name, comment)

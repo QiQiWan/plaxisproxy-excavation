@@ -1,34 +1,119 @@
 from __future__ import annotations
-from typing import Any, Iterable, Iterator, List, Sequence, Tuple, Union, Optional
-from plaxisproxy_excavation.geometry import Point, PointSet, Line3D, Polygon3D
+from typing import Any, Iterable, Iterator, List, Sequence, Tuple, Union, Optional, overload, Literal, cast
+from ..geometry import Point, PointSet, Line3D, Polygon3D
+
+
+# ----------------------------- logging helpers ------------------------------
+def _enum_to_str(v: Any) -> str:
+    try:
+        if hasattr(v, "name"):
+            return str(v.name)
+        if hasattr(v, "value"):
+            return str(v.value)
+        return str(v)
+    except Exception:
+        return str(v)
+
+def _get_attr_value(obj: Any, key: str) -> Optional[str]:
+    try:
+        v = getattr(obj, key, None)
+        if v is None:
+            return None
+        if hasattr(v, "value"):
+            v = v.value
+        return str(v)
+    except Exception:
+        return None
+
+def _format_handle(h: Any) -> str:
+    if h is None:
+        return "None"
+    for k in ("Id", "ID", "id", "Guid", "GUID", "guid", "Name", "MaterialName", "Identification"):
+        val = _get_attr_value(h, k)
+        if val:
+            return f"{k}={val}"
+    s = str(h).replace("\n", " ").replace("\r", " ")
+    return s if len(s) <= 120 else (s[:117] + "...")
+
+def _one_line(msg: str) -> str:
+    return " ".join(str(msg).split())
+
+def _log_create(kind: str, desc: str, handle: Any, extra: str = "") -> None:
+    h = _format_handle(handle)
+    msg = f"[CREATE][{kind}] {desc} handle={h}"
+    if extra:
+        msg += f" {extra}"
+    print(_one_line(msg), flush=True)
+
+def _log_delete(kind: str, desc: str, handle: Any, ok: bool, extra: str = "") -> None:
+    h = _format_handle(handle)
+    status = "OK" if ok else "FAIL"
+    msg = f"[DELETE][{kind}] {desc} handle={h} result={status}"
+    if extra:
+        msg += f" {extra}"
+    print(_one_line(msg), flush=True)
+
+def _try_delete_with_gi(g_i: Any, plx_obj: Any) -> bool:
+    """Try a few common deletion entrypoints on g_i or the object itself."""
+    try:
+        if hasattr(plx_obj, "delete") and callable(plx_obj.delete):
+            plx_obj.delete()
+            return True
+    except Exception:
+        pass
+    for fn_name in ("delete", "delobject", "deletematerial", "delmaterial", "remove"):
+        try:
+            fn = getattr(g_i, fn_name, None)
+            if callable(fn):
+                fn(plx_obj)
+                return True
+        except Exception:
+            continue
+    return False
+
 
 class GeometryMapper:
     """
     Static utility class that maps geometric primitives to PLAXIS via g_i.
-    It provides point/line/surface creation using only g_i.point / g_i.line / g_i.surface.
+    It provides point/line/surface creation using only g_i.point / g_i.line / g_i.surface,
+    and supports deletion with plx_id reset on the domain object.
     """
 
     # ----------------------------- public: points -----------------------------
     @staticmethod
-    def create_point(g_i: Any, point: Point) -> Any:
-        """
-        Create a single PLAXIS point and attach the returned plx_id to the Point.
-
-        Returns:
-          - The PLAXIS point handle (plx_id) on success;
-          - False on failure (and prints an error).
-        """
+    def create_point(g_i: Any, point: Point) -> Union[Any, bool]:
+        """Create a PLAXIS point and attach handle to point.plx_id."""
         try:
             x, y, z = point.get_point()
             try:
-                plx_id = g_i.point(x, y, z)       # common signature with numeric args
+                plx_id = g_i.point(x, y, z)
             except TypeError:
-                plx_id = g_i.point((x, y, z))     # some bindings accept a tuple
-            point.plx_id = plx_id
+                plx_id = g_i.point((x, y, z))
+            setattr(point, "plx_id", plx_id)
+            _log_create("Point", f"id={getattr(point, 'id', 'N/A')}", plx_id)
             return plx_id
         except Exception as e:
-            print(f"[Error] Failed to create point {getattr(point, 'id', '')}: {e}")
+            print(_one_line(f"[ERROR][Point] create id={getattr(point,'id','N/A')} msg={e}"))
             return False
+
+    @staticmethod
+    def delete_point(g_i: Any, obj: Union[Point, Any]) -> bool:
+        """
+        Delete a PLAXIS point by Point or raw handle.
+        On success, reset Point.plx_id = None.
+        """
+        is_point = isinstance(obj, Point)
+        handle = getattr(obj, "plx_id", None) if is_point else obj
+        if handle is None:
+            _log_delete("Point", f"id={getattr(obj,'id','N/A')}", handle, ok=False, extra="reason=missing_handle")
+            return False
+
+        ok = _try_delete_with_gi(g_i, handle)
+        if ok and is_point:
+            setattr(obj, "plx_id", None)
+        desc = f"id={getattr(obj,'id','N/A')}" if is_point else "raw_handle"
+        _log_delete("Point", desc, handle, ok=ok)
+        return ok
 
     @staticmethod
     def create_points(
@@ -41,23 +126,10 @@ class GeometryMapper:
             Iterable[Tuple[float, float, float]],
         ],
         stop_on_error: bool = False,
-    ) -> List[Any]:
-        """
-        Create multiple PLAXIS points from a PointSet or any iterable of Point/(x,y,z).
-
-        Args:
-          data:
-            - PointSet
-            - Iterable/Sequence of Point
-            - Iterable/Sequence of (x, y, z) coordinates
-          stop_on_error:
-            - If True, stop at the first failure and raise the exception.
-            - If False (default), continue and append None for the failed entry.
-
-        Returns:
-          List of PLAXIS point handles (plx_id). Failed entries are None.
-        """
-        results: List[Any] = []
+    ) -> List[Optional[Any]]:
+        """Batch create points. Returns list of handles (None for failures)."""
+        results: List[Optional[Any]] = []
+        ok_count = 0
         for idx, p in enumerate(GeometryMapper._iter_points(data)):
             try:
                 x, y, z = p.get_point()
@@ -65,14 +137,16 @@ class GeometryMapper:
                     plx_id = g_i.point(x, y, z)
                 except TypeError:
                     plx_id = g_i.point((x, y, z))
-                p.plx_id = plx_id
+                setattr(p, "plx_id", plx_id)
                 results.append(plx_id)
+                ok_count += 1
             except Exception as e:
-                msg = f"[Error] Failed to create point at index {idx}: {e}"
+                msg = f"[ERROR][Point] batch_index={idx} msg={e}"
                 if stop_on_error:
                     raise RuntimeError(msg) from e
-                print(msg)
+                print(_one_line(msg))
                 results.append(None)
+        _log_create("PointBatch", f"count={len(results)}", results[0] if results else None, extra=f"ok={ok_count} fail={len(results)-ok_count}")
         return results
 
     # ----------------------------- public: lines ------------------------------
@@ -97,39 +171,16 @@ class GeometryMapper:
         stop_on_error: bool = False,
     ) -> Union[Any, List[Any], Line3D, List[Line3D], None]:
         """
-        Create PLAXIS line(s) with g_i.line according to input type.
-
-        Behavior
-        --------
-        A) Points input (two or more points):
-           - Convert to consecutive segments (Line3D conceptually).
-           - For each segment, call g_i.line( ... ) to create a line in PLAXIS.
-           - Return:
-               * single handle   if exactly two points were provided;
-               * list of handles if >=3 points (piecewise polyline).
-
-        B) Line3D input (single or multiple):
-           - For each Line3D, create line(s) based on its endpoints:
-               * If the Line3D has exactly 2 points -> one PLAXIS line.
-               * If >2 points -> split to segments and create multiple lines.
-           - Assign returned handle(s) to line.plx_id.
-           - Return the original Line3D (single) or list of Line3D (multiple)
-             with plx_id populated.
-
-        Notes
-        -----
-        - Only g_i.line is used (no polyline fallback).
-        - If 'name' is provided and the returned PLAXIS object exposes .Name,
-          we set it on the first created segment (or the single line).
+        Create PLAXIS line(s) with g_i.line. Attach plx_id to Line3D where applicable.
         """
         try:
             # --------- B) Line3D input (single or multiple) ---------
             if isinstance(data, Line3D) or (
-                isinstance(data, (list, tuple)) and data and all(isinstance(x, Line3D) for x in data)
+                isinstance(data, (list, tuple)) and len(data) > 0 and all(isinstance(x, Line3D) for x in data)
             ):
                 line_objs: List[Line3D] = [data] if isinstance(data, Line3D) else list(data)
                 for ln in line_objs:
-                    pts = list(ln.get_points()) 
+                    pts = list(ln.get_points())
                     if len(pts) < 2:
                         raise ValueError("Line3D must contain at least two points.")
                     seg_pairs = GeometryMapper._segments_from_points(pts)
@@ -144,7 +195,10 @@ class GeometryMapper:
                                 pass
                         created_ids.append(seg_id)
 
-                    ln.plx_id = created_ids[0] if len(created_ids) == 1 else created_ids  # type: ignore[attr-defined]
+                    # Attach to Line3D.plx_id (single or list)
+                    setattr(ln, "plx_id", created_ids[0] if len(created_ids) == 1 else created_ids)
+                    seg_info = f"segments={len(created_ids)}"
+                    _log_create("Line", f"id={getattr(ln,'id','N/A')} {seg_info}", created_ids[0] if created_ids else None)
                 return line_objs[0] if isinstance(data, Line3D) else line_objs
 
             # --------- A) Points input (two or more points) ----------
@@ -156,7 +210,8 @@ class GeometryMapper:
             elif isinstance(data, PointSet):
                 pts = data.get_points()
             else:
-                pts = [GeometryMapper._as_point(p) for p in GeometryMapper._iter_points(data)]  # type: ignore
+                iter_src: Iterable[Union[Point, Tuple[float, float, float]]] = cast(Iterable[Any], data)
+                pts = [GeometryMapper._as_point(p) for p in GeometryMapper._iter_points(iter_src)]
 
             if len(pts) < 2:
                 raise ValueError("A line requires at least two points.")
@@ -172,16 +227,99 @@ class GeometryMapper:
                         pass
                 created_ids.append(seg_id)
 
+            _log_create("Line", f"from_points segments={len(created_ids)}", created_ids[0] if created_ids else None)
             return created_ids[0] if len(created_ids) == 1 else created_ids
 
         except Exception as e:
-            msg = f"[Error] Failed to create line(s): {e}"
+            msg = f"[ERROR][Line] create msg={e}"
             if stop_on_error:
                 raise RuntimeError(msg) from e
-            print(msg)
+            print(_one_line(msg))
             return None
 
+    @staticmethod
+    def delete_line(g_i: Any, obj: Union[Line3D, Any, List[Any]]) -> bool:
+        """
+        Delete a PLAXIS line by Line3D or raw handle(s).
+        If obj is Line3D and deletion success for all underlying handles,
+        reset Line3D.plx_id = None; if partially failed, keep remaining handles.
+        """
+        if isinstance(obj, Line3D):
+            handles: List[Any] = []
+            h = getattr(obj, "plx_id", None)
+            if isinstance(h, list):
+                handles.extend(h)
+            elif h is not None:
+                handles.append(h)
+
+            if not handles:
+                _log_delete("Line", f"id={getattr(obj,'id','N/A')}", None, ok=False, extra="reason=missing_handle")
+                return False
+
+            oks = []
+            for hd in handles:
+                ok = _try_delete_with_gi(g_i, hd)
+                oks.append(ok)
+                _log_delete("Line", f"id={getattr(obj,'id','N/A')}", hd, ok=ok)
+
+            if all(oks):
+                setattr(obj, "plx_id", None)
+                return True
+            else:
+                # keep any undeleted handle(s)
+                remaining = [hd for hd, ok in zip(handles, oks) if not ok]
+                setattr(obj, "plx_id", remaining if remaining else None)
+                return False
+
+        # raw handle or list of handles
+        if isinstance(obj, list):
+            oks = []
+            for hd in obj:
+                ok = _try_delete_with_gi(g_i, hd)
+                oks.append(ok)
+                _log_delete("Line", "raw_handle", hd, ok=ok)
+            return all(oks)
+        else:
+            ok = _try_delete_with_gi(g_i, obj)
+            _log_delete("Line", "raw_handle", obj, ok=ok)
+            return ok
+
     # ---------------------------- public: surfaces ----------------------------
+    @overload
+    @staticmethod
+    def create_surface(
+        g_i: Any,
+        data: Union[
+            Polygon3D,
+            PointSet,
+            Iterable[Point],
+            Iterable[Tuple[float, float, float]],
+            Sequence[Point],
+            Sequence[Tuple[float, float, float]],
+        ],
+        name: Optional[str] = None,
+        auto_close: bool = True,
+        stop_on_error: bool = False,
+        return_polygon: Literal[True] = True,
+    ) -> Tuple[Any, Polygon3D]: ...
+    @overload
+    @staticmethod
+    def create_surface(
+        g_i: Any,
+        data: Union[
+            Polygon3D,
+            PointSet,
+            Iterable[Point],
+            Iterable[Tuple[float, float, float]],
+            Sequence[Point],
+            Sequence[Tuple[float, float, float]],
+        ],
+        name: Optional[str] = None,
+        auto_close: bool = True,
+        stop_on_error: bool = False,
+        return_polygon: Literal[False] = False,
+    ) -> Union[Any, bool]: ...
+
     @staticmethod
     def create_surface(
         g_i: Any,
@@ -197,28 +335,10 @@ class GeometryMapper:
         auto_close: bool = True,
         stop_on_error: bool = False,
         return_polygon: bool = False,
-    ) -> Any:
-        """
-        Create a PLAXIS surface using g_i.surface only.
-        If input is not a Polygon3D, it is first coerced into one and (optionally) returned.
-
-        Args:
-          data: Polygon3D OR point-like container to be converted into Polygon3D.
-          name: optional name (set if PLAXIS object exposes .Name).
-          auto_close: auto-close the ring during coercion if needed.
-          validate_ring: pass-through to coerce_to_polygon3d(...).
-          stop_on_error: strict mode toggle.
-          return_polygon: if True, return (surf_id, polygon).
-
-        Returns:
-          - PLAXIS surface handle, or
-          - (surf_id, polygon) if return_polygon=True, or
-          - False on failure.
-        """
+    ) -> Union[Any, bool, Tuple[Any, Polygon3D]]:
+        """Create a PLAXIS surface, attach handle to Polygon3D.plx_id."""
         try:
-            polygon = GeometryMapper.coerce_to_polygon3d(
-                data, auto_close=auto_close
-            )
+            polygon = GeometryMapper.coerce_to_polygon3d(data, auto_close=auto_close)
 
             pts = list(polygon.get_points())
             if len(pts) < 3:
@@ -236,9 +356,8 @@ class GeometryMapper:
                     coords.extend([x, y, z])
                 surf_id = g_i.surface(*coords)
 
-            # Attach back to Polygon3D if it supports it
             try:
-                polygon.plx_id = surf_id  # type: ignore[attr-defined]
+                setattr(polygon, "plx_id", surf_id)
             except Exception:
                 pass
 
@@ -248,37 +367,46 @@ class GeometryMapper:
                 except Exception:
                     pass
 
-            if return_polygon:
-                return surf_id, polygon
-            return surf_id
+            _log_create("Surface", f"id={getattr(polygon,'id','N/A')} npts={len(pts)}", surf_id)
+
+            return (surf_id, polygon) if return_polygon else surf_id
 
         except Exception as e:
-            msg = f("[Error] Failed to create surface: {e}")
+            msg = f"[ERROR][Surface] create msg={e}"
             if stop_on_error:
                 raise RuntimeError(msg) from e
-            print(msg)
+            print(_one_line(msg))
             return False
+
+    @staticmethod
+    def delete_surface(g_i: Any, obj: Union[Polygon3D, Any]) -> bool:
+        """
+        Delete a PLAXIS surface by Polygon3D or raw handle.
+        On success, reset Polygon3D.plx_id = None.
+        """
+        is_poly = isinstance(obj, Polygon3D)
+        handle = getattr(obj, "plx_id", None) if is_poly else obj
+        if handle is None:
+            _log_delete("Surface", f"id={getattr(obj,'id','N/A')}", handle, ok=False, extra="reason=missing_handle")
+            return False
+
+        ok = _try_delete_with_gi(g_i, handle)
+        if ok and is_poly:
+            setattr(obj, "plx_id", None)
+        desc = f"id={getattr(obj,'id','N/A')}" if is_poly else "raw_handle"
+        _log_delete("Surface", desc, handle, ok=ok)
+        return ok
 
     # ----------------------------- helpers (static) ---------------------------
     @staticmethod
     def _as_point(obj: Any) -> Point:
-        """
-        Normalize any supported input into a Point instance.
-
-        Supported inputs:
-          - Point
-          - (x, y, z) tuple/list
-          - object with attributes x, y, z
-
-        Raises:
-          TypeError if the input cannot be converted.
-        """
+        """Normalize any supported input into a Point instance."""
         if isinstance(obj, Point):
             return obj
         if all(hasattr(obj, a) for a in ("x", "y", "z")):
-            return Point(float(obj.x), float(obj.y), float(obj.z))
+            return Point(float(getattr(obj, "x")), float(getattr(obj, "y")), float(getattr(obj, "z")))
         try:
-            x, y, z = obj
+            x, y, z = obj  # type: ignore[misc]
             return Point(float(x), float(y), float(z))
         except Exception as exc:
             raise TypeError(
@@ -289,12 +417,7 @@ class GeometryMapper:
     def _iter_points(
         data: Union[PointSet, Iterable[Point], Iterable[Tuple[float, float, float]]]
     ) -> Iterator[Point]:
-        """
-        Yield Points from supported containers:
-          - PointSet
-          - Iterable[Point]
-          - Iterable[(x, y, z)]
-        """
+        """Yield Points from supported containers."""
         if isinstance(data, PointSet):
             for p in data.get_points():
                 yield GeometryMapper._as_point(p)
@@ -314,23 +437,20 @@ class GeometryMapper:
         Ensure the point exists in PLAXIS and return its plx_id.
         If the Point already has plx_id, reuse it; otherwise create it.
         """
-        if getattr(p, "plx_id", None) is not None:
-            return p.plx_id
+        existing = getattr(p, "plx_id", None)
+        if existing is not None:
+            return existing
         x, y, z = GeometryMapper._to_float_xyz(p)
         try:
-            plx_id = g_i.point(x, y, z)     # numeric signature
+            plx_id = g_i.point(x, y, z)
         except TypeError:
-            plx_id = g_i.point((x, y, z))   # tuple signature
-        p.plx_id = plx_id
+            plx_id = g_i.point((x, y, z))
+        setattr(p, "plx_id", plx_id)
         return plx_id
 
     @staticmethod
-    def _segments_from_points(pts: List[Point]) -> List[Tuple[Point, Point]]:
-        """
-        Given >=2 points, return consecutive point pairs as segments.
-        2 points  -> 1 segment: [(p0, p1)]
-        N>=3 pts  -> N-1 segments: [(p0,p1), (p1,p2), ...]
-        """
+    def _segments_from_points(pts: Sequence[Point]) -> List[Tuple[Point, Point]]:
+        """Return consecutive point pairs as segments."""
         if len(pts) < 2:
             raise ValueError("A line requires at least two points.")
         return [(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
@@ -362,28 +482,20 @@ class GeometryMapper:
         ],
         auto_close: bool = True,
     ) -> Polygon3D:
-        """
-        Coerce any supported input into a Polygon3D.
-
-        Behavior:
-          - If data is already a Polygon3D, use it directly.
-          - Otherwise, normalize to a list of Points -> build PointSet -> build Polygon3D.
-          - Use Polygon3D's own _is_closed() and validate_ring() for closure & ring validation.
-        """
+        """Coerce any supported input into a Polygon3D."""
         if isinstance(data, Polygon3D):
             poly = data
         else:
-            pts = [GeometryMapper._as_point(p) for p in GeometryMapper._iter_points(data)]
+            pts = [GeometryMapper._as_point(p) for p in GeometryMapper._iter_points(cast(Iterable[Any], data))]
             # auto-close BEFORE constructing Polygon3D (if requested)
             if pts and (pts[0].x, pts[0].y, pts[0].z) != (pts[-1].x, pts[-1].y, pts[-1].z) and auto_close:
                 pts = pts + [pts[0]]
             poly = Polygon3D.from_points(PointSet(pts))
 
-        # Use Polygon3D's own methods
+        # Check closure with best-effort
         try:
-            is_closed = poly._is_closed()
+            is_closed = poly._is_closed()  # type: ignore[attr-defined]
         except AttributeError:
-            # Robust fallback if private name differs
             pts2 = list(poly.get_points())
             is_closed = (pts2[0].x, pts2[0].y, pts2[0].z) == (pts2[-1].x, pts2[-1].y, pts2[-1].z)
 
@@ -392,6 +504,5 @@ class GeometryMapper:
             if pts2 and (pts2[0].x, pts2[0].y, pts2[0].z) != (pts2[-1].x, pts2[-1].y, pts2[-1].z):
                 pts2 = pts2 + [pts2[0]]
             poly = Polygon3D.from_points(PointSet(pts2))
-
 
         return poly

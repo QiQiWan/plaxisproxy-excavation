@@ -99,7 +99,10 @@ class TestWell(unittest.TestCase):
     def test_repr(self):
         """__repr__ returns constant string for Well."""
         well = Well("WellRepr", self.line2, WellType.Extraction)
-        self.assertEqual(repr(well), "<plx.structures.well>")
+        self.assertEqual(
+            repr(well), 
+            "<plx.structures.Well name='WellRepr' type='Extraction' h_min=0.0>"
+            )
 
 if __name__ == '__main__':
     unittest.main()

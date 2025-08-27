@@ -34,7 +34,10 @@ class TestAnchor(unittest.TestCase):
     def test_repr(self):
         """__repr__ returns a constant string for Anchor objects."""
         anchor = Anchor("AnchorRepr", self.line2, anchor_type="TypeB")
-        self.assertEqual(repr(anchor), "<plx.structures.anchor>")
+        self.assertEqual(
+            repr(anchor), 
+            "<plx.structures.Anchor name='AnchorRepr' type='TypeB'>"
+            )
 
 if __name__ == '__main__':
     unittest.main()

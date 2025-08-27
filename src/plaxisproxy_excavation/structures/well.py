@@ -1,73 +1,54 @@
-from .basestructure import BaseStructure
-from ..geometry import *
+from __future__ import annotations
+from typing import Optional, Union
 from enum import Enum
+from .basestructure import BaseStructure, TwoPointLineMixin
+from ..geometry import Point, PointSet, Line3D
 
 class WellType(Enum):
     Extraction = "Extraction"
     Infiltration = "Infiltration"
 
-class Well(BaseStructure):
+class Well(BaseStructure, TwoPointLineMixin):
     """
-    Well object for Plaxis 3D, supporting position modification via x/y or direct line replacement.
+    Well with a two-point Line3D (top/bottom), type and h_min.
     """
+
     def __init__(
         self,
-        name: str, 
-        line: Line3D,
-        well_type: WellType,
+        name: str,
+        line: Optional[Line3D] = None,
+        *,
+        p_start: Optional[Point] = None,
+        p_end: Optional[Point] = None,
+        well_type: Union[WellType, str] = WellType.Extraction,
         h_min: float = 0.0,
     ) -> None:
         super().__init__(name)
-        if not isinstance(line, Line3D):
-            raise TypeError("Well line must be a Line3D instance.")
-        if len(line) != 2:
-            raise ValueError("Well line must have exactly two points (well top and bottom)!")
+        self._line = self._init_line_from_args(line=line, p_start=p_start, p_end=p_end)
 
-        if well_type not in (WellType.Extraction, WellType.Infiltration):
-            raise ValueError("well_type must be WellType.Extraction or WellType.Infiltration")
+        # 兼容字符串（如 "ConstantHead"），保持宽松，映射交给 Mapper 层处理
+        if not isinstance(well_type, (WellType, str)):
+            raise TypeError("well_type must be WellType or str.")
         if not isinstance(h_min, (int, float)):
-            raise TypeError("h_min must be a numeric value.")
-        self._line = line
-        self._pos = line.xy_location()
+            raise TypeError("h_min must be numeric.")
         self._well_type = well_type
-        self._h_min = h_min
+        self._h_min = float(h_min)
+        self._pos = self._line.xy_location()
+
+    def get_points(self):
+        return self._line.get_points()
 
     def move(self, dx: float, dy: float, dz: float = 0.0) -> None:
-        """Moves the well by a given displacement in the x, y, and z directions."""
         if not all(isinstance(d, (int, float)) for d in (dx, dy, dz)):
-            raise TypeError("Move displacements dx, dy, dz must be numeric.")
-        try:
-            p_top, p_bottom = self.get_points()
-        except ValueError:
-            raise ValueError("Cannot move well: internal line is not properly defined.")
-
-        # Calculate the new coordinates for both points.
+            raise TypeError("dx/dy/dz must be numeric.")
+        p_top, p_bottom = self.get_points()
         new_top = Point(p_top.x + dx, p_top.y + dy, p_top.z + dz)
         new_bottom = Point(p_bottom.x + dx, p_bottom.y + dy, p_bottom.z + dz)
-
-        # Create a new Line3D object with the new points.
-        new_line = Line3D(PointSet([new_top, new_bottom]))
-
-        # Update the well's internal line and position
-        self.line = new_line
-
-    @property
-    def line(self) -> Line3D:
-        """3D line object representing the well axis (two points: top and bottom)."""
-        return self._line
-
-    @line.setter
-    def line(self, new_line: Line3D):
-        if not isinstance(new_line, Line3D):
-            raise TypeError("Well line must be a Line3D instance.")
-        if len(new_line) != 2:
-            raise ValueError("Well line must have exactly two points!")
-        self._line = new_line
-        self._pos = new_line.xy_location()
+        self.line = Line3D(PointSet([new_top, new_bottom]))
+        self._pos = self._line.xy_location()
 
     @property
     def x(self):
-        """Well x location in XY-plane (if Z-axis vertical line)."""
         return self._pos[0] if self._pos is not None else None
 
     @x.setter
@@ -75,18 +56,14 @@ class Well(BaseStructure):
         if self._pos is None:
             raise ValueError("Well position undefined, cannot set x.")
         if not isinstance(value, (int, float)):
-            raise TypeError("x coordinate must be a number.")
+            raise TypeError("x must be numeric.")
         y = self._pos[1]
-        pts = self._line.get_points()
-        if len(pts) != 2:
-            raise ValueError("Well line must have exactly two points!")
-        new_pts = [Point(value, y, pts[0].z), Point(value, y, pts[1].z)]
-        self._line = Line3D(PointSet(new_pts))
+        p0, p1 = self.get_points()
+        self.line = Line3D(PointSet([Point(value, y, p0.z), Point(value, y, p1.z)]))
         self._pos = (value, y)
 
     @property
     def y(self):
-        """Well y location in XY-plane (if Z-axis vertical line)."""
         return self._pos[1] if self._pos is not None else None
 
     @y.setter
@@ -94,13 +71,10 @@ class Well(BaseStructure):
         if self._pos is None:
             raise ValueError("Well position undefined, cannot set y.")
         if not isinstance(value, (int, float)):
-            raise TypeError("y coordinate must be a number.")
+            raise TypeError("y must be numeric.")
         x = self._pos[0]
-        pts = self._line.get_points()
-        if len(pts) != 2:
-            raise ValueError("Well line must have exactly two points!")
-        new_pts = [Point(x, value, pts[0].z), Point(x, value, pts[1].z)]
-        self._line = Line3D(PointSet(new_pts))
+        p0, p1 = self.get_points()
+        self.line = Line3D(PointSet([Point(x, value, p0.z), Point(x, value, p1.z)]))
         self._pos = (x, value)
 
     @property
@@ -108,13 +82,13 @@ class Well(BaseStructure):
         return self._pos
 
     @property
-    def well_type(self) -> WellType:
+    def well_type(self) -> Union[WellType, str]:
         return self._well_type
 
     @well_type.setter
-    def well_type(self, value):
-        if value not in (WellType.Extraction, WellType.Infiltration):
-            raise ValueError("well_type must be WellType.Extraction or WellType.Infiltration")
+    def well_type(self, value: Union[WellType, str]):
+        if not isinstance(value, (WellType, str)):
+            raise TypeError("well_type must be WellType or str.")
         self._well_type = value
 
     @property
@@ -124,11 +98,9 @@ class Well(BaseStructure):
     @h_min.setter
     def h_min(self, value: float):
         if not isinstance(value, (int, float)):
-            raise TypeError("h_min must be a numeric value.")
-        self._h_min = value
-
-    def get_points(self):
-        return self._line.get_points()
+            raise TypeError("h_min must be numeric.")
+        self._h_min = float(value)
 
     def __repr__(self) -> str:
-        return "<plx.structures.well>"
+        t = self._well_type.value if isinstance(self._well_type, WellType) else str(self._well_type)
+        return f"<plx.structures.Well {self.describe()} type='{t}' h_min={self._h_min}>"

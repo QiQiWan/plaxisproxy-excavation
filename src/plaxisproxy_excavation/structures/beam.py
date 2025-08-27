@@ -1,42 +1,31 @@
-from ..materials.beammaterial import *
-from ..geometry import *
-from .basestructure import BaseStructure
+from __future__ import annotations
+from typing import Optional, Union
+from ..materials.beammaterial import BeamType, ElasticBeam, ElastoplasticBeam
+from ..geometry import Line3D, Point
+from .basestructure import BaseStructure, TwoPointLineMixin
 
-class Beam(BaseStructure):
-    """
-    Beam object for Plaxis 3D, defined by a 3D line (with exactly two points)
-    and a beam material/type.
-    """
-    def __init__(self, name: str, line: Line3D, beam_type) -> None:
-        """
-        Initialize the beam with a 3D line and beam material/type.
+class Beam(BaseStructure, TwoPointLineMixin):
+    """Beam: two-point Line3D + beam material/type."""
 
-        Args:
-            line (Line3D): The 3D line defining the beam (must be exactly two points).
-            beam_type: The beam material or type.
-        """
+    def __init__(
+        self,
+        name: str,
+        line: Optional[Line3D] = None,
+        *,
+        p_start: Optional[Point] = None,
+        p_end: Optional[Point] = None,
+        beam_type: Union[BeamType, ElasticBeam, ElastoplasticBeam, str] = BeamType.Elastic
+    ) -> None:
         super().__init__(name)
-        if not isinstance(line, Line3D) or len(line) != 2:
-            raise ValueError("Beam line must have exactly two points!")
-        self._line = line
-        # 放宽：枚举 / 材料对象 / 字符串
+        self._line = self._init_line_from_args(line=line, p_start=p_start, p_end=p_end)
         if not isinstance(beam_type, (BeamType, ElasticBeam, ElastoplasticBeam, str)):
             raise TypeError("beam_type must be BeamType/BeamMaterial or str.")
         self._beam_type = beam_type
 
     @property
-    def line(self) -> Line3D:
-        """3D line object representing the beam (must have exactly two points)."""
-        return self._line
-
-    @property
     def beam_type(self):
-        """Beam material or type (material object or string/enum)."""
         return self._beam_type
 
-    def get_points(self):
-        """Get the start and end points of the beam as a list of Point objects."""
-        return self._line.get_points()
-
     def __repr__(self) -> str:
-        return "<plx.structures.Beam>"
+        t = self._beam_type if isinstance(self._beam_type, str) else getattr(self._beam_type, "name", type(self._beam_type).__name__)
+        return f"<plx.structures.Beam {self.describe()} type='{t}'>"

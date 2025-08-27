@@ -1,4 +1,3 @@
-# soilmaterials.py
 from .basematerial import BaseMaterial
 from enum import Enum, auto
 from typing import Optional
