@@ -1,7 +1,8 @@
 from __future__ import annotations
 import uuid
 import math
-from typing import List, Iterator, Optional, Tuple, Dict, Any
+from typing import List, Iterator, Optional, Tuple, Dict, Any, Sequence
+from .core.plaxisobject import PlaxisObject
 
 
 """plx.geometry - core geometric primitives with optional Shapely support
@@ -26,27 +27,10 @@ except ModuleNotFoundError:
     _shp_union, _shp_polygonize = None, None
 
 
-class GeometryBase:
+class GeometryBase(PlaxisObject):
     
-    def __init__(self) -> None:
-        self._id: uuid.UUID = uuid.uuid4()
-        self._plx_id: Optional[str] = None
-
-    @property
-    def id(self):
-        return self._id
-    
-    @id.setter
-    def id(self, value):
-        self._id = value
-
-    @property
-    def plx_id(self):
-        return self._plx_id
-    
-    @plx_id.setter
-    def plx_id(self, value):
-        self._plx_id = value
+    def __init__(self, name: str = "") -> None:
+        super().__init__(name=name)
 
     @staticmethod
     def _uuid_to_str(u: uuid.UUID | None) -> str | None:
@@ -73,6 +57,7 @@ class Point(GeometryBase):
     __slots__ = ("_x", "_y", "_z")
 
     def __init__(self, x: float, y: float, z: float):
+        super().__init__()
         self._x = float(x)
         self._y = float(y)
         self._z = float(z)
@@ -159,6 +144,7 @@ class PointSet(GeometryBase):
     __slots__ = ("_points",)
 
     def __init__(self, points: Optional[List[Point]] = None):
+        super().__init__()
         self._points: List[Point] = points if points is not None else []
 
     # -------------------- mutation -----------------------------------
@@ -220,10 +206,9 @@ class Line3D(GeometryBase):
     __slots__ = ("_id", "_plx_id", "_point_set")
 
     def __init__(self, point_set: PointSet):
+        super().__init__()
         if not isinstance(point_set, PointSet):
             raise TypeError("Line3D must be initialized with a PointSet instance.")
-        self._id = uuid.uuid4()
-        self._plx_id = None
         self._point_set = point_set
 
     # --------------- delegation ---------------------------------------
@@ -339,7 +324,7 @@ class Line3D(GeometryBase):
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "id": self._uuid_to_str(self._id),
+            "id": self._id,
             "plx_id": self._plx_id,
             "points": [p.to_dict() for p in self._point_set.get_points()]
         }
@@ -348,7 +333,7 @@ class Line3D(GeometryBase):
     def from_dict(cls, data: Dict[str, Any]) -> "Line3D":
         pts = [Point.from_dict(p) for p in data["points"]]
         line = cls(PointSet(pts))
-        line.id = cls._str_to_uuid(data["id"])   
+        # line.id = data["id"]
         line.plx_id = data.get("plx_id")
         return line
 
@@ -737,7 +722,7 @@ class Polygon3D(GeometryBase):
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "id": self._uuid_to_str(self._id),
+            "id": self._id,
             "plx_id": self._plx_id,
             "rings": [ln.to_dict() for ln in self._lines]
         }
@@ -746,7 +731,7 @@ class Polygon3D(GeometryBase):
     def from_dict(cls, data: Dict[str, Any]) -> "Polygon3D":
         rings = [Line3D.from_dict(r) for r in data["rings"]]
         poly = cls(rings)
-        poly.id = cls._str_to_uuid(data["id"])
+        poly.id = data["id"]
         poly.plx_id = data.get("plx_id")
         return poly
 
@@ -862,7 +847,7 @@ class Cube(Volume):
             Point.from_dict(data["min_point"]),
             Point.from_dict(data["max_point"])
         )
-        cube.id = cls._str_to_uuid(data["id"])
+        cube.id = data["id"]
         cube.plx_id = data.get("plx_id")
         return cube
 
@@ -949,7 +934,7 @@ class Polyhedron(Volume):
     def to_dict(self) -> Dict[str, Any]:
         return {
             "type": "Polyhedron",
-            "id": self._uuid_to_str(self._id),
+            "id": self._id,
             "plx_id": self._plx_id,
             "faces": [f.to_dict() for f in self._faces]
         }
@@ -958,7 +943,7 @@ class Polyhedron(Volume):
     def from_dict(cls, data: Dict[str, Any]) -> "Polyhedron":
         faces = [Polygon3D.from_dict(f) for f in data["faces"]]
         poly = cls(faces)
-        poly.id = cls._str_to_uuid(data["id"])
+        poly.id = data["id"]
         poly.plx_id = data.get("plx_id")
         return poly
 

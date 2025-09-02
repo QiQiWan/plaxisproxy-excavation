@@ -177,9 +177,9 @@ class PlaxisObject(SerializableBase):
     """
     __slots__ = ("_id", "_plx_id", "_name", "_comment")
 
-    def __init__(self, name: str, comment: str = "") -> None:
-        if not isinstance(name, str) or not name:
-            raise ValueError("name must be a non-empty string")
+    def __init__(self, name: str = "", comment: str = "") -> None:
+        # if not isinstance(name, str) or not name:
+        #     raise ValueError("name must be a non-empty string")
         self._id: str = str(uuid.uuid4())
         self._plx_id: Optional[object] = None  # runtime handle from PLAXIS
         self._name: str = name
@@ -228,6 +228,11 @@ class PlaxisObject(SerializableBase):
     def id(self) -> str:
         """Client-side GUID."""
         return self._id
+    
+    @id.setter
+    def id(self, id: str) -> None:
+        """Set UUID Object."""
+        self._id = id
 
     @property
     def plx_id(self) -> Optional[object]:

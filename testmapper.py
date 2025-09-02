@@ -1,124 +1,164 @@
+# -*- coding: utf-8 -*-
+"""
+Demo: static & dynamic loads with the updated Base+Dynamic model (mapper-aligned)
+
+Rules:
+- Dynamic loads keep `base` and only ATTACH multipliers to the SAME PLAXIS handle.
+- Geometry is created via GeometryMapper (the LoadMapper is geometry-aware too).
+- One static load per geometry object (point/line/surface). A guard enforces this.
+- Deletion:
+    * static -> delete the PLAXIS handle
+    * dynamic -> clear Multiplierx/y/z on its base (handle remains)
+"""
+
 from __future__ import annotations
-from typing import List, Tuple
+from typing import Dict, Any
+
 from plxscripting.server import new_server
 
-# ===== 根据你的项目结构调整以下导入 =====
-# 几何/材料/钻孔对象
-from src.plaxisproxy_excavation.geometry import Point
-from src.plaxisproxy_excavation.materials.soilmaterial import MCMaterial
-from src.plaxisproxy_excavation.borehole import SoilLayer, BoreholeLayer, Borehole, BoreholeSet
-
-# 材料 & 钻孔集 Mapper
-from src.plaxisproxy_excavation.plaxishelper.materialmapper import SoilMaterialMapper
-from src.plaxisproxy_excavation.plaxishelper.boreholemapper import BoreholeSetMapper
-
-
-def assert_plx_id_set(obj, name: str):
-    plx_id = getattr(obj, "plx_id", None)
-    assert plx_id is not None, f"{name}.plx_id should be set after creation."
+# ---- adjust paths if needed ----
+from src.plaxisproxy_excavation.structures.load import (
+    DistributionType, SignalType, LoadMultiplierKey,
+    LoadMultiplier,
+    PointLoad, LineLoad, SurfaceLoad, UniformSurfaceLoad,
+)
+from src.plaxisproxy_excavation.plaxishelper.loadmapper import LoadMapper, LoadMultiplierMapper
+from src.plaxisproxy_excavation.geometry import Point, PointSet, Line3D, Polygon3D
+from src.plaxisproxy_excavation.plaxishelper.geometrymapper import GeometryMapper
 
 
-def make_materials(g_i):
-    """
-    创建 3 个常见土体材料并写回 plx_id。
-    可按需替换参数（单位以你的库为准）。
-    """
-    fill = MCMaterial(name="Fill", E_ref=15e6, c_ref=5e3,  phi=25.0, psi=0.0, gamma=18.0, gamma_sat=20.0)
-    sand = MCMaterial(name="Sand", E_ref=35e6, c_ref=1e3,  phi=32.0, psi=2.0, gamma=19.0, gamma_sat=21.0)
-    clay = MCMaterial(name="Clay", E_ref=12e6, c_ref=15e3, phi=22.0, psi=0.0, gamma=17.0, gamma_sat=19.0)
+# ---------- guard: forbid >1 static load on the same geometry ----------
+class _StaticLoadGuard:
+    """Keep a registry: geometry_id -> load_name. Raise if duplicated."""
+    def __init__(self) -> None:
+        self._reg: Dict[Any, str] = {}
 
-    SoilMaterialMapper.create_material(g_i, fill)
-    SoilMaterialMapper.create_material(g_i, sand)
-    SoilMaterialMapper.create_material(g_i, clay)
+    @staticmethod
+    def _gid(geom: Any) -> Any:
+        # Prefer stable `id` field if your geometry carries one; fallback to Python id()
+        return getattr(geom, "id", None) or id(geom)
 
-    for m, n in [(fill, "Fill"), (sand, "Sand"), (clay, "Clay")]:
-        assert_plx_id_set(m, n)
+    def ensure_free(self, geom: Any, load_name: str) -> None:
+        k = self._gid(geom)
+        if k in self._reg:
+            raise RuntimeError(f"Geometry already has a static load: '{self._reg[k]}'; "
+                               f"refuse to create '{load_name}' on the same geometry.")
+        self._reg[k] = load_name
 
-    return fill, sand, clay
-
-
-def build_borehole_set(fill_mat, sand_mat, clay_mat) -> BoreholeSet:
-    """
-    定义全局 SoilLayer（只描述“层的类型/材料/名称”），
-    然后构建 3 个钻孔并给出各自的 BoreholeLayer(绝对高程)。
-    第 3 个孔故意不包含 Fill 层，用于测试“缺层→零厚度”的归一化。
-    """
-    # 1) 全局土层定义（名称要唯一，后续以名称去重/归并）
-    sl_fill = SoilLayer(name="Fill",  material=fill_mat)
-    sl_sand = SoilLayer(name="Sand",  material=sand_mat)
-    sl_clay = SoilLayer(name="Clay",  material=clay_mat)
-    soil_layers = [sl_fill, sl_sand, sl_clay]
-
-    # 2) 钻孔 1
-    bh1_layers = [
-        BoreholeLayer(name="L1_Fill", top_z=0.0,   bottom_z=-1.5, soil_layer=sl_fill),
-        BoreholeLayer(name="L1_Sand", top_z=-1.5, bottom_z=-8.0, soil_layer=sl_sand),
-        BoreholeLayer(name="L1_Clay", top_z=-8.0, bottom_z=-12.0, soil_layer=sl_clay),
-    ]
-    bh1 = Borehole(name="BH_1", location=Point(0, 0, 0), ground_level=0.0, layers=bh1_layers, water_head=-2.0)
-
-    # 3) 钻孔 2
-    bh2_layers = [
-        BoreholeLayer(name="L2_Fill", top_z=0.0,   bottom_z=-2.0, soil_layer=sl_fill),
-        BoreholeLayer(name="L2_Sand", top_z=-2.0, bottom_z=-6.0, soil_layer=sl_sand),
-        BoreholeLayer(name="L2_Clay", top_z=-6.0, bottom_z=-10.0, soil_layer=sl_clay),
-    ]
-    bh2 = Borehole(name="BH_2", location=Point(12, 0, 0), ground_level=0.0, layers=bh2_layers, water_head=-1.5)
-
-    # 4) 钻孔 3（故意缺少 Fill 层）
-    bh3_layers = [
-        BoreholeLayer(name="L3_Sand", top_z=0.0,  bottom_z=-4.0, soil_layer=sl_sand),
-        BoreholeLayer(name="L3_Clay", top_z=-4.0, bottom_z=-9.0, soil_layer=sl_clay),
-    ]
-    bh3 = Borehole(name="BH_3", location=Point(24, 0, 0), ground_level=0.0, layers=bh3_layers, water_head=-1.0)
-
-    # 5) BoreholeSet
-    bhset = BoreholeSet(name="Site BH", boreholes=[bh1, bh2, bh3], comment="Demo borehole set")
-    return bhset
+    def forget(self, geom: Any) -> None:
+        k = self._gid(geom)
+        self._reg.pop(k, None)
 
 
-def print_summary(summary):
-    """
-    summary: {layer_name: [(top,bottom)_bh0, (top,bottom)_bh1, ...]}
-    """
-    print("\n=== Zone Summary (top, bottom) per layer per borehole ===")
-    layer_names = list(summary.keys())
-    for lname in layer_names:
-        pairs = summary[lname]
-        cells = ", ".join([f"BH{i}:({t:.3g},{b:.3g})" for i, (t, b) in enumerate(pairs)])
-        print(f"  - {lname}: {cells}")
+def main():
+    # 1) connect
+    s_i, g_i = new_server("localhost", 10000, password="yS9f$TMP?$uQ@rW3")
+    s_i.new()
 
+    guard = _StaticLoadGuard()
 
-def run_demo():
-    # ========= 0) 连接 PLAXIS =========
-    passwd = "yS9f$TMP?$uQ@rW3"    # ← 根据你的设置修改
-    s_i, g_i = new_server("localhost", 10000, password=passwd)
-    s_i.new()  # 新工程
+    # 2) geometry (created via GeometryMapper; mapper will also ensure on demand)
+    P1, P2, P3, P4 = Point(0,0,0), Point(10,0,0), Point(10,8,0), Point(0,8,0)
+    GeometryMapper.create_point(g_i, P1)
+    GeometryMapper.create_point(g_i, P2)
+    GeometryMapper.create_point(g_i, P3)
+    GeometryMapper.create_point(g_i, P4)
 
-    # ========= 1) 材料 =========
-    fill_mat, sand_mat, clay_mat = make_materials(g_i)
+    L12 = Line3D(PointSet([P1, P2]))
+    L13 = Line3D(PointSet([P1, P3]))
+    GeometryMapper.create_line(g_i, L12)
+    GeometryMapper.create_line(g_i, L13)
 
-    # ========= 2) 构建钻孔集 =========
-    bhset = build_borehole_set(fill_mat, sand_mat, clay_mat)
+    Poly = Polygon3D.from_points(PointSet([P1, P2, P3, P4]))
+    GeometryMapper.create_surface(g_i, Poly)
 
-    # ========= 3) 一次性导入钻孔集 =========
-    # normalize=True 会把所有孔的层序统一化；缺失层将赋零厚度（top==bottom）
-    summary = BoreholeSetMapper.create(g_i, bhset, normalize=True)
+    # 3) STATIC loads (ONE per geometry)
+    # 3.1 Point @P3
+    guard.ensure_free(P3, "PL_static")
+    pl_static = PointLoad(
+        name="PL_static", comment="static point load", point=P3,
+        Fx=0.0, Fy=0.0, Fz=-100.0, Mx=0.0, My=0.0, Mz=0.0,
+    )
+    LoadMapper.create(g_i, pl_static)
 
-    # 简单断言：所有 Borehole 和 SoilLayer 都应拿到 plx_id
-    for i, bh in enumerate(bhset.boreholes):
-        assert_plx_id_set(bh, f"Borehole[{i}]")
-    for sl in bhset.unique_soil_layers:
-        assert_plx_id_set(sl, f"SoilLayer[{sl.name}]")
+    # 3.2 Line uniform on L12
+    guard.ensure_free(L12, "LL_static_uniform")
+    ll_static_uniform = LineLoad(
+        name="LL_static_uniform", comment="static uniform line load", line=L12,
+        distribution=DistributionType.UNIFORM, qx=0.0, qy=0.0, qz=-8.0,
+    )
+    LoadMapper.create(g_i, ll_static_uniform)
 
-    # ========= 4) 打印一份整洁的 Zone 汇总 =========
-    print_summary(summary)
-    print("\n[CHECK] Borehole set import -> OK")
+    # 3.3 Line linear on L13 (different line geometry -> allowed)
+    guard.ensure_free(L13, "LL_static_linear")
+    ll_static_linear = LineLoad(
+        name="LL_static_linear", comment="static linear line load", line=L13,
+        distribution=DistributionType.LINEAR, qx=0.0, qy=0.0, qz=-5.0,
+        qx_end=0.0, qy_end=0.0, qz_end=-12.0,
+    )
+    LoadMapper.create(g_i, ll_static_linear)
 
-    # ========= 5) 如需清理（可按需启用）=========
-    # BoreholeSetMapper.delete_all(g_i, bhset)
-    # print("[CHECK] Borehole set deletion -> OK")
+    # 3.4 Surface uniform on Poly
+    guard.ensure_free(Poly, "SL_static_uniform")
+    sl_static_uniform = UniformSurfaceLoad(
+        name="SL_static_uniform", comment="static uniform surface load", surface=Poly,
+        sigmax=0.0, sigmay=0.0, sigmaz=-20.0,
+    )
+    LoadMapper.create(g_i, sl_static_uniform)
+
+    # NOTE: If you try to place another static surface load on the same `Poly`, the guard will block it:
+    # guard.ensure_free(Poly, "SL_static_perp")  # -> raises RuntimeError
+
+    # 4) multipliers (optional to pre-create; mapper can auto-create on attach)
+    mul_h_5Hz = LoadMultiplier(
+        name="Mul_H_5Hz", comment="harmonic 5 Hz", signal_type=SignalType.HARMONIC,
+        amplitude=1.0, phase=0.0, frequency=5.0,
+    )
+    LoadMultiplierMapper.create(g_i, mul_h_5Hz)
+
+    mul_table = LoadMultiplier(
+        name="Mul_Table_Ramp", comment="table ramp 0→1", signal_type=SignalType.TABLE,
+        table_data=[(0.0, 0.0), (1.0, 1.0), (2.0, 1.0)],
+    )
+    LoadMultiplierMapper.create(g_i, mul_table)
+
+    # 5) DYNAMIC loads (clone via create_dyn, then mapper attaches multipliers on base)
+    pl_dyn = pl_static.create_dyn(
+        name="PL_dyn", comment="dynamic point (from PL_static)",
+        multiplier={LoadMultiplierKey.Fz: mul_h_5Hz},
+    )
+    LoadMapper.create(g_i, pl_dyn)  # attaches Multiplierz on the PL_static handle
+
+    ll_dyn_uniform = ll_static_uniform.create_dyn(
+        name="LL_dyn_uniform", comment="dynamic uniform line",
+        multiplier={LoadMultiplierKey.Z: mul_h_5Hz},
+    )
+    LoadMapper.create(g_i, ll_dyn_uniform)
+
+    ll_dyn_linear = ll_static_linear.create_dyn(
+        name="LL_dyn_linear", comment="dynamic linear line",
+        multiplier={LoadMultiplierKey.Z: mul_table},
+    )
+    LoadMapper.create(g_i, ll_dyn_linear)
+
+    sl_dyn_uniform = sl_static_uniform.create_dyn(
+        name="SL_dyn_uniform", comment="dynamic uniform surface",
+        multiplier={LoadMultiplierKey.Z: mul_table},
+    )
+    LoadMapper.create(g_i, sl_dyn_uniform)
+
+    print("✅ Static loads created; dynamic multipliers attached to the same base handles.")
+
+    # 6) deletion examples (use the unified mapper API)
+    # 6.1 delete a dynamic: clears multipliers on its base; base object remains
+    LoadMapper.delete(g_i, sl_dyn_uniform)
+
+    # 6.2 delete a static: removes the PLAXIS handle; also release guard
+    LoadMapper.delete(g_i, ll_static_uniform)
+    guard.forget(L12)  # free the geometry so you could place another static load later if needed
+
+    print("🧹 Deleted SL_dyn_uniform (multipliers cleared) and LL_static_uniform (handle deleted).")
 
 
 if __name__ == "__main__":
-    run_demo()
+    main()

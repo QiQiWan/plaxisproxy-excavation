@@ -83,6 +83,8 @@ class GeometryMapper:
     @staticmethod
     def create_point(g_i: Any, point: Point) -> Union[Any, bool]:
         """Create a PLAXIS point and attach handle to point.plx_id."""
+        if point.plx_id:
+            return point.plx_id
         try:
             x, y, z = point.get_point()
             try:
@@ -339,6 +341,8 @@ class GeometryMapper:
         """Create a PLAXIS surface, attach handle to Polygon3D.plx_id."""
         try:
             polygon = GeometryMapper.coerce_to_polygon3d(data, auto_close=auto_close)
+            if polygon.plx_id:
+                return
 
             pts = list(polygon.get_points())
             if len(pts) < 3:
