@@ -1,5 +1,5 @@
 from ..geometry import Point
-from ..core.plaxisobject import SerializableBase
+from ..core.plaxisobject import PlaxisObject
 from typing import List, Optional, Dict, Any, Type
 import uuid
 
@@ -74,7 +74,7 @@ class WaterLevel(Point):
             tag += f"t={self._time:.2f}d, "
         return f"<plx.components.WaterLevelPoint {tag}({self.x:.3f}, {self.y:.3f}, {self.z:.3f})>"
 
-class WaterLevelTable(SerializableBase):
+class WaterLevelTable(PlaxisObject):
     """
     Water level table for Plaxis 3D, supporting time-dependent or piecewise water level definition.
     Can be used for boundary conditions or dynamic water table.
