@@ -234,7 +234,7 @@ class Line3D(GeometryBase):
         if len(pts) < 4 or not self.is_closed():
             return False
         # Check for at least 3 unique points (excluding the closing point)
-        return len({(p.x, p.y) for p in pts[:-1]}) >= 3
+        return len({(p.x, p.y, p.z) for p in pts[:-1]}) >= 3
 
     def as_tuple_list(self) -> List[Tuple[float, float, float]]:
         """
@@ -368,7 +368,7 @@ class Polygon3D(GeometryBase):
 
     __slots__ = ("_id", "_plx_id", "_lines", "_point_set")
 
-    def __init__(self, lines: Optional[List[Line3D]] = None, require_horizontal: bool = True):
+    def __init__(self, lines: Optional[List[Line3D]] = None, require_horizontal: bool = False):
 
         super().__init__()
         self._lines: List[Line3D] = lines if lines else []

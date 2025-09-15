@@ -5,37 +5,48 @@ from .basestructure import BaseStructure, TwoPointLineMixin
 from ..geometry import Point, PointSet, Line3D
 
 class WellType(Enum):
-    Extraction = "Extraction"
-    Infiltration = "Infiltration"
+    Extraction = "Extraction"     # 抽水
+    Infiltration = "Infiltration" # 回灌
 
 class Well(BaseStructure, TwoPointLineMixin):
     """
-    Well with a two-point Line3D (top/bottom), type and h_min.
+    Well with a two-point Line3D (top/bottom) and three parameters:
+    - well_type : Extraction or Infiltration
+    - q_well    : discharge [m^3/day] (magnitude |Q_well|)
+    - h_min     : minimum hydraulic head [m]; ONLY used for Extraction
     """
 
     def __init__(
         self,
         name: str,
         line: Optional[Line3D] = None,
-        *,
         p_start: Optional[Point] = None,
         p_end: Optional[Point] = None,
         well_type: Union[WellType, str] = WellType.Extraction,
+        q_well: float = 0.0,
         h_min: float = 0.0,
     ) -> None:
         super().__init__(name)
+        # build two-point line from either 'line' or (p_start, p_end)
         self._line = self._init_line_from_args(line=line, p_start=p_start, p_end=p_end)
 
-        # 兼容字符串（如 "ConstantHead"），保持宽松，映射交给 Mapper 层处理
         if not isinstance(well_type, (WellType, str)):
             raise TypeError("well_type must be WellType or str.")
+        if not isinstance(q_well, (int, float)):
+            raise TypeError("q_well must be numeric.")
         if not isinstance(h_min, (int, float)):
             raise TypeError("h_min must be numeric.")
         self._well_type = well_type
+        self._q_well = float(q_well)
         self._h_min = float(h_min)
         self._pos = self._line.xy_location()
 
+        # runtime handle
+        self.plx_id = None
+
+    # --- geometry helpers ---
     def get_points(self):
+        """Return top/bottom points of the line."""
         return self._line.get_points()
 
     def move(self, dx: float, dy: float, dz: float = 0.0) -> None:
@@ -81,6 +92,7 @@ class Well(BaseStructure, TwoPointLineMixin):
     def pos(self):
         return self._pos
 
+    # --- parameters ---
     @property
     def well_type(self) -> Union[WellType, str]:
         return self._well_type
@@ -90,6 +102,16 @@ class Well(BaseStructure, TwoPointLineMixin):
         if not isinstance(value, (WellType, str)):
             raise TypeError("well_type must be WellType or str.")
         self._well_type = value
+
+    @property
+    def q_well(self) -> float:
+        return self._q_well
+
+    @q_well.setter
+    def q_well(self, value: float):
+        if not isinstance(value, (int, float)):
+            raise TypeError("q_well must be numeric.")
+        self._q_well = float(value)
 
     @property
     def h_min(self) -> float:
@@ -103,4 +125,4 @@ class Well(BaseStructure, TwoPointLineMixin):
 
     def __repr__(self) -> str:
         t = self._well_type.value if isinstance(self._well_type, WellType) else str(self._well_type)
-        return f"<plx.structures.Well {self.describe()} type='{t}' h_min={self._h_min}>"
+        return f"<plx.structures.Well {self.describe()} type='{t}' q_well={self._q_well} h_min={self._h_min}>"

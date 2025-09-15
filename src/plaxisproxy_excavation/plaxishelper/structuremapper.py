@@ -14,7 +14,7 @@ from ..structures.anchor import Anchor
 from ..structures.beam import Beam
 from ..structures.embeddedpile import EmbeddedPile
 from ..structures.retainingwall import RetainingWall
-from ..structures.well import Well
+from ..structures.well import Well, WellType
 from ..structures.load import (
     PointLoad, LineLoad, SurfaceLoad,
     DynPointLoad, DynLineLoad, DynSurfaceLoad,
@@ -208,26 +208,103 @@ def _assign_material(plx_obj: Any, mat_obj: Any) -> None:
 # =============================================================================
 class AnchorMapper:
     @staticmethod
-    def create(g_i: Any, obj: Anchor) -> Any:
+    def create(g_i: Any, obj: "Anchor") -> Any:
+        """
+        Create a node-to-node Anchor from two points of obj.line.
+
+        Keep it consistent with Beam:
+          - Ensure both endpoints exist via _ensure_point()
+          - Call tolerant constructor names with (ptA, ptB)
+          - If PLAXIS returns [Line3D, Anchor], ALWAYS take the LAST as the structure
+          - Do NOT delete helper line/points; optionally bind helper line back to obj.line.plx_id
+          - Assign material/type based on obj.anchor_type (material object / enum / str / handle)
+        """
+        # 1) Endpoints
         pA, pB = obj.get_points()
         hA, hB = _ensure_point(g_i, pA), _ensure_point(g_i, pB)
-        created = _try_call(g_i, ("n2nanchor", "n2n_anchor", "anchor", "cable"), hA, hB)
-        created = _normalize_created_handle(created)
 
-        _set_many_props(created, {"Name": getattr(obj, "name", None)})
+        # 2) Create via tolerant entry names
+        created_raw = _try_call(
+            g_i,
+            ("n2nanchor", "n2n_anchor", "node_to_node_anchor", "anchor", "cable", "create_anchor"),
+            hA, hB
+        )
 
-        t = obj.anchor_type
+        # 3) Extract handles: last = Anchor, first (if any) = helper Line3D
+        line_h = None
+        if isinstance(created_raw, (list, tuple)):
+            if not created_raw:
+                raise RuntimeError("PLAXIS returned empty result when creating Anchor.")
+            if len(created_raw) >= 2:
+                line_h = created_raw[0]
+            anchor_h = created_raw[-1]
+        else:
+            anchor_h = created_raw
+
+        # 4) Naming
+        _set_many_props(anchor_h, {"Name": getattr(obj, "name", None)})
+
+        # 5) Material / type assignment
+        t = getattr(obj, "anchor_type", None)
+        assigned = False
+        try:
+            from src.plaxisproxy_excavation.materials.anchormaterial import (  # type: ignore
+                ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor, AnchorType
+            )
+        except Exception:
+            # Fallback guards if imports are not available at runtime
+            ElasticAnchor = ElastoplasticAnchor = ElastoPlasticResidualAnchor = tuple()  # type: ignore
+            from enum import Enum
+            class _DummyEnum(Enum):  # type: ignore
+                pass
+            AnchorType = _DummyEnum  # type: ignore
+
+        # 5.1 Material object → centralized assigner preferred
         if isinstance(t, (ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor)):
-            _assign_material(created, t)
-        elif isinstance(t, AnchorType):
-            _set_many_props(created, {"MaterialType": t.value if hasattr(t, "value") else str(t)})
+            try:
+                _assign_material(anchor_h, t)
+                assigned = True
+            except Exception:
+                mat_h = getattr(t, "plx_id", t)
+                _set_many_props(anchor_h, {"Material": mat_h, "AnchorMaterial": mat_h, "Type": mat_h})
+                assigned = True
 
-        obj.plx_id = created
-        _log_create("Anchor", f"name={obj.name}", created)
-        return created
+        # 5.2 Enum-like
+        if (not assigned) and isinstance(t, AnchorType):
+            val = getattr(t, "value", str(t))
+            _set_many_props(anchor_h, {"MaterialType": val, "Type": val, "AnchorType": val})
+            assigned = True
+
+        # 5.3 String label
+        if (not assigned) and isinstance(t, str):
+            _set_many_props(anchor_h, {"MaterialType": t, "Type": t, "AnchorType": t})
+            assigned = True
+
+        # 5.4 Direct handle fallback
+        if (not assigned) and (t is not None):
+            mat_h = getattr(t, "plx_id", t)
+            _set_many_props(anchor_h, {"Material": mat_h, "AnchorMaterial": mat_h, "Type": mat_h})
+
+        # 6) Bind runtime handles back to domain objects
+        obj.plx_id = anchor_h
+        if (line_h is not None) and hasattr(obj, "line") and (obj.line is not None):
+            # Keep helper Line3D consistent with Beam-style "keep, don't delete"
+            try:
+                setattr(obj.line, "plx_id", line_h)
+            except Exception:
+                pass
+
+        # 7) Logging (avoid dereferencing handles beyond necessity)
+        extra_str = " line=<kept>" if (line_h is not None) else ""
+        _log_create("Anchor", f"name={obj.name}", anchor_h, extra=extra_str)
+        return anchor_h
 
     @staticmethod
-    def delete(g_i: Any, obj_or_handle: Union[Anchor, Any]) -> bool:
+    def delete(g_i: Any, obj_or_handle: Union["Anchor", Any]) -> bool:
+        """
+        Delete the Anchor structure only. Do NOT delete helper line/points here
+        to mirror Beam behavior and avoid unintended cascading deletions.
+        """
         obj = obj_or_handle if isinstance(obj_or_handle, Anchor) else None
         h = getattr(obj, "plx_id", None) if obj else obj_or_handle
         ok = _try_delete_with_gi(g_i, h)
@@ -235,6 +312,7 @@ class AnchorMapper:
             obj.plx_id = None
         _log_delete("Anchor", f"name={getattr(obj, 'name', 'raw')}", h, ok=ok)
         return ok
+
 
 # =============================================================================
 # Beam
@@ -340,30 +418,79 @@ class RetainingWallMapper:
 class WellMapper:
     @staticmethod
     def create(g_i: Any, obj: Well) -> Any:
+        """
+        Create a well from two end points of obj.line (TwoPointLineMixin).
+        PLAXIS may return [Line3D, Well]; we pick the last as the actual Well.
+        Only three parameters are mapped:
+          - Behaviour/Type/Mode  <- obj.well_type
+          - Q_well (|Q_well|)    <- obj.q_well
+          - h_min                <- ONLY when Extraction
+        """
+        # 1) get endpoints from the domain object (no p1/p2 usage)
         pA, pB = obj.get_points()
         hA, hB = _ensure_point(g_i, pA), _ensure_point(g_i, pB)
-        created = _try_call(g_i, ("well", "flowwell", "gw_well", "well3d", "create_well"), hA, hB)
-        created = _normalize_created_handle(created)
 
-        _set_many_props(created, {"Name": getattr(obj, "name", None)})
+        # 2) create in PLAXIS
+        created_raw = _try_call(g_i, ("well", "flowwell", "gw_well", "well3d", "create_well"), hA, hB)
 
-        typ = getattr(getattr(obj, "well_type", None), "value", getattr(obj, "well_type", None))
-        _set_many_props(created, {
-            "WellType": typ,
-            "Type": typ,
-            "Mode": typ,
-            "Hmin": getattr(obj, "h_min", None),
-            "h_min": getattr(obj, "h_min", None),
-            "MinHead": getattr(obj, "h_min", None),
-            "MinHydraulicHead": getattr(obj, "h_min", None),
-        })
+        # 3) pick handles: prefer the last as the well; keep first (line) if present
+        line_h = None
+        if isinstance(created_raw, (list,)):
+            if not created_raw:
+                raise RuntimeError("PLAXIS returned empty result when creating Well.")
+            if len(created_raw) >= 2:
+                line_h = created_raw[0]
+            well_h = created_raw[-1]
+        else:
+            well_h = created_raw
 
-        obj.plx_id = created
-        _log_create("Well", f"name={obj.name} type={typ}", created)
-        return created
+        # 4) naming
+        _set_many_props(well_h, {"Name": getattr(obj, "name", None)})
+
+        # 5) behaviour/type
+        behaviour_val = getattr(getattr(obj, "well_type", None), "value", getattr(obj, "well_type", None))
+        _set_many_props(
+            well_h,
+            {
+                "Behaviour": behaviour_val,     # UK spelling in many builds
+            },
+        )
+
+        # 6) discharge (|Q_well|). If user didn't set, default 0.0 is ok.
+        qv = float(getattr(obj, "q_well", 0.0))
+        _set_many_props(
+            well_h,
+            {
+                "Q": qv,
+            },
+        )
+
+        # 7) h_min only for Extraction
+        if str(behaviour_val).lower().endswith("extraction"):
+            hv = float(getattr(obj, "h_min", 0.0))
+            _set_many_props(
+                well_h,
+                {
+                    "Hmin": hv,
+                },
+            )
+
+        # 8) write back handles
+        if line_h is not None and hasattr(obj, "line") and obj.line is not None:
+            try:
+                setattr(obj.line, "plx_id", line_h)
+            except Exception:
+                pass
+        obj.plx_id = well_h
+
+        _log_create("Well", f"name={obj.name} type={behaviour_val} Q={qv}", well_h, extra=(f" line={_format_handle(line_h)}" if line_h else ""))
+        return well_h
 
     @staticmethod
     def delete(g_i: Any, obj_or_handle: Union[Well, Any]) -> bool:
+        """
+        Delete the well object only (do not delete the auxiliary Line3D).
+        """
         obj = obj_or_handle if isinstance(obj_or_handle, Well) else None
         h = getattr(obj, "plx_id", None) if obj else obj_or_handle
         ok = _try_delete_with_gi(g_i, h)
@@ -371,6 +498,7 @@ class WellMapper:
             obj.plx_id = None
         _log_delete("Well", f"name={getattr(obj, 'name', 'raw')}", h, ok=ok)
         return ok
+    
 # =============================================================================
 # SoilBlock (best-effort volume creation)
 # =============================================================================

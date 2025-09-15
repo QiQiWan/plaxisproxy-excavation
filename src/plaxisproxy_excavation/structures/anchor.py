@@ -12,16 +12,15 @@ class Anchor(BaseStructure, TwoPointLineMixin):
     def __init__(
         self,
         name: str,
-        # 兼容两种写法：line 或 p_start/p_end
+        anchor_type: Union[ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor],
         line: Optional[Line3D] = None,
         *,
         p_start: Optional[Point] = None,
-        p_end: Optional[Point] = None,
-        anchor_type: Union[AnchorType, ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor, str] = "Elastic"
+        p_end: Optional[Point] = None
     ) -> None:
         super().__init__(name)
         self._line = self._init_line_from_args(line=line, p_start=p_start, p_end=p_end)
-        if not isinstance(anchor_type, (AnchorType, ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor, str)):
+        if not isinstance(anchor_type, (ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor)):
             raise TypeError("anchor_type must be AnchorType/AnchorMaterial/str.")
         self._anchor_type = anchor_type
 
