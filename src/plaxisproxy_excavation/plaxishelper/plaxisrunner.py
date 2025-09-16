@@ -9,7 +9,12 @@ from config.plaxis_config import HOST, PORT, PASSWORD
 
 # Import the main data structure and the mapper class from your library
 from ..plaxisexcavation import *  # noqa: F401,F403  (keep existing usage)
-from .plaxismapper import PlaxisMapper  # noqa: F401
+# Legacy facade (optional). Some codebases import PlaxisRunner.PlaxisMapper for DI.
+# Avoid hard failure if the old facade module is not present.
+try:
+    from .plaxismapper import PlaxisMapper  # type: ignore  # noqa: F401
+except Exception:
+    PlaxisMapper = None  # type: ignore
 from plxscripting.server import new_server, Server, PlxProxyFactory
 from ..geometry import *  # Point, PointSet, Line3D, Polygon3D, etc.
 
