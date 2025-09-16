@@ -16,6 +16,50 @@ from ..geometry import *  # Point, PointSet, Line3D, Polygon3D, etc.
 # NEW: use the static geometry mapper that wraps g_i.point/line/surface
 from .geometrymapper import GeometryMapper
 
+# Mapper imports (thin wrappers exposed below)
+from .projectinfomapper import ProjectInformationMapper
+from .boreholemapper import BoreholeSetMapper
+from .materialmapper import (
+    SoilMaterialMapper, PlateMaterialMapper, BeamMaterialMapper,
+    PileMaterialMapper, AnchorMaterialMapper,
+)
+from .structuremapper import (
+    RetainingWallMapper as _RetainingWallMapper,
+    BeamMapper as _BeamStructMapper,
+    EmbeddedPileMapper as _EmbeddedPileMapper,
+    AnchorMapper as _AnchorStructMapper,
+    WellMapper as _WellMapper,
+    SoilBlockMapper as _SoilBlockMapper,
+)
+from .loadmapper import LoadMapper, LoadMultiplierMapper
+from .watertablemapper import WaterTableMapper
+from .meshmapper import MeshMapper
+from .monitormapper import MonitorMapper
+from .phasemapper import PhaseMapper
+
+# Domain class imports for type hints / isinstance dispatch
+from ..borehole import BoreholeSet
+from ..materials.soilmaterial import BaseSoilMaterial
+from ..materials.platematerial import ElasticPlate, ElastoplasticPlate
+from ..materials.beammaterial import ElasticBeam, ElastoplasticBeam
+from ..materials.pilematerial import ElasticPile, ElastoplasticPile
+from ..materials.anchormaterial import (
+    ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor,
+)
+from ..structures.retainingwall import RetainingWall
+from ..structures.beam import Beam
+from ..structures.embeddedpile import EmbeddedPile
+from ..structures.anchor import Anchor
+from ..structures.well import Well
+from ..structures.soilblock import SoilBlock
+from ..structures.load import (
+    _BaseLoad, LoadMultiplier,
+)
+from ..components.projectinformation import ProjectInformation
+from ..components.watertable import WaterLevelTable
+from ..components.mesh import Mesh
+from ..components.phase import Phase
+
 
 class PlaxisRunner:
     """
@@ -193,4 +237,170 @@ class PlaxisRunner:
             validate_ring=validate_ring,
             stop_on_error=stop_on_error,
             return_polygon=return_polygon,
+        )
+
+    # ===================== Project information =====================
+    def apply_project_information(self, proj: ProjectInformation) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return ProjectInformationMapper.create(self.g_i, proj)
+
+    # ===================== Boreholes & layers =====================
+    def create_boreholes(self, bhset: BoreholeSet, *, normalize: bool = True, set_name_on_objects: bool = True) -> Dict[str, List[Tuple[float, float]]]:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return BoreholeSetMapper.create(self.g_i, bhset, normalize=normalize, set_name_on_objects=set_name_on_objects)
+
+    # ===================== Materials =====================
+    def create_material(self, mat: Any) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        if isinstance(mat, BaseSoilMaterial):
+            return SoilMaterialMapper.create_material(self.g_i, mat)
+        if isinstance(mat, (ElasticPlate, ElastoplasticPlate)):
+            return PlateMaterialMapper.create_material(self.g_i, mat)  # type: ignore[arg-type]
+        if isinstance(mat, (ElasticBeam, ElastoplasticBeam)):
+            return BeamMaterialMapper.create_material(self.g_i, mat)   # type: ignore[arg-type]
+        if isinstance(mat, (ElasticPile, ElastoplasticPile)):
+            return PileMaterialMapper.create_material(self.g_i, mat)   # type: ignore[arg-type]
+        if isinstance(mat, (ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor)):
+            return AnchorMaterialMapper.create_material(self.g_i, mat) # type: ignore[arg-type]
+        raise TypeError(f"Unsupported material type: {type(mat).__name__}")
+
+    def delete_material(self, mat_or_handle: Any) -> bool:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        # Dispatch by domain type when possible, otherwise try each mapper (safe no-ops)
+        if isinstance(mat_or_handle, BaseSoilMaterial):
+            return SoilMaterialMapper.delete_material(self.g_i, mat_or_handle)
+        if isinstance(mat_or_handle, (ElasticPlate, ElastoplasticPlate)):
+            return PlateMaterialMapper.delete_material(self.g_i, mat_or_handle)  # type: ignore[arg-type]
+        if isinstance(mat_or_handle, (ElasticBeam, ElastoplasticBeam)):
+            return BeamMaterialMapper.delete_material(self.g_i, mat_or_handle)   # type: ignore[arg-type]
+        if isinstance(mat_or_handle, (ElasticPile, ElastoplasticPile)):
+            return PileMaterialMapper.delete_material(self.g_i, mat_or_handle)   # type: ignore[arg-type]
+        if isinstance(mat_or_handle, (ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor)):
+            return AnchorMaterialMapper.delete_material(self.g_i, mat_or_handle) # type: ignore[arg-type]
+        # Fallback: try all and OR results
+        ok = False
+        for mapper in (SoilMaterialMapper, PlateMaterialMapper, BeamMaterialMapper, PileMaterialMapper, AnchorMaterialMapper):
+            try:
+                ok = mapper.delete_material(self.g_i, mat_or_handle) or ok
+            except Exception:
+                continue
+        return ok
+
+    # ===================== Structures =====================
+    def create_retaining_wall(self, wall: RetainingWall) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return _RetainingWallMapper.create(self.g_i, wall)
+
+    def create_beam(self, beam: Beam) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return _BeamStructMapper.create(self.g_i, beam)
+
+    def create_anchor(self, anchor: Anchor) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return _AnchorStructMapper.create(self.g_i, anchor)
+
+    def create_embedded_pile(self, pile: EmbeddedPile) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return _EmbeddedPileMapper.create(self.g_i, pile)
+
+    def create_well(self, well: Well) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return _WellMapper.create(self.g_i, well)
+
+    def create_soil_block(self, block: SoilBlock) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return _SoilBlockMapper.create(self.g_i, block)
+
+    # ===================== Loads =====================
+    def create_load(self, load: _BaseLoad) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return LoadMapper.create(self.g_i, load)
+
+    def delete_load(self, load_or_handle: Any) -> None:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return LoadMapper.delete(self.g_i, load_or_handle)
+
+    def create_load_multiplier(self, mul: LoadMultiplier) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return LoadMultiplierMapper.create(self.g_i, mul)
+
+    # ===================== Water table =====================
+    def create_water_table(self, table: WaterLevelTable, *, goto_flow: bool = True) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return WaterTableMapper.create_table(self.g_i, table, goto_flow=goto_flow)
+
+    def update_water_table(self, table: WaterLevelTable, *, rebuild_if_needed: bool = True) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return WaterTableMapper.update_table(self.g_i, table, rebuild_if_needed=rebuild_if_needed)
+
+    def delete_water_table(self, table: WaterLevelTable) -> None:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return WaterTableMapper.delete_table(self.g_i, table)
+
+    # ===================== Mesh =====================
+    def mesh(self, mesh: Mesh) -> str:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return MeshMapper.generate(self.g_i, mesh)
+
+    # ===================== Monitors =====================
+    def create_monitors(self, monitors: List["CurvePoint"]) -> None:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return MonitorMapper.create_monitors(self.g_i, monitors)
+
+    # ===================== Phases =====================
+    def goto_stages(self) -> bool:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return PhaseMapper.goto_stages(self.g_i)
+
+    def get_initial_phase(self) -> Phase:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return PhaseMapper.get_initial_phase(self.g_i)
+
+    def create_phase(self, phase: Phase, inherits: Optional[Any] = None) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        base = inherits if inherits is not None else (getattr(getattr(phase, "inherits", None), "plx_id", None))
+        return PhaseMapper.create(self.g_i, phase, inherits=base)
+
+    def apply_phase(self, phase_handle: Any, phase: Phase, *, warn_on_missing: bool = False) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return PhaseMapper.apply_phase(self.g_i, phase_handle, phase, warn_on_missing=warn_on_missing)
+
+    def update_phase(
+        self,
+        phase: Phase,
+        *,
+        warn_on_missing: bool = False,
+        allow_recreate: bool = False,
+        sync_meta: bool = True,
+    ) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return PhaseMapper.update(
+            self.g_i,
+            phase,
+            warn_on_missing=warn_on_missing,
+            allow_recreate=allow_recreate,
+            sync_meta=sync_meta,
         )
