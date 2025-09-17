@@ -224,7 +224,6 @@ class PlaxisRunner:
         ],
         name: Optional[str] = None,
         auto_close: bool = True,
-        validate_ring: bool = True,
         stop_on_error: bool = False,
         return_polygon: bool = False,
     ) -> Any:
@@ -234,12 +233,13 @@ class PlaxisRunner:
         """
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
+        # GeometryMapper.create_surface does not take a validate_ring flag;
+        # closure and basic validity are handled internally.
         return GeometryMapper.create_surface(
             self.g_i,
             data,
             name=name,
             auto_close=auto_close,
-            validate_ring=validate_ring,
             stop_on_error=stop_on_error,
             return_polygon=return_polygon,
         )
@@ -327,7 +327,7 @@ class PlaxisRunner:
         return _SoilBlockMapper.create(self.g_i, block)
 
     # ===================== Loads =====================
-    def create_load(self, load: _BaseLoad) -> Any:
+    def create_load(self, load: Any) -> Any:
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
         return LoadMapper.create(self.g_i, load)
@@ -362,6 +362,9 @@ class PlaxisRunner:
     def mesh(self, mesh: Mesh) -> str:
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
+        if hasattr(self.g_i, "gotomesh"):
+            goto = getattr(self.g_i, "gotomesh")
+            goto()
         return MeshMapper.generate(self.g_i, mesh)
 
     # ===================== Monitors =====================
