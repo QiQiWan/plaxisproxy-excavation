@@ -1,5 +1,3 @@
-# src/plaxisproxy_excavation/plaxishelper/plaxisrunner.py
-
 import time
 from typing import List, Dict, Any, Optional, Union, Iterable, Sequence, Tuple
 
@@ -8,7 +6,7 @@ from typing import List, Dict, Any, Optional, Union, Iterable, Sequence, Tuple
 from config.plaxis_config import HOST, PORT, PASSWORD
 
 # Import the main data structure and the mapper class from your library
-from ..plaxisexcavation import *  # noqa: F401,F403  (keep existing usage)
+# from ..plaxisexcavation import *  # noqa: F401,F403  (keep existing usage)
 # Legacy facade (optional). Some codebases import PlaxisRunner.PlaxisMapper for DI.
 # Avoid hard failure if the old facade module is not present.
 try:
@@ -368,10 +366,10 @@ class PlaxisRunner:
         return MeshMapper.generate(self.g_i, mesh)
 
     # ===================== Monitors =====================
-    def create_monitors(self, monitors: List["CurvePoint"]) -> None:
-        if self.g_i is None:
-            raise RuntimeError("Not connected: g_i is None.")
-        return MonitorMapper.create_monitors(self.g_i, monitors)
+    # def create_monitors(self, monitors: List["CurvePoint"]) -> None:
+    #     if self.g_i is None:
+    #         raise RuntimeError("Not connected: g_i is None.")
+    #     return MonitorMapper.create_monitors(self.g_i, monitors)
 
     # ===================== Phases =====================
     def goto_stages(self) -> bool:

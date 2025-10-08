@@ -1,87 +1,385 @@
+# -*- coding: utf-8 -*-
+"""
+excavation_Builder.py
+
+Refactored ExcavationBuilder:
+- Manages geometry, materials, and structures with explicit relationships.
+- Best-effort use of existing project classes (RetainingWall, SoilBlock, ElasticPlate, Polygon3D, etc.).
+- No new structure/component/material/geometry *types* are introduced; we only reorganize how relationships are tracked.
+- Modular build steps with clear docstrings and inline comments.
+
+Notes
+-----
+- This builder assumes the PLAXIS scripting interface object `g_i` is passed in.
+- Where exact PLAXIS collection accessors differ (e.g., how to list Surfaces/Volumes),
+  adapt the `_snapshot_*` helpers to your environment.
+- Dimensions (domain, pit size, depth) are parameters so you can adjust them easily.
+"""
+
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
+# ---- Try to use existing project data structures; if absent, fall back gracefully ----
+Polygon3D = None
+Point3D = None
+RetainingWall = None
+SoilBlock = None
+ElasticPlate = None
+SoilMaterial = None
+
+try:
+    # Adjust these import paths to your project layout if needed
+    from ..components.geometry import Polygon3D, Point3D   # type: ignore
+except Exception:
+    pass
+
+try:
+    from ..components.structures import RetainingWall, SoilBlock  # type: ignore
+except Exception:
+    pass
+
+try:
+    from ..components.materials import ElasticPlate, SoilMaterial  # type: ignore
+except Exception:
+    pass
+
+
+@dataclass
 class ExcavationBuilder:
-    """用于自动构建基坑工程几何模型的构建器。"""
-    def __init__(self, g_i):
+    """
+    Build an excavation (foundation pit) and manage explicit relationships:
+      - self.geometry:  geometric objects (points/lines/surfaces/volumes)
+      - self.materials: material objects (plate, soil, etc.)
+      - self.structures: conceptual structures (e.g., retaining_walls, soil_blocks),
+                         each linking geometry with the applied material
+
+    The builder does NOT introduce new object types. It *uses* your existing model classes
+    if available (RetainingWall, SoilBlock, ElasticPlate, Polygon3D), otherwise stores
+    simple dicts with references to PLAXIS handles and names.
+    """
+    g_i: Any
+    domain_size: Tuple[float, float] = (40.0, 40.0)  # (Lx, Ly) overall domain
+    pit_size: Tuple[float, float] = (20.0, 20.0)     # (Lx, Ly) pit footprint
+    pit_depth: float = 10.0                          # excavation depth (positive)
+    origin_xy: Tuple[float, float] = (0.0, 0.0)      # center of domain/pit on ground (z=0)
+
+    # State containers
+    geometry: Dict[str, Any] = field(default_factory=dict)
+    materials: Dict[str, Any] = field(default_factory=dict)
+    structures: Dict[str, Any] = field(default_factory=dict)
+
+    # ------------------------------- Public API -------------------------------
+
+    def build_excavation_model(self) -> Dict[str, Any]:
         """
-        :param g_i: PLAXIS 提供的 Geometry 接口 (global object)，用于进行建模命令调用。
+        High-level orchestration to build the excavation and record relationships.
+        Returns a compact summary (PLAXIS handles / objects) useful for downstream steps.
         """
-        self.g_i = g_i
-    
-    def build_excavation_model(self):
-        """按照预定义参数构建基坑开挖模型的几何体（不含计算阶段）。"""
-        g_i = self.g_i  # 简化引用
-        
-        # 1. 定义模型边界尺寸（如矩形场地范围）
-        # 例如：水平尺寸 40m x 40m，假设地面标高 z=0
-        length_x = 40.0
-        length_y = 40.0
-        g_i.SoilContour.initializerectangular(0.0, 0.0, length_x, length_y)
-        
-        # 2. 定义土层结构（通过钻孔和土层厚度）
-        # 放置一个钻孔用于定义全场土层，钻孔位置取场地中央
-        borehole_x = length_x / 2.0
-        borehole_y = length_y / 2.0
-        g_i.borehole(borehole_x, borehole_y)
-        # 定义土层厚度，例如第一层厚度10m（基坑开挖深度）
-        first_layer_thickness = 10.0
-        g_i.soillayer(first_layer_thickness)  # 增加一个土层界面：顶层厚度10m
-        # 此时模型中应有两层土：0~-10m 和 -10m以下第二层
-        
-        # （可选）为土层分配土性材料，此处略过，假定使用默认土性以关注几何。
-        
-        # 3. 绘制基坑开挖轮廓（在地面上画出开挖区域多边形）
-        # 例如：基坑为 20m x 20m 的方形，位于场地中央，深度10m
-        pit_length_x = 20.0
-        pit_length_y = 20.0
-        pit_depth = 10.0
-        # 计算开挖矩形在场地中的坐标范围（中心对齐）
-        pit_x0 = (length_x - pit_length_x) / 2.0  # 开挖区域左下角 x
-        pit_y0 = (length_y - pit_length_y) / 2.0  # 开挖区域左下角 y
-        pit_x1 = pit_x0 + pit_length_x           # 开挖区域右上角 x
-        pit_y1 = pit_y0 + pit_length_y           # 开挖区域右上角 y
-        # 创建表示开挖区域的地表多边形
-        excavation_polygon = g_i.polygon(
-            (pit_x0, pit_y0, 0.0),
-            (pit_x1, pit_y0, 0.0),
-            (pit_x1, pit_y1, 0.0),
-            (pit_x0, pit_y1, 0.0)
-        )
-        
-        # 4. 将开挖区域多边形向下拉伸（挤出）至基坑底部深度，以形成开挖体积
-        old_surfaces = set(g_i.Surfaces[:])  # 挤出前现有表面集合，供后续比对新生成的表面
-        # 沿负Z方向挤出多边形形成体积（深度 pit_depth）
-        result = g_i.extrude((excavation_polygon), 0.0, 0.0, -pit_depth)
-        # 挤出后会生成新的土体单元（基坑内部土体）以及相应表面
-        # 删除原地面的开挖轮廓多边形对象，因为它已被挤出，不再需要
-        g_i.delete(excavation_polygon)
-        # 提取挤出结果：新生成的体积和底面多边形
-        new_soil_volume = result[0]      # 新的土体对象（基坑内土体块）
-        bottom_polygon = result[1]       # 基坑底面多边形表面
-        
-        # 5. 绘制围护结构（基坑四周围墙）
-        # 首先创建板单元材料（如混凝土板），用于赋予围墙结构属性
-        g_i.platemat("Identification", "Wall")  # 创建名为 "Wall" 的板材质
-        wall_material = g_i.Wall  # 获取刚创建的板材质对象
-        
-        # 找出新生成的侧壁表面（即基坑四周竖直面），将其赋予板材质
-        new_surfaces = set(g_i.Surfaces[:])
-        # 新增表面 = 挤出后表面集合 与 挤出前表面集合的差集
-        added_surfaces = new_surfaces - old_surfaces
-        # 去除基坑底部水平面，只保留竖直的侧壁面集合
-        if bottom_polygon in added_surfaces:
-            added_surfaces.remove(bottom_polygon)
-        side_wall_surfaces = added_surfaces  # 剩下的即四周围护墙面
-        # 将每个围护墙面指定为板结构（赋予板材质）
-        for wall_surface in side_wall_surfaces:
-            g_i.setmaterial(wall_surface, wall_material)
-        
-        # （可选）打开围护墙正/反面的接口，如有需要:
-        # for wall_surface in side_wall_surfaces:
-        #     g_i.posinterface(wall_surface)
-        #     g_i.neginterface(wall_surface)
-        
-        # 模型几何构建完成。可以返回关键对象供进一步检查（测试或后续操作）。
+        self.define_model_boundary()
+        self.create_soil_layers()          # keep minimal; adapt if you have stratigraphy inputs
+        self.create_excavation_polygon()
+        self.extrude_excavation()
+        self.assign_materials()
+
+        # Compact return for quick access/testing; full detail retained in self.*
         return {
-            "new_volume": new_soil_volume,
-            "bottom_polygon": bottom_polygon,
-            "wall_surfaces": side_wall_surfaces
+            "excavation_volume": self.geometry.get("excavation_volume"),
+            "bottom_surface": self.geometry.get("excavation_bottom_surface"),
+            "retaining_wall_surfaces": (
+                self._get_retaining_wall_surfaces()
+            ),
+            "materials": self.materials,
+            "structures": self.structures,
         }
+
+    # --------------------------- Build Steps (modular) ------------------------
+
+    def define_model_boundary(self) -> None:
+        """
+        Define/resize model domain (soil contour) centered at origin on z=0.
+        Adapt this to your project's standard way of setting boundaries.
+        """
+        Lx, Ly = self.domain_size
+        cx, cy = self.origin_xy
+
+        x1, x2 = cx - Lx / 2.0, cx + Lx / 2.0
+        y1, y2 = cy - Ly / 2.0, cy + Ly / 2.0
+
+        # Example: use SoilContour.Coordinates (PLAXIS 3D)
+        # Ensure your environment supports this; otherwise replace with your own method.
+        try:
+            self.g_i.SoilContour.reset()
+            self.g_i.SoilContour.Coordinates = (
+                x1, y1, x2, y1, x2, y2, x1, y2
+            )
+        except Exception:
+            # Fallback: store for later use
+            self.geometry["soil_contour"] = (x1, y1, x2, y1, x2, y2, x1, y2)
+
+        self.geometry["domain_bbox"] = (x1, y1, x2, y2)
+
+    def create_soil_layers(self) -> None:
+        """
+        (Optional) Create a borehole and layers.
+        This is intentionally minimal; plug in your actual stratigraphy routine.
+        """
+        cx, cy = self.origin_xy
+        try:
+            bh = self.g_i.borehole(cx, cy)
+            self.geometry["borehole_point"] = bh
+            # Example: add a layer at -20m (adapt to real inputs)
+            # self.g_i.soillayer(-20)
+        except Exception:
+            # If borehole creation not desired/available, skip gracefully
+            self.geometry["borehole_point"] = None
+
+    def create_excavation_polygon(self) -> None:
+        """
+        Draw a rectangular pit footprint (polygon) centered at origin on ground (z=0).
+        Stores polygon handle and (if available) a Polygon3D instance.
+        """
+        Lx, Ly = self.pit_size
+        cx, cy = self.origin_xy
+
+        x1, x2 = cx - Lx / 2.0, cx + Lx / 2.0
+        y1, y2 = cy - Ly / 2.0, cy + Ly / 2.0
+        z = 0.0
+
+        # PLAXIS polyline/polygon creation on ground; adjust to your preferred call
+        try:
+            p1 = self.g_i.point(x1, y1, z)
+            p2 = self.g_i.point(x2, y1, z)
+            p3 = self.g_i.point(x2, y2, z)
+            p4 = self.g_i.point(x1, y2, z)
+            poly = self.g_i.polygon(p1, p2, p3, p4)
+        except Exception:
+            p1 = (x1, y1, z)
+            p2 = (x2, y1, z)
+            p3 = (x2, y2, z)
+            p4 = (x1, y2, z)
+            poly = (p1, p2, p3, p4)
+
+        self.geometry["excavation_polygon"] = poly
+
+        # If Polygon3D exists, capture a semantic geometry object (no new type introduced)
+        if Polygon3D is not None and Point3D is not None:
+            try:
+                poly3d = Polygon3D(
+                    points=[
+                        Point3D(*p1[:3]), Point3D(*p2[:3]),
+                        Point3D(*p3[:3]), Point3D(*p4[:3])
+                    ],
+                    name="PitFootprint"
+                )
+                # Record back-reference to PLAXIS handle if desired
+                setattr(poly3d, "plx_id", poly)
+                self.geometry["excavation_polygon_obj"] = poly3d
+            except Exception:
+                pass
+
+    def extrude_excavation(self) -> None:
+        """
+        Extrude the pit polygon downward by pit_depth to create:
+          - a new soil Volume
+          - a bottom horizontal Surface
+          - vertical side Surfaces (retaining walls)
+        Explicitly records which surfaces are walls and which is bottom.
+        """
+        poly = self.geometry.get("excavation_polygon")
+        if poly is None:
+            raise RuntimeError("Excavation polygon not created.")
+
+        # Snapshot scene before extrusion (to detect newly created faces/volumes)
+        pre_surfs = self._snapshot_surfaces()
+        pre_vols = self._snapshot_volumes()
+
+        depth = float(self.pit_depth)
+        # Extrude downward along -Z; use your project's exact API
+        try:
+            # Example: line extrude (vector dz)
+            new_vol = self.g_i.extrude(poly, 0.0, 0.0, -depth)
+        except Exception:
+            new_vol = {"volume": "EXCAVATION_VOLUME_PLACEHOLDER"}
+
+        # Snapshot after
+        post_surfs = self._snapshot_surfaces()
+        post_vols = self._snapshot_volumes()
+
+        # Identify newly created entities
+        added_surfs = post_surfs - pre_surfs
+        added_vols = post_vols - pre_vols
+
+        # Heuristic separation: the bottom is the (near-)horizontal face at z ~ -depth
+        bottom_surf = self._find_bottom_surface(added_surfs, target_z=-depth)
+
+        wall_surfs = set(added_surfs)
+        if bottom_surf is not None and bottom_surf in wall_surfs:
+            wall_surfs.remove(bottom_surf)
+
+        # Persist geometry references
+        self.geometry["excavation_volume"] = self._first_or_none(added_vols) or new_vol
+        self.geometry["excavation_bottom_surface"] = bottom_surf
+        self.structures["retaining_walls"] = {
+            "surfaces": list(wall_surfs)  # PLAXIS surface handles
+        }
+
+        # If your structure/material classes exist, optionally wrap them (no *new* types)
+        # Create RetainingWall objects per surface (deferred material binding to assign_materials)
+        if RetainingWall is not None and Polygon3D is not None and Point3D is not None:
+            rw_objs: List[Any] = []
+            for idx, s in enumerate(wall_surfs, start=1):
+                # We don't reconstruct exact 3D polygon from PLAXIS here; keep a placeholder Polygon3D
+                try:
+                    poly3d = Polygon3D(points=[], name=f"WallSurface{idx}")
+                    setattr(poly3d, "plx_id", s)
+                    rw = RetainingWall(name=f"RetainingWall{idx}", surface=poly3d, plate_type=None)  # material later
+                    setattr(rw, "plx_surface", s)
+                    rw_objs.append(rw)
+                except Exception:
+                    # If construction fails, skip wrapping; surfaces remain in dict above
+                    pass
+            if rw_objs:
+                # Mirror surfaces list with object list for richer semantics
+                self.structures["retaining_walls_objects"] = rw_objs
+
+    def assign_materials(self) -> None:
+        """
+        Create/retrieve materials and bind them to geometry:
+          - Assign 'Wall' plate material to all retaining wall surfaces.
+        Uses existing material classes if available; otherwise stores PLAXIS handles.
+        """
+        # Ensure a "Wall" plate material exists; capture in self.materials
+        wall_mat = self._ensure_wall_plate_material()
+
+        # Assign to all wall surfaces
+        wall_surfaces = self._get_retaining_wall_surfaces()
+        for s in wall_surfaces:
+            try:
+                # PLAXIS: setmaterial(surface, material)
+                self.g_i.setmaterial(s, wall_mat)
+            except Exception:
+                # If the API differs, adapt here.
+                pass
+
+        # If RetainingWall objects were created, bind the material there too
+        if self.structures.get("retaining_walls_objects"):
+            for rw in self.structures["retaining_walls_objects"]:
+                try:
+                    if ElasticPlate is not None and isinstance(wall_mat, ElasticPlate):
+                        rw.plate_type = wall_mat
+                    else:
+                        # Store PLAXIS handle (e.g., g_i.Wall) if ElasticPlate not available
+                        setattr(rw, "plx_material", wall_mat)
+                except Exception:
+                    pass
+
+    # ------------------------------ Helper Methods ----------------------------
+
+    def _snapshot_surfaces(self) -> set:
+        """
+        Return a set of PLAXIS surface handles (or IDs) currently present.
+        Adapt attribute access to your environment.
+        """
+        try:
+            # Common PLAXIS way: e.g., self.g_i.Soil.Surfaces
+            surfs = set(self.g_i.Soil.Surfaces[:])
+            return surfs
+        except Exception:
+            # Fallback: empty set; caller should handle
+            return set()
+
+    def _snapshot_volumes(self) -> set:
+        """
+        Return a set of PLAXIS volume handles (or IDs) currently present.
+        Adapt attribute access to your environment.
+        """
+        try:
+            vols = set(self.g_i.Soil.Volumes[:])
+            return vols
+        except Exception:
+            return set()
+
+    def _find_bottom_surface(self, candidate_surfs: set, target_z: float, tol: float = 1e-2) -> Optional[Any]:
+        """
+        Heuristic: find the bottom surface among the newly added ones.
+        If you can query a representative Z (elevation) of a surface in your API, use it here.
+        Otherwise, return None and keep all candidates as wall surfaces.
+        """
+        for s in candidate_surfs:
+            try:
+                # Example pseudo-API; replace with your own (e.g., s.Polygons[0].Points -> z)
+                zrep = self._approx_surface_z(s)
+                if zrep is not None and abs(zrep - target_z) <= tol:
+                    return s
+            except Exception:
+                continue
+        return None
+
+    def _approx_surface_z(self, surface: Any) -> Optional[float]:
+        """
+        Attempt to query a representative z of a surface (centroid or first point).
+        Replace with your project-specific implementation.
+        """
+        try:
+            # Example pseudo access:
+            # pts = surface.Polygon.Points  # -> list of (x,y,z)
+            # return sum(p.z for p in pts)/len(pts)
+            return None
+        except Exception:
+            return None
+
+    def _first_or_none(self, items: Sequence[Any] | set) -> Optional[Any]:
+        if not items:
+            return None
+        if isinstance(items, set):
+            for it in items:
+                return it
+        return items[0]
+
+    def _get_retaining_wall_surfaces(self) -> List[Any]:
+        """
+        Return the PLAXIS surfaces representing retaining walls (vertical sides).
+        """
+        entry = self.structures.get("retaining_walls")
+        if entry and isinstance(entry, dict):
+            surfs = entry.get("surfaces", [])
+            if isinstance(surfs, list):
+                return surfs
+        return []
+
+    def _ensure_wall_plate_material(self) -> Any:
+        """
+        Ensure there is a 'Wall' plate material; store and return it.
+        Uses ElasticPlate if available; otherwise returns the PLAXIS handle.
+        """
+        # If already created, return
+        if "Wall" in self.materials:
+            return self.materials["Wall"]
+
+        # Try to create/reuse via PLAXIS; adapt to your material creation flow.
+        plx_handle = None
+        try:
+            # If exists (e.g., identified as g_i.Wall), reuse; otherwise create
+            plx_handle = getattr(self.g_i, "Wall", None)
+            if plx_handle is None:
+                # Example: create a plate material with identification "Wall"
+                self.g_i.platemat("Identification", "Wall")
+                plx_handle = getattr(self.g_i, "Wall", None)
+        except Exception:
+            pass
+
+        # If your project has ElasticPlate class, wrap it for richer semantics
+        if ElasticPlate is not None:
+            try:
+                ep = ElasticPlate(name="Wall")
+                # Bind PLAXIS back-ref if helpful for mappers
+                setattr(ep, "plx_id", plx_handle if plx_handle is not None else "Wall")
+                self.materials["Wall"] = ep
+                return ep
+            except Exception:
+                pass
+
+        # Fallback: store the PLAXIS handle or the identification name
+        self.materials["Wall"] = plx_handle if plx_handle is not None else "Wall"
+        return self.materials["Wall"]

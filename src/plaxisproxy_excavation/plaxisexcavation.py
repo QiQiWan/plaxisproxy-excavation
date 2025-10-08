@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Type, TypeVar, Sequence
 # --- Core & Components ---
 from .core.plaxisobject import SerializableBase, PlaxisObject
 from .components.projectinformation import ProjectInformation
-from .components.phase import ConstructionStage
+from .components.phase import Phase
 from .components.curvepoint import CurvePoint, NodePoint, StressPoint # Import curve point objects
 from .borehole import BoreholeSet
 
@@ -20,7 +20,7 @@ from .structures.embeddedpile import EmbeddedPile
 from .structures.load import (
     PointLoad, LineLoad, SurfaceLoad, LoadMultiplier,
     DynPointLoad, DynLineLoad, DynSurfaceLoad, UniformSurfaceLoad,
-    LinearSurfaceLoad, XAlignedIncrementSurfaceLoad, YAlignedIncrementSurfaceLoad,
+    YAlignedIncrementSurfaceLoad,
     ZAlignedIncrementSurfaceLoad, VectorAlignedIncrementSurfaceLoad,
     FreeIncrementSurfaceLoad, PerpendicularSurfaceLoad
 )
@@ -94,7 +94,7 @@ class PlaxisFoundationPit(SerializableBase):
         }
 
         # Construction phases
-        self.phases: List[ConstructionStage] = []
+        self.phases: List[Phase] = []
 
         # Monitors: for storing curve points to be monitored
         self.monitors: List[CurvePoint] = []
@@ -169,7 +169,7 @@ class PlaxisFoundationPit(SerializableBase):
         self.loads[load_type].append(load_obj)
 
 
-    def add_phase(self, phase: ConstructionStage):
+    def add_phase(self, phase: Phase):
         """
         Adds a construction stage to the model, preventing duplicates.
 
@@ -317,7 +317,7 @@ class PlaxisFoundationPit(SerializableBase):
         
         # Deserialize construction phases
         if "phases" in data:
-            instance.phases = [ConstructionStage.from_dict(p) for p in data["phases"]]
+            instance.phases = [Phase.from_dict(p) for p in data["phases"]]
             
         # Deserialize monitor points
         if "monitors" in data:
