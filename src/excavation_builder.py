@@ -1,385 +1,545 @@
-# -*- coding: utf-8 -*-
-"""
-excavation_Builder.py
-
-Refactored ExcavationBuilder:
-- Manages geometry, materials, and structures with explicit relationships.
-- Best-effort use of existing project classes (RetainingWall, SoilBlock, ElasticPlate, Polygon3D, etc.).
-- No new structure/component/material/geometry *types* are introduced; we only reorganize how relationships are tracked.
-- Modular build steps with clear docstrings and inline comments.
-
-Notes
------
-- This builder assumes the PLAXIS scripting interface object `g_i` is passed in.
-- Where exact PLAXIS collection accessors differ (e.g., how to list Surfaces/Volumes),
-  adapt the `_snapshot_*` helpers to your environment.
-- Dimensions (domain, pit size, depth) are parameters so you can adjust them easily.
-"""
-
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from math import ceil
+from typing import List, Dict, Any, Optional
 
-# ---- Try to use existing project data structures; if absent, fall back gracefully ----
-Polygon3D = None
-Point3D = None
-RetainingWall = None
-SoilBlock = None
-ElasticPlate = None
-SoilMaterial = None
-
-try:
-    # Adjust these import paths to your project layout if needed
-    from ..components.geometry import Polygon3D, Point3D   # type: ignore
-except Exception:
-    pass
-
-try:
-    from ..components.structures import RetainingWall, SoilBlock  # type: ignore
-except Exception:
-    pass
-
-try:
-    from ..components.materials import ElasticPlate, SoilMaterial  # type: ignore
-except Exception:
-    pass
+from .plaxisproxy_excavation.plaxishelper.plaxisrunner import PlaxisRunner
+from .plaxis_config import *
+from .plaxisproxy_excavation.excavation import FoundationPit
 
 
-@dataclass
+"""
+Excavation Engineering Automation — Builder
+-------------------------------------------
+This builder orchestrates mapping the FoundationPit model into PLAXIS
+via a PlaxisRunner adapter. It builds only the *initial design*; phase
+options/activations and per-phase water/well overrides are applied later.
+"""
+
+
 class ExcavationBuilder:
     """
-    Build an excavation (foundation pit) and manage explicit relationships:
-      - self.geometry:  geometric objects (points/lines/surfaces/volumes)
-      - self.materials: material objects (plate, soil, etc.)
-      - self.structures: conceptual structures (e.g., retaining_walls, soil_blocks),
-                         each linking geometry with the applied material
+    Build the excavation model in PLAXIS and collect IDs/handles via PlaxisRunner.
 
-    The builder does NOT introduce new object types. It *uses* your existing model classes
-    if available (RetainingWall, SoilBlock, ElasticPlate, Polygon3D), otherwise stores
-    simple dicts with references to PLAXIS handles and names.
+    Responsibilities:
+    - Validate the FoundationPit payload shape (non-breaking warnings where possible).
+    - Map project info, materials, boreholes & layers, structures, loads, monitors.
+    - Optionally mesh.
+    - Create phase shells (do not apply settings/activations here).
+    - Provide helpers to apply phases and update well parameters later.
     """
-    g_i: Any
-    domain_size: Tuple[float, float] = (40.0, 40.0)  # (Lx, Ly) overall domain
-    pit_size: Tuple[float, float] = (20.0, 20.0)     # (Lx, Ly) pit footprint
-    pit_depth: float = 10.0                          # excavation depth (positive)
-    origin_xy: Tuple[float, float] = (0.0, 0.0)      # center of domain/pit on ground (z=0)
 
-    # State containers
-    geometry: Dict[str, Any] = field(default_factory=dict)
-    materials: Dict[str, Any] = field(default_factory=dict)
-    structures: Dict[str, Any] = field(default_factory=dict)
+    def __init__(self, app: PlaxisRunner, excavation_object: FoundationPit) -> None:
+        # Always create our own runner instance using config; keep provided `app` for signature parity.
+        self.App: PlaxisRunner = PlaxisRunner(PORT, PASSWORD, HOST)
+        self.excavation_object: FoundationPit = excavation_object
 
-    # ------------------------------- Public API -------------------------------
+    @classmethod
+    def create(cls, app: PlaxisRunner, excavation_object: FoundationPit):
+        return cls(app, excavation_object)
 
-    def build_excavation_model(self) -> Dict[str, Any]:
+    # -------------------------------------------------------------------------
+    # Lifecycle
+    # -------------------------------------------------------------------------
+
+    def initialize(self) -> None:
+        """Initialize builder: validate pit object and ensure a fresh PLAXIS project."""
+        self.check_completeness()
+        self.App.connect().new()
+
+    # -------------------------------------------------------------------------
+    # Validation (aligned with current FoundationPit definition)
+    # -------------------------------------------------------------------------
+
+    def check_completeness(self) -> None:
         """
-        High-level orchestration to build the excavation and record relationships.
-        Returns a compact summary (PLAXIS handles / objects) useful for downstream steps.
-        """
-        self.define_model_boundary()
-        self.create_soil_layers()          # keep minimal; adapt if you have stratigraphy inputs
-        self.create_excavation_polygon()
-        self.extrude_excavation()
-        self.assign_materials()
+        Validate the FoundationPit instance against the current data model.
 
-        # Compact return for quick access/testing; full detail retained in self.*
+        Hard fails:
+          - excavation_object missing
+          - project_information missing
+
+        Soft warnings (non-blocking):
+          - name missing (fallback to project_information.title if available)
+          - empty/invalid materials/structures/loads dicts (will be initialized)
+          - no boreholes (builder may create a minimal soil body in mapper layer)
+          - no phases (can be applied later via `apply_phases()`)
+
+        Notes:
+          - `footprint` / `depth` are NOT part of FoundationPit → no checks here.
+          - Water table and well overrides live in Phase objects → not required here.
+        """
+        pit = getattr(self, "excavation_object", None)
+        if pit is None:
+            raise TypeError("excavation_object is not set.")
+
+        errors: list[str] = []
+        warns: list[str] = []
+
+        # ---- Project information (required) ----
+        proj = getattr(pit, "project_information", None)
+        if proj is None:
+            errors.append("Missing project information (pit.project_information).")
+        else:
+            # Light sanity (do not hard-fail on units/bounds here)
+            try:
+                _ = float(getattr(proj, "gamma_water"))
+            except Exception:
+                warns.append("ProjectInformation.gamma_water not numeric; mapper defaults may be used.")
+            # Bounding box access is optional; warn if unavailable
+            for attr in ("x_min", "x_max", "y_min", "y_max"):
+                if not hasattr(proj, attr):
+                    warns.append(f"ProjectInformation.{attr} not found; mapper may use defaults.")
+                    break
+
+        # ---- Name (optional): prefer explicit pit.name; fallback to project title ----
+        pit_name = getattr(pit, "name", None)
+        if not pit_name or not str(pit_name).strip():
+            fallback = getattr(proj, "title", None) if proj else None
+            if fallback:
+                try:
+                    setattr(pit, "name", str(fallback))
+                    warns.append("pit.name not provided; using project_information.title as name.")
+                except Exception:
+                    warns.append("pit.name not provided; continuing without explicit name.")
+            else:
+                warns.append("pit.name not provided; continuing without explicit name.")
+
+        # ---- Boreholes (optional) ----
+        bhset = getattr(pit, "borehole_set", None)
+        bh_count = 0
+        if bhset is None:
+            warns.append("No borehole_set; a minimal soil body may be created by the builder.")
+        else:
+            try:
+                bh_count = len(getattr(bhset, "boreholes", []) or [])
+                if bh_count == 0:
+                    warns.append("No boreholes defined; a minimal soil body may be created by the builder.")
+            except Exception:
+                warns.append("borehole_set present but not iterable; ignoring.")
+
+        # ---- Materials (init empty buckets if needed) ----
+        mats = getattr(pit, "materials", None)
+        if not isinstance(mats, dict):
+            warns.append("materials is not a dict; initializing empty material categories.")
+            pit.materials = {
+                "soil_materials": [],
+                "plate_materials": [],
+                "anchor_materials": [],
+                "beam_materials": [],
+                "pile_materials": [],
+            }
+        else:
+            for k in ("soil_materials", "plate_materials", "anchor_materials", "beam_materials", "pile_materials"):
+                if k not in mats:
+                    mats[k] = []
+
+        # ---- Structures (init empty buckets if needed) ----
+        st = getattr(pit, "structures", None)
+        if not isinstance(st, dict):
+            warns.append("structures is not a dict; initializing empty structure categories.")
+            pit.structures = {
+                "retaining_walls": [],
+                "anchors": [],
+                "beams": [],
+                "wells": [],
+                "embedded_piles": [],
+            }
+        else:
+            for k in ("retaining_walls", "anchors", "beams", "wells", "embedded_piles"):
+                if k not in st:
+                    st[k] = []
+
+        # ---- Loads (init empty buckets if needed) ----
+        loads = getattr(pit, "loads", None)
+        if not isinstance(loads, dict):
+            warns.append("loads is not a dict; initializing empty load categories.")
+            pit.loads = {"point_loads": [], "line_loads": [], "surface_loads": []}
+        else:
+            for k in ("point_loads", "line_loads", "surface_loads"):
+                if k not in loads:
+                    loads[k] = []
+
+        # ---- Phases (optional at build-time; required only for apply_phases) ----
+        phases = getattr(pit, "phases", None)
+        if phases is None:
+            pit.phases = []
+            warns.append("No phases defined; call builder.apply_phases() later to stage the model.")
+        elif not isinstance(phases, (list, tuple)):
+            warns.append("phases is not a list; converting to empty list for safety.")
+            pit.phases = []
+
+        # ---- Finalize ----
+        if errors:
+            msg = ["FoundationPit completeness check failed:"]
+            msg += [f" - {e}" for e in errors]
+            if warns:
+                msg.append("Notes (non-blocking):")
+                msg += [f" * {w}" for w in warns]
+            raise ValueError("\n".join(msg))
+
+        for w in warns:
+            print(f"[check_completeness] {w}")
+
+        walls = len(pit.structures.get("retaining_walls", [])) if isinstance(pit.structures, dict) else 0
+        print(
+            f"[check_completeness] OK: "
+            f"name='{getattr(pit, 'name', '<unnamed>')}', "
+            f"boreholes={bh_count}, walls={walls}, phases={len(pit.phases)}."
+        )
+
+    # -------------------------------------------------------------------------
+    # Build (initial design only)
+    # -------------------------------------------------------------------------
+
+    def build(self) -> Dict[str, Any]:
+        """Build the base PLAXIS model from the FoundationPit object.
+
+        IMPORTANT:
+          - Builds ONLY the initial design:
+              * project info
+              * materials
+              * relink borehole-layer materials → boreholes & layers
+              * geometries & structures (including wells)
+              * loads (+ optional multipliers)
+              * monitor points
+              * mesh
+              * phase shells (created in sequence, NOT applied)
+          - It does NOT apply per-phase options, water table, or well parameter changes.
+            Those belong to phases and must be applied later via `apply_phases(...)`.
+        """
+        pit = self.excavation_object
+        app = self.App
+
+        # Ensure connection & a new project exists
+        if not getattr(app, "is_connected", False) or getattr(app, "g_i", None) is None or getattr(app, "input_server", None) is None:
+            app.connect().new()
+
+        # Optional: completeness check (will raise on blocking issues)
+        if hasattr(self, "check_completeness") and callable(self.check_completeness):
+            self.check_completeness()
+
+        # ---------------- helpers ----------------
+        def _iter_dict_lists(dct):
+            """Yield items from a dict-of-lists safely."""
+            if isinstance(dct, dict):
+                for _k, _lst in dct.items():
+                    for _it in (_lst or []):
+                        if _it is not None:
+                            yield _k, _it
+
+        # ---------------- 1) Project info ----------------
+        if getattr(pit, "project_information", None) is not None:
+            try:
+                app.apply_project_information(pit.project_information)
+            except Exception as e:
+                print(f"[build] Warning: apply_project_information failed: {e}")
+
+        # ---------------- 2) Materials (create first) ----------------
+        total_mats = 0
+        try:
+            for _k, mat in _iter_dict_lists(getattr(pit, "materials", {})):
+                app.create_material(mat)
+                total_mats += 1
+        except Exception as e:
+            print(f"[build] Warning: create_material failed on some items: {e}")
+
+        # ---------------- 3) Relink BH layers to library & create boreholes ----
+        try:
+            self._relink_borehole_layers_to_library()
+        except Exception as e:
+            print(f"[build] Warning: relink borehole layers failed: {e}")
+
+        if getattr(pit, "borehole_set", None) is not None:
+            try:
+                app.create_boreholes(pit.borehole_set)  # mapper should normalize layers
+            except Exception as e:
+                print(f"[build] Warning: create_boreholes failed: {e}")
+
+        # ---------------- 4) Geometries / soil blocks (optional) ---------------
+        structures = getattr(pit, "structures", {}) or {}
+        for blk in structures.get("soil_blocks", []) or []:
+            try:
+                app.create_soil_block(blk)
+            except Exception as e:
+                print(f"[build] Warning: create_soil_block failed: {e}")
+
+        # ---------------- 5) Structures (including wells) ----------------------
+        for wall in structures.get("retaining_walls", []) or []:
+            try:
+                app.create_retaining_wall(wall)
+            except Exception as e:
+                print(f"[build] Warning: create_retaining_wall failed: {e}")
+
+        for beam in structures.get("beams", []) or []:
+            try:
+                app.create_beam(beam)
+            except Exception as e:
+                print(f"[build] Warning: create_beam failed: {e}")
+
+        for anc in structures.get("anchors", []) or []:
+            try:
+                app.create_anchor(anc)
+            except Exception as e:
+                print(f"[build] Warning: create_anchor failed: {e}")
+
+        for pile in structures.get("embedded_piles", []) or []:
+            try:
+                app.create_embedded_pile(pile)
+            except Exception as e:
+                print(f"[build] Warning: create_embedded_pile failed: {e}")
+
+        # Wells — created once at structure stage (geometry-level only)
+        for well in structures.get("wells", []) or []:
+            try:
+                app.create_well(well)
+            except Exception as e:
+                print(f"[build] Warning: create_well failed: {e}")
+
+        # ---------------- 6) Loads (+ optional multipliers) --------------------
+        loads = getattr(pit, "loads", {}) or {}
+        total_loads = 0
+        try:
+            for _k, ld in _iter_dict_lists(loads):
+                app.create_load(ld)
+                total_loads += 1
+        except Exception as e:
+            print(f"[build] Warning: create_load failed on some items: {e}")
+
+        for mul in getattr(pit, "load_multipliers", []) or []:
+            try:
+                app.create_load_multiplier(mul)
+            except Exception as e:
+                print(f"[build] Warning: create_load_multiplier failed: {e}")
+
+        # ---------------- 7) Monitor points (best-effort) ----------------------
+        monitors = getattr(pit, "monitors", []) or []
+        if monitors:
+            try:
+                if getattr(app, "g_i", None) is None:
+                    raise RuntimeError("Not connected (g_i is None).")
+                try:
+                    from .plaxisproxy_excavation.plaxishelper.monitormapper import MonitorMapper  # type: ignore
+                except Exception:
+                    from plaxisproxy_excavation.plaxishelper.monitormapper import MonitorMapper  # type: ignore
+                MonitorMapper.create_monitors(app.g_i, monitors)  # type: ignore
+            except Exception as e:
+                print(f"[build] Warning: monitor mapping skipped: {e}")
+
+        # ---------------- 8) Mesh (optional) -----------------------------------
+        meshed = False
+        mesh_cfg = getattr(pit, "mesh", None)
+        if mesh_cfg is not None:
+            try:
+                app.mesh(mesh_cfg)
+                meshed = True
+            except Exception as e:
+                print(f"[build] Warning: mesh() failed: {e}")
+        else:
+            print("[build] Info: no mesh config on FoundationPit; skipping meshing step.")
+
+        # ---------------- 9) Phase shells ONLY (no apply) ----------------------
+        phases = list(getattr(pit, "phases", [])) or getattr(pit, "stages", []) or []
+        created_phase_handles = []
+        if phases:
+            try:
+                app.goto_stages()
+                prev = app.get_initial_phase()
+                for ph in phases:
+                    # Create the phase entity (inheriting sequence), DO NOT apply here
+                    h = app.create_phase(ph, inherits=prev)
+                    created_phase_handles.append(h)
+                    prev = h
+            except Exception as e:
+                print(f"[build] Warning: phase creation failed: {e}")
+
+        # Summary for logs/tests
         return {
-            "excavation_volume": self.geometry.get("excavation_volume"),
-            "bottom_surface": self.geometry.get("excavation_bottom_surface"),
-            "retaining_wall_surfaces": (
-                self._get_retaining_wall_surfaces()
-            ),
-            "materials": self.materials,
-            "structures": self.structures,
+            "materials": total_mats,
+            "structures": {k: len(v or []) for k, v in (structures or {}).items()},
+            "loads": total_loads,
+            "monitors": len(monitors),
+            "phases_created": len(created_phase_handles),
+            "meshed": meshed,
         }
 
-    # --------------------------- Build Steps (modular) ------------------------
+    # -------------------------------------------------------------------------
+    # Soil-material relinking helpers (borehole layers → library)
+    # -------------------------------------------------------------------------
 
-    def define_model_boundary(self) -> None:
+    def _debug_dump_bh_material_links(self) -> None:
+        """Print a compact report of SoilLayer.material links for debugging."""
+        pit = self.excavation_object
+        print("\n[DEBUG] Borehole → Layer → SoilLayer.material")
+        bhset = getattr(pit, "borehole_set", None)
+        if not bhset or not getattr(bhset, "boreholes", None):
+            print("  (no boreholes)")
+            return
+
+        for bi, bh in enumerate(bhset.boreholes):
+            layers = getattr(bh, "layers", []) or []
+            print(f"  BH[{bi}] {getattr(bh, 'name', '<noname>')}: {len(layers)} layers")
+            for li, ly in enumerate(layers):
+                sl = getattr(ly, "soil_layer", None)
+                m = getattr(sl, "material", None) if sl is not None else None
+                m_name = getattr(m, "name", None)
+                in_lib = 'yes' if m in (self.excavation_object.materials.get('soil_materials', []) or []) else 'no'
+                print(f"    L{li} · SL={getattr(sl, 'name', None)} · mat={m_name} · lib?={in_lib} · plx_id={getattr(m, 'plx_id', None)}")
+
+    def _index_soil_library(self) -> Dict[str, Any]:
+        """Build a name→material map from pit.materials['soil_materials'] (case-sensitive)."""
+        mats = (self.excavation_object.materials or {}).get("soil_materials", []) or []
+        idx: Dict[str, Any] = {}
+        for m in mats:
+            n = getattr(m, "name", None)
+            if n and n not in idx:
+                idx[n] = m
+        return idx
+
+    def _relink_borehole_layers_to_library(self) -> int:
         """
-        Define/resize model domain (soil contour) centered at origin on z=0.
-        Adapt this to your project's standard way of setting boundaries.
+        Ensure every SoilLayer.material points to the SAME instance as in the soil library.
+        Returns the number of relinked layers.
         """
-        Lx, Ly = self.domain_size
-        cx, cy = self.origin_xy
+        pit = self.excavation_object
+        bhset = getattr(pit, "borehole_set", None)
+        if not bhset or not getattr(bhset, "boreholes", None):
+            return 0
 
-        x1, x2 = cx - Lx / 2.0, cx + Lx / 2.0
-        y1, y2 = cy - Ly / 2.0, cy + Ly / 2.0
+        idx = self._index_soil_library()
+        fixed = 0
 
-        # Example: use SoilContour.Coordinates (PLAXIS 3D)
-        # Ensure your environment supports this; otherwise replace with your own method.
-        try:
-            self.g_i.SoilContour.reset()
-            self.g_i.SoilContour.Coordinates = (
-                x1, y1, x2, y1, x2, y2, x1, y2
-            )
-        except Exception:
-            # Fallback: store for later use
-            self.geometry["soil_contour"] = (x1, y1, x2, y1, x2, y2, x1, y2)
+        for bh in bhset.boreholes:
+            for ly in getattr(bh, "layers", []) or []:
+                sl = getattr(ly, "soil_layer", None)
+                if sl is None:
+                    continue
+                m = getattr(sl, "material", None)
 
-        self.geometry["domain_bbox"] = (x1, y1, x2, y2)
+                # If missing or dict-like, try resolve by SoilLayer name or material.name
+                if m is None or isinstance(m, dict):
+                    target = idx.get(getattr(m, "name", None)) if m else None
+                    if target is None:
+                        target = idx.get(getattr(sl, "name", None))
+                    if target is not None:
+                        sl.material = target
+                        fixed += 1
+                    continue
 
-    def create_soil_layers(self) -> None:
+                # If it's an instance but not the library one (different identity), fix by name
+                m_name = getattr(m, "name", None)
+                lib_m = idx.get(m_name)
+                if lib_m is not None and (m is not lib_m):
+                    sl.material = lib_m
+                    fixed += 1
+
+        if fixed:
+            print(f"[materials] Relinked {fixed} soil-layer → material references to library.")
+        return fixed
+
+    # -------------------------------------------------------------------------
+    # Phase helpers
+    # -------------------------------------------------------------------------
+
+    def apply_phases(self, phases: Optional[List[Any]] = None, *, warn_on_missing: bool = False) -> Dict[str, Any]:
         """
-        (Optional) Create a borehole and layers.
-        This is intentionally minimal; plug in your actual stratigraphy routine.
+        Create and APPLY staged-construction phases.
+
+        What this does:
+          - Creates phases in sequence (each inherits from the previous one).
+          - Applies each phase via PlaxisRunner.apply_phase(...), which should handle:
+            * phase options/settings
+            * structure activation/deactivation
+            * per-phase water table (if provided on the Phase)
+            * per-phase well overrides (if your PhaseMapper supports it)
         """
-        cx, cy = self.origin_xy
-        try:
-            bh = self.g_i.borehole(cx, cy)
-            self.geometry["borehole_point"] = bh
-            # Example: add a layer at -20m (adapt to real inputs)
-            # self.g_i.soillayer(-20)
-        except Exception:
-            # If borehole creation not desired/available, skip gracefully
-            self.geometry["borehole_point"] = None
+        app = self.App
+        pit = self.excavation_object
 
-    def create_excavation_polygon(self) -> None:
-        """
-        Draw a rectangular pit footprint (polygon) centered at origin on ground (z=0).
-        Stores polygon handle and (if available) a Polygon3D instance.
-        """
-        Lx, Ly = self.pit_size
-        cx, cy = self.origin_xy
+        # Ensure we are connected to PLAXIS and a project is open
+        if not getattr(app, "is_connected", False) or getattr(app, "g_i", None) is None or getattr(app, "input_server", None) is None:
+            app.connect().new()
 
-        x1, x2 = cx - Lx / 2.0, cx + Lx / 2.0
-        y1, y2 = cy - Ly / 2.0, cy + Ly / 2.0
-        z = 0.0
+        # Resolve the phase list
+        if phases is None:
+            phases = list(getattr(pit, "phases", []) or getattr(pit, "stages", []) or [])
+        else:
+            phases = list(phases or [])
 
-        # PLAXIS polyline/polygon creation on ground; adjust to your preferred call
-        try:
-            p1 = self.g_i.point(x1, y1, z)
-            p2 = self.g_i.point(x2, y1, z)
-            p3 = self.g_i.point(x2, y2, z)
-            p4 = self.g_i.point(x1, y2, z)
-            poly = self.g_i.polygon(p1, p2, p3, p4)
-        except Exception:
-            p1 = (x1, y1, z)
-            p2 = (x2, y1, z)
-            p3 = (x2, y2, z)
-            p4 = (x1, y2, z)
-            poly = (p1, p2, p3, p4)
+        if not phases:
+            print("[apply_phases] No phases to apply; skipping.")
+            return {"created": 0, "applied": 0, "errors": []}
 
-        self.geometry["excavation_polygon"] = poly
+        # Switch to Staged Construction and get the initial phase handle
+        app.goto_stages()
+        prev_handle = app.get_initial_phase()
 
-        # If Polygon3D exists, capture a semantic geometry object (no new type introduced)
-        if Polygon3D is not None and Point3D is not None:
+        created = 0
+        applied = 0
+        errors: List[str] = []
+        handles: List[Any] = []
+
+        for ph in phases:
+            ph_name = getattr(ph, "name", "<unnamed>")
+            # 1) create phase inheriting from the previous one
             try:
-                poly3d = Polygon3D(
-                    points=[
-                        Point3D(*p1[:3]), Point3D(*p2[:3]),
-                        Point3D(*p3[:3]), Point3D(*p4[:3])
-                    ],
-                    name="PitFootprint"
-                )
-                # Record back-reference to PLAXIS handle if desired
-                setattr(poly3d, "plx_id", poly)
-                self.geometry["excavation_polygon_obj"] = poly3d
-            except Exception:
-                pass
-
-    def extrude_excavation(self) -> None:
-        """
-        Extrude the pit polygon downward by pit_depth to create:
-          - a new soil Volume
-          - a bottom horizontal Surface
-          - vertical side Surfaces (retaining walls)
-        Explicitly records which surfaces are walls and which is bottom.
-        """
-        poly = self.geometry.get("excavation_polygon")
-        if poly is None:
-            raise RuntimeError("Excavation polygon not created.")
-
-        # Snapshot scene before extrusion (to detect newly created faces/volumes)
-        pre_surfs = self._snapshot_surfaces()
-        pre_vols = self._snapshot_volumes()
-
-        depth = float(self.pit_depth)
-        # Extrude downward along -Z; use your project's exact API
-        try:
-            # Example: line extrude (vector dz)
-            new_vol = self.g_i.extrude(poly, 0.0, 0.0, -depth)
-        except Exception:
-            new_vol = {"volume": "EXCAVATION_VOLUME_PLACEHOLDER"}
-
-        # Snapshot after
-        post_surfs = self._snapshot_surfaces()
-        post_vols = self._snapshot_volumes()
-
-        # Identify newly created entities
-        added_surfs = post_surfs - pre_surfs
-        added_vols = post_vols - pre_vols
-
-        # Heuristic separation: the bottom is the (near-)horizontal face at z ~ -depth
-        bottom_surf = self._find_bottom_surface(added_surfs, target_z=-depth)
-
-        wall_surfs = set(added_surfs)
-        if bottom_surf is not None and bottom_surf in wall_surfs:
-            wall_surfs.remove(bottom_surf)
-
-        # Persist geometry references
-        self.geometry["excavation_volume"] = self._first_or_none(added_vols) or new_vol
-        self.geometry["excavation_bottom_surface"] = bottom_surf
-        self.structures["retaining_walls"] = {
-            "surfaces": list(wall_surfs)  # PLAXIS surface handles
-        }
-
-        # If your structure/material classes exist, optionally wrap them (no *new* types)
-        # Create RetainingWall objects per surface (deferred material binding to assign_materials)
-        if RetainingWall is not None and Polygon3D is not None and Point3D is not None:
-            rw_objs: List[Any] = []
-            for idx, s in enumerate(wall_surfs, start=1):
-                # We don't reconstruct exact 3D polygon from PLAXIS here; keep a placeholder Polygon3D
-                try:
-                    poly3d = Polygon3D(points=[], name=f"WallSurface{idx}")
-                    setattr(poly3d, "plx_id", s)
-                    rw = RetainingWall(name=f"RetainingWall{idx}", surface=poly3d, plate_type=None)  # material later
-                    setattr(rw, "plx_surface", s)
-                    rw_objs.append(rw)
-                except Exception:
-                    # If construction fails, skip wrapping; surfaces remain in dict above
-                    pass
-            if rw_objs:
-                # Mirror surfaces list with object list for richer semantics
-                self.structures["retaining_walls_objects"] = rw_objs
-
-    def assign_materials(self) -> None:
-        """
-        Create/retrieve materials and bind them to geometry:
-          - Assign 'Wall' plate material to all retaining wall surfaces.
-        Uses existing material classes if available; otherwise stores PLAXIS handles.
-        """
-        # Ensure a "Wall" plate material exists; capture in self.materials
-        wall_mat = self._ensure_wall_plate_material()
-
-        # Assign to all wall surfaces
-        wall_surfaces = self._get_retaining_wall_surfaces()
-        for s in wall_surfaces:
-            try:
-                # PLAXIS: setmaterial(surface, material)
-                self.g_i.setmaterial(s, wall_mat)
-            except Exception:
-                # If the API differs, adapt here.
-                pass
-
-        # If RetainingWall objects were created, bind the material there too
-        if self.structures.get("retaining_walls_objects"):
-            for rw in self.structures["retaining_walls_objects"]:
-                try:
-                    if ElasticPlate is not None and isinstance(wall_mat, ElasticPlate):
-                        rw.plate_type = wall_mat
-                    else:
-                        # Store PLAXIS handle (e.g., g_i.Wall) if ElasticPlate not available
-                        setattr(rw, "plx_material", wall_mat)
-                except Exception:
-                    pass
-
-    # ------------------------------ Helper Methods ----------------------------
-
-    def _snapshot_surfaces(self) -> set:
-        """
-        Return a set of PLAXIS surface handles (or IDs) currently present.
-        Adapt attribute access to your environment.
-        """
-        try:
-            # Common PLAXIS way: e.g., self.g_i.Soil.Surfaces
-            surfs = set(self.g_i.Soil.Surfaces[:])
-            return surfs
-        except Exception:
-            # Fallback: empty set; caller should handle
-            return set()
-
-    def _snapshot_volumes(self) -> set:
-        """
-        Return a set of PLAXIS volume handles (or IDs) currently present.
-        Adapt attribute access to your environment.
-        """
-        try:
-            vols = set(self.g_i.Soil.Volumes[:])
-            return vols
-        except Exception:
-            return set()
-
-    def _find_bottom_surface(self, candidate_surfs: set, target_z: float, tol: float = 1e-2) -> Optional[Any]:
-        """
-        Heuristic: find the bottom surface among the newly added ones.
-        If you can query a representative Z (elevation) of a surface in your API, use it here.
-        Otherwise, return None and keep all candidates as wall surfaces.
-        """
-        for s in candidate_surfs:
-            try:
-                # Example pseudo-API; replace with your own (e.g., s.Polygons[0].Points -> z)
-                zrep = self._approx_surface_z(s)
-                if zrep is not None and abs(zrep - target_z) <= tol:
-                    return s
-            except Exception:
+                handle = app.create_phase(ph, inherits=prev_handle)
+                created += 1
+                handles.append(handle)
+            except Exception as e:
+                errors.append(f"create_phase('{ph_name}') failed: {e}")
+                # Cannot apply if creation failed; keep prev_handle unchanged and continue
                 continue
-        return None
 
-    def _approx_surface_z(self, surface: Any) -> Optional[float]:
-        """
-        Attempt to query a representative z of a surface (centroid or first point).
-        Replace with your project-specific implementation.
-        """
-        try:
-            # Example pseudo access:
-            # pts = surface.Polygon.Points  # -> list of (x,y,z)
-            # return sum(p.z for p in pts)/len(pts)
-            return None
-        except Exception:
-            return None
-
-    def _first_or_none(self, items: Sequence[Any] | set) -> Optional[Any]:
-        if not items:
-            return None
-        if isinstance(items, set):
-            for it in items:
-                return it
-        return items[0]
-
-    def _get_retaining_wall_surfaces(self) -> List[Any]:
-        """
-        Return the PLAXIS surfaces representing retaining walls (vertical sides).
-        """
-        entry = self.structures.get("retaining_walls")
-        if entry and isinstance(entry, dict):
-            surfs = entry.get("surfaces", [])
-            if isinstance(surfs, list):
-                return surfs
-        return []
-
-    def _ensure_wall_plate_material(self) -> Any:
-        """
-        Ensure there is a 'Wall' plate material; store and return it.
-        Uses ElasticPlate if available; otherwise returns the PLAXIS handle.
-        """
-        # If already created, return
-        if "Wall" in self.materials:
-            return self.materials["Wall"]
-
-        # Try to create/reuse via PLAXIS; adapt to your material creation flow.
-        plx_handle = None
-        try:
-            # If exists (e.g., identified as g_i.Wall), reuse; otherwise create
-            plx_handle = getattr(self.g_i, "Wall", None)
-            if plx_handle is None:
-                # Example: create a plate material with identification "Wall"
-                self.g_i.platemat("Identification", "Wall")
-                plx_handle = getattr(self.g_i, "Wall", None)
-        except Exception:
-            pass
-
-        # If your project has ElasticPlate class, wrap it for richer semantics
-        if ElasticPlate is not None:
+            # 2) apply the phase (options, water table, well overrides, activations, etc.)
             try:
-                ep = ElasticPlate(name="Wall")
-                # Bind PLAXIS back-ref if helpful for mappers
-                setattr(ep, "plx_id", plx_handle if plx_handle is not None else "Wall")
-                self.materials["Wall"] = ep
-                return ep
-            except Exception:
-                pass
+                app.apply_phase(handle, ph, warn_on_missing=warn_on_missing)
+                applied += 1
+                prev_handle = handle  # advance the inheritance chain
+            except Exception as e:
+                errors.append(f"apply_phase('{ph_name}') failed: {e}")
+                # Even if apply failed, still advance inheritance to maintain sequence
+                prev_handle = handle
 
-        # Fallback: store the PLAXIS handle or the identification name
-        self.materials["Wall"] = plx_handle if plx_handle is not None else "Wall"
-        return self.materials["Wall"]
+        return {"created": created, "applied": applied, "errors": errors, "handles": handles}
+
+    def apply_well_overrides_only(self, plan: Dict[Any, Dict[str, Dict[str, Any]]], *, warn_on_missing: bool = False) -> Dict[str, Any]:
+        """Update well parameters for existing phases ONLY (no phase creation).
+
+        plan format:
+          {
+            <phase_handle_or_name>: {
+                "Well-1": {"q_well": 900.0, "h_min": 1.5},
+                "Well-2": {"q_well": 700.0, "well_type": "Extraction"}
+            },
+            ...
+          }
+
+        - If the key is a phase handle, it will be used directly.
+        - If the key is a string, we'll try to resolve an existing phase by that name via `PlaxisRunner.find_phase_handle`.
+        - No new phase will be created here.
+        """
+        app = self.App
+        if not getattr(app, "is_connected", False) or getattr(app, "g_i", None) is None or getattr(app, "input_server", None) is None:
+            app.connect().new()
+
+        applied = 0
+        for phase_key, overrides in (plan or {}).items():
+            handle = phase_key
+            # resolve by name if a string key is provided
+            if isinstance(phase_key, str):
+                handle = app.find_phase_handle(phase_key)
+
+            if handle is None:
+                if warn_on_missing:
+                    print(f"[apply_well_overrides_only] Phase '{phase_key}' not found; skipped.")
+                continue
+
+            try:
+                app.apply_well_overrides(handle, overrides, warn_on_missing=warn_on_missing)
+                applied += 1
+            except Exception as e:
+                print(f"[apply_well_overrides_only] Warning: overrides on phase '{phase_key}' failed: {e}")
+
+        return {"phases_updated": applied}

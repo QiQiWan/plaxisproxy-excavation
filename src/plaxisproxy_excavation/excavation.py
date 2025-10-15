@@ -34,9 +34,9 @@ from .materials.pilematerial import ElasticPile, ElastoplasticPile
 
 
 # A generic TypeVar to properly type hint the from_dict class method.
-T = TypeVar('T', bound='PlaxisFoundationPit')
+T = TypeVar('T', bound='FoundationPit')
 
-class PlaxisFoundationPit(SerializableBase):
+class FoundationPit(SerializableBase):
     """
     Represents a complete Plaxis 3D foundation pit engineering model.
     This object encapsulates all the necessary information for a numerical simulation analysis
@@ -66,7 +66,7 @@ class PlaxisFoundationPit(SerializableBase):
         self._id = str(uuid.uuid4())
         self._version = "1.0.0"  # Semantic versioning for the data model
         self.project_information = project_information
-        self.borehole_set: BoreholeSet = BoreholeSet([])
+        self.borehole_set: BoreholeSet = BoreholeSet(boreholes=[])
         
         # Material library: managed in categories using a dictionary
         self.materials: Dict[str, List[Any]] = {
@@ -167,7 +167,6 @@ class PlaxisFoundationPit(SerializableBase):
             return
 
         self.loads[load_type].append(load_obj)
-
 
     def add_phase(self, phase: Phase):
         """

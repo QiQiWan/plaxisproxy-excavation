@@ -1,357 +1,396 @@
-"""
-test_boreholes_layers_then_phases_structures.py
+# testmapper.py  — Updated for new PhaseMapper (English comments)
+from math import ceil
+from typing import List, Tuple, Iterable, Any, Dict
 
-Pipeline:
-1) Materials (soil + structure) -> Boreholes & Layers FIRST
-2) Ensure at least one soil volume (geometry safety)
-3) Create structures via StructureMappers (wall/plate/beam/anchor/pile/well)
-4) Mesh (optional)
-5) Go to Stages, fetch InitialPhase as a Phase object
-6) For each new Phase: must inherit from a base phase; create via mapper (writes plx_id), then:
-   - apply options
-   - apply structure activation/deactivation (freeze/activate)
+from config.plaxis_config import HOST, PORT, PASSWORD
 
-All comments are in English.
-"""
+# Runner / Builder / Container
+from src.plaxisproxy_excavation.plaxishelper.plaxisrunner import PlaxisRunner
+from src.excavation_builder import ExcavationBuilder
+from src.plaxisproxy_excavation.excavation import FoundationPit
 
-from typing import Iterable, List, Dict, Tuple, Any, Optional
-from plxscripting.server import new_server
-
-# ---------- domain imports ----------
-from src.plaxisproxy_excavation.plaxishelper.boreholemapper import BoreholeSetMapper
-from src.plaxisproxy_excavation.geometry import Point, PointSet, Line3D, Polygon3D
-from src.plaxisproxy_excavation.materials.soilmaterial import MCMaterial
-from src.plaxisproxy_excavation.borehole import SoilLayer, BoreholeLayer, Borehole, BoreholeSet
-
-# Material mappers
-from src.plaxisproxy_excavation.plaxishelper.materialmapper import (
-    SoilMaterialMapper, PlateMaterialMapper,
-    BeamMaterialMapper, PileMaterialMapper, AnchorMaterialMapper,
-)
-
-# Structure mappers
-from src.plaxisproxy_excavation.plaxishelper.structuremapper import (
-    RetainingWallMapper, BeamMapper, EmbeddedPileMapper,
-    AnchorMapper, WellMapper,
-)
-
-# Structure domain classes
-from src.plaxisproxy_excavation.structures.retainingwall import RetainingWall  # Plate as wall
-from src.plaxisproxy_excavation.structures.beam import Beam
-from src.plaxisproxy_excavation.structures.anchor import Anchor
-from src.plaxisproxy_excavation.structures.embeddedpile import EmbeddedPile
-from src.plaxisproxy_excavation.structures.well import Well, WellType
-
-# Structure materials
-from src.plaxisproxy_excavation.materials.platematerial import ElasticPlate
-from src.plaxisproxy_excavation.materials.beammaterial import ElasticBeam
-from src.plaxisproxy_excavation.materials.pilematerial import ElasticPile
-from src.plaxisproxy_excavation.materials.anchormaterial import ElasticAnchor
-
-# Phases & settings
+# Core components
+from src.plaxisproxy_excavation.components.projectinformation import ProjectInformation, Units
 from src.plaxisproxy_excavation.components.phase import Phase
 from src.plaxisproxy_excavation.components.phasesettings import PlasticStageSettings, LoadType
-from src.plaxisproxy_excavation.plaxishelper.phasemapper import PhaseMapper
+# ADD this import near other component imports
+from src.plaxisproxy_excavation.components.phase import WaterLevelTable
+
+# Boreholes & materials
+from src.plaxisproxy_excavation.borehole import SoilLayer, BoreholeLayer, Borehole, BoreholeSet
+from src.plaxisproxy_excavation.materials.soilmaterial import SoilMaterialFactory, SoilMaterialsType
+
+# Geometry
+from src.plaxisproxy_excavation.geometry import Point, PointSet, Line3D, Polygon3D
+
+# Structure materials & structures
+from src.plaxisproxy_excavation.materials.platematerial import ElasticPlate
+from src.plaxisproxy_excavation.materials.beammaterial import ElasticBeam  # used here as anchor material
+from src.plaxisproxy_excavation.structures.retainingwall import RetainingWall
+from src.plaxisproxy_excavation.structures.beam import Beam
+from src.plaxisproxy_excavation.structures.well import Well, WellType
 
 
-# ---------------------------- helpers ----------------------------
-def assert_plx_id_set(obj: Any, name: str) -> None:
-    plx_id = getattr(obj, "plx_id", None)
-    assert plx_id is not None, f"{name}.plx_id should be set after creation."
+# ----------------------------- small helpers -----------------------------
 
-def iter_unique(items: Iterable[object]) -> List[object]:
-    """Deduplicate by object identity while keeping order."""
-    seen = set()
-    out: List[object] = []
-    for it in items:
-        oid = id(it)
-        if oid in seen:
-            continue
-        seen.add(oid)
-        out.append(it)
-    return out
-
-def print_summary(summary: Dict[str, List[Tuple[float, float]]]) -> None:
-    """Pretty print zone summary: {layer_name: [(top,bottom)_bh0, (top,bottom)_bh1, ...]}"""
-    print("\n=== Zone Summary (top, bottom) per layer per borehole ===")
-    for lname, pairs in summary.items():
-        cells = ", ".join([f"BH{i}:({t:.3g},{b:.3g})" for i, (t, b) in enumerate(pairs)])
-        print(f"  - {lname}: {cells}")
-
-def ensure_min_soil_body(g_i, xmin=-30, ymin=-30, zmin=-30, xmax=30, ymax=30, zmax=0) -> bool:
-    """Ensure at least one volume exists."""
-    try:
-        vols = getattr(g_i, "SoilVolumes", None) or getattr(g_i, "Volumes", None)
-        surfs = getattr(g_i, "Surfaces", None) or getattr(g_i, "Planes", None)
-        for coll in (vols, surfs):
-            try:
-                if coll and any(True for _ in coll):
-                    return True
-            except Exception:
-                pass
-    except Exception:
-        pass
-    fn = getattr(g_i, "SoilContour", None)
-    if callable(fn):
-        try:
-            fn(xmin, ymin, zmin, xmax, ymax, zmax)
-            return True
-        except Exception:
-            pass
-    create = getattr(g_i, "create", None)
-    if callable(create):
-        try:
-            create("soil", xmin, ymin, zmin, xmax, ymax, zmax)
-            return True
-        except Exception:
-            pass
-    return False
-
-def optional_mesh(g_i) -> None:
-    """Try to mesh if available; ignore failures (build-dependent)."""
-    for fn_name in ("gotomesh", "GoToMesh", "to_mesh"):
-        fn = getattr(g_i, fn_name, None)
-        if callable(fn):
-            try:
-                fn(); break
-            except Exception:
-                pass
-    for fn_name in ("mesh", "Mesh", "createmesh", "CreateMesh"):
-        fn = getattr(g_i, fn_name, None)
-        if callable(fn):
-            try:
-                fn(); break
-            except Exception:
-                pass
-
-# ---------- geometry helpers ----------
-def make_line(p0: Point, p1: Point) -> Line3D:
-    """Construct a fresh Line3D from two Points (no shared instances)."""
-    return Line3D(PointSet([Point(p0.x, p0.y, p0.z), Point(p1.x, p1.y, p1.z)]))
-
-def make_rect_polygon_xy(x0: float, y0: float, z: float, width: float, height: float) -> Polygon3D:
-    """Horizontal rectangle on plane z = const (Polygon3D requires constant z)."""
+def rect_polygon_xy(x0: float, y0: float, z: float, w: float, h: float) -> Polygon3D:
+    """Axis-aligned rectangle (z-constant) as a closed polygon (for horizontal faces)."""
     pts = [
-        Point(x0,           y0,            z),
-        Point(x0 + width,   y0,            z),
-        Point(x0 + width,   y0 + height,   z),
-        Point(x0,           y0 + height,   z),
-        Point(x0,           y0,            z),
+        Point(x0,     y0,     z),
+        Point(x0+w,   y0,     z),
+        Point(x0+w,   y0+h,   z),
+        Point(x0,     y0+h,   z),
+        Point(x0,     y0,     z),
     ]
     return Polygon3D.from_points(PointSet(pts))
 
+def rect_wall_x(x: float, y0: float, y1: float, z_top: float, z_bot: float) -> Polygon3D:
+    """Vertical rectangle wall at fixed x (plane parallel to Z), top flush with ground."""
+    pts = [
+        Point(x, y0, z_top),
+        Point(x, y1, z_top),
+        Point(x, y1, z_bot),
+        Point(x, y0, z_bot),
+        Point(x, y0, z_top),
+    ]
+    return Polygon3D.from_points(PointSet(pts))
 
-# ---------------------------- materials ----------------------------
-def make_soil_materials(g_i):
-    fill   = MCMaterial(name="Fill",   E_ref=15e6, c_ref=5e3,  phi=25.0, psi=0.0, gamma=18.0, gamma_sat=20.0)
-    sand   = MCMaterial(name="Sand",   E_ref=35e6, c_ref=1e3,  phi=32.0, psi=2.0,  gamma=19.0, gamma_sat=21.0)
-    clay   = MCMaterial(name="Clay",   E_ref=12e6, c_ref=15e3, phi=22.0, psi=0.0, gamma=17.0, gamma_sat=19.0)
-    gravel = MCMaterial(name="Sand",   E_ref=60e6, c_ref=0.5e3,phi=38.0, psi=5.0,  gamma=20.0, gamma_sat=22.0)
-    for m in (fill, sand, clay, gravel):
-        SoilMaterialMapper.create_material(g_i, m)
-    for m, n in [(fill, "Fill"), (sand, "Sand"), (clay, "Clay"), (gravel, "Gravel(Sand-dup)")]:
-        assert_plx_id_set(m, n)
-    return fill, sand, clay, gravel
+def rect_wall_y(y: float, x0: float, x1: float, z_top: float, z_bot: float) -> Polygon3D:
+    """Vertical rectangle wall at fixed y (plane parallel to Z), top flush with ground."""
+    pts = [
+        Point(x0, y, z_top),
+        Point(x1, y, z_top),
+        Point(x1, y, z_bot),
+        Point(x0, y, z_bot),
+        Point(x0, y, z_top),
+    ]
+    return Polygon3D.from_points(PointSet(pts))
 
-def make_structure_materials(g_i):
-    plate_mat  = ElasticPlate(name="Plate_E", E=30e6, nu=0.2, d=0.5, gamma=25.0)
-    beam_mat   = ElasticBeam(name="Beam_E",  E=30e6, nu=0.2, gamma=25.0)
-    pile_mat   = ElasticPile(name="Pile_E",  E=30e6, nu=0.2, gamma=25.0, diameter=1.0)
-    anchor_mat = ElasticAnchor(name="Anchor_E", EA=1.0e6)
+def line_2pts(p0: Tuple[float, float, float], p1: Tuple[float, float, float]) -> Line3D:
+    """One straight line from two (x,y,z) points."""
+    a = Point(*p0); b = Point(*p1)
+    return Line3D(PointSet([a, b]))
 
-    PlateMaterialMapper.create_material(g_i, plate_mat)
-    BeamMaterialMapper.create_material(g_i,  beam_mat)
-    PileMaterialMapper.create_material(g_i,  pile_mat)
-    AnchorMaterialMapper.create_material(g_i, anchor_mat)
+def ring_wells(prefix: str, x0: float, y0: float, w: float, h: float,
+               z_top: float, z_bot: float, spacing: float,
+               clearance: float = 0.7) -> List[Well]:
+    """
+    Perimeter wells around the rectangle [x0,x0+w]x[y0,y0+h].
+    Wells are inset by 'clearance' from the rectangle edges.
+    """
+    wells: List[Well] = []
+    xs = [x0 + clearance, x0 + w - clearance]
+    ys = [y0 + clearance, y0 + h - clearance]
 
-    for m, n in [(plate_mat, "PlateMat"), (beam_mat, "BeamMat"), (pile_mat, "PileMat"), (anchor_mat, "AnchorMat")]:
-        assert_plx_id_set(m, n)
-    return plate_mat, beam_mat, pile_mat, anchor_mat
+    # vertical edges
+    ny = max(1, ceil((h - 2 * clearance) / spacing))
+    for i in range(ny + 1):
+        y = ys[0] + (ys[1] - ys[0]) * i / max(1, ny)
+        for x in (xs[0], xs[1]):
+            wells.append(
+                Well(
+                    name=f"{prefix}_P_{len(wells)+1}",
+                    line=line_2pts((x, y, z_top), (x, y, z_bot)),
+                    well_type=WellType.Extraction,
+                    h_min=z_bot,  # min head along the well
+                )
+            )
+
+    # horizontal edges
+    nx = max(1, ceil((w - 2 * clearance) / spacing))
+    for i in range(nx + 1):
+        x = xs[0] + (xs[1] - xs[0]) * i / max(1, nx)
+        for y in (ys[0], ys[1]):
+            wells.append(
+                Well(
+                    name=f"{prefix}_P_{len(wells)+1}",
+                    line=line_2pts((x, y, z_top), (x, y, z_bot)),
+                    well_type=WellType.Extraction,
+                    h_min=z_bot,
+                )
+            )
+    return wells
+
+def grid_wells(prefix: str, x0: float, y0: float, w: float, h: float,
+               z_top: float, z_bot: float, dx: float, dy: float,
+               margin: float = 2.0) -> List[Well]:
+    """Interior grid of wells inside the rectangle."""
+    wells: List[Well] = []
+    xi = x0 + margin; xf = x0 + w - margin
+    yi = y0 + margin; yf = y0 + h - margin
+    nx = max(1, ceil((xf - xi) / dx))
+    ny = max(1, ceil((yf - yi) / dy))
+    for ix in range(nx + 1):
+        x = xi + (xf - xi) * ix / max(1, nx)
+        for iy in range(ny + 1):
+            y = yi + (yf - yi) * iy / max(1, ny)
+            wells.append(
+                Well(
+                    name=f"{prefix}_G_{len(wells)+1}",
+                    line=line_2pts((x, y, z_top), (x, y, z_bot)),
+                    well_type=WellType.Extraction,
+                    h_min=z_bot,
+                )
+            )
+    return wells
 
 
-# ---------------------------- boreholes & layers ----------------------------
-def build_borehole_set(fill_mat, sand_mat, clay_mat, gravel_mat) -> Tuple[BoreholeSet, List[SoilLayer]]:
-    sl_fill   = SoilLayer(name="Fill",   material=fill_mat)
-    sl_sand   = SoilLayer(name="Sand",   material=sand_mat)
-    sl_clay   = SoilLayer(name="Clay",   material=clay_mat)
-    sl_gravel = SoilLayer(name="Gravel", material=gravel_mat)
+# ----------------------------- well line dedupe -----------------------------
+# We deduplicate wells by their geometric line (two endpoints), direction-agnostic.
+# Endpoints are quantized by 'tol' to avoid floating noise.
+def _as_xyz(p: Any) -> Tuple[float, float, float]:
+    if hasattr(p, "x") and hasattr(p, "y") and hasattr(p, "z"):
+        return float(p.x), float(p.y), float(p.z)
+    try:
+        return float(p[0]), float(p[1]), float(p[2])
+    except Exception as e:
+        raise TypeError(f"Point object not recognized: {p!r}") from e
 
-    # BH_1
+def _extract_line_endpoints(line: Any) -> Tuple[Tuple[float,float,float], Tuple[float,float,float]]:
+    pts = getattr(line, "points", None)
+    if pts and len(pts) >= 2:
+        return _as_xyz(pts[0]), _as_xyz(pts[1])
+    ps = getattr(line, "point_set", None) or getattr(line, "_point_set", None)
+    if ps is not None:
+        inner = getattr(ps, "points", None) or getattr(ps, "_points", None)
+        if inner and len(inner) >= 2:
+            return _as_xyz(inner[0]), _as_xyz(inner[1])
+    start, end = getattr(line, "start", None), getattr(line, "end", None)
+    if start is not None and end is not None:
+        return _as_xyz(start), _as_xyz(end)
+    try:
+        it = list(iter(line))
+        if len(it) >= 2:
+            return _as_xyz(it[0]), _as_xyz(it[1])
+    except Exception:
+        pass
+    raise AttributeError("Cannot extract endpoints from the given line object.")
+
+def _q(v: float, tol: float) -> int:
+    return int(round(v / tol))
+
+def _line_key(line: Any, tol: float) -> Tuple[Tuple[int,int,int], Tuple[int,int,int]]:
+    (x0, y0, z0), (x1, y1, z1) = _extract_line_endpoints(line)
+    a = (_q(x0, tol), _q(y0, tol), _q(z0, tol))
+    b = (_q(x1, tol), _q(y1, tol), _q(z1, tol))
+    return (a, b) if a <= b else (b, a)
+
+def dedupe_wells_by_line(
+    wells: Iterable[Any],
+    tol: float = 1e-6,
+    keep: str = "first",
+) -> Tuple[List[Any], List[Any], Dict[Tuple[Tuple[int,int,int], Tuple[int,int,int]], Any]]:
+    """
+    Remove duplicate wells that share the same geometric line (order-independent).
+    Returns (unique, duplicates, key_to_master).
+    """
+    key_to_master: Dict[Tuple[Tuple[int,int,int], Tuple[int,int,int]], Any] = {}
+    unique: List[Any] = []
+    dupes: List[Any] = []
+
+    if keep not in ("first", "last"):
+        raise ValueError("keep must be 'first' or 'last'")
+
+    for w in wells:
+        line = getattr(w, "line", w)
+        k = _line_key(line, tol)
+        if k in key_to_master:
+            if keep == "last":
+                prev = key_to_master[k]
+                if prev in unique:
+                    unique.remove(prev)
+                    dupes.append(prev)
+                key_to_master[k] = w
+                unique.append(w)
+            else:
+                dupes.append(w)
+        else:
+            key_to_master[k] = w
+            unique.append(w)
+
+    return unique, dupes, key_to_master
+
+
+# ----------------------------- assemble pit -----------------------------
+
+def assemble_pit() -> FoundationPit:
+    """
+    Build a rectangular pit with vertical diaphragm walls (parallel to Z),
+    top flush with ground, deeper than pit bottom; horizontal braces on
+    opposite and adjacent walls using anchor material; perimeter + grid wells (deduped).
+    """
+
+    # Project info (50 x 80 bounding box in XY as requested)
+    proj = ProjectInformation(
+        title="Rectangular Pit – Vertical DWall + Anchor Braces + Wells",
+        company="Demo",
+        dir=".",
+        file_name="demo_excavation.p3d",
+        comment="Builder/PhaseMapper integration demo",
+        model="3D",
+        element="10-noded",
+        length_unit=Units.Length.M,
+        force_unit=Units.Force.KN,
+        stress_unit=Units.Stress.KPA,
+        time_unit=Units.Time.DAY,
+        gamma_water=9.81,
+        x_min=-25, x_max=25,   # 50 in X
+        y_min=-40, y_max=40,   # 80 in Y
+    )
+
+    pit = FoundationPit(project_information=proj)
+
+    # ---- Soil materials ----
+    fill = SoilMaterialFactory.create(
+        SoilMaterialsType.MC, name="Fill",
+        E_ref=15e6, c_ref=5e3, phi=25.0, psi=0.0, nu=0.30,
+        gamma=18.0, gamma_sat=20.0, e_init=0.60
+    )
+    sand = SoilMaterialFactory.create(
+        SoilMaterialsType.MC, name="Sand",
+        E_ref=35e6, c_ref=1e3, phi=32.0, psi=2.0, nu=0.30,
+        gamma=19.0, gamma_sat=21.0, e_init=0.55
+    )
+    clay = SoilMaterialFactory.create(
+        SoilMaterialsType.MC, name="Clay",
+        E_ref=12e6, c_ref=15e3, phi=22.0, psi=0.0, nu=0.35,
+        gamma=17.0, gamma_sat=19.0, e_init=0.90
+    )
+    for m in (fill, sand, clay):
+        pit.add_material("soil_materials", m)
+
+    # ---- Boreholes & layers (minimal but valid) ----
+    sl_fill, sl_sand, sl_clay = SoilLayer("Fill", fill), SoilLayer("Sand", sand), SoilLayer("Clay", clay)
     bh1_layers = [
-        BoreholeLayer("Fill@BH1",   0.0,  -1.5, sl_fill),
-        BoreholeLayer("Sand@BH1",  -1.5, -8.0,  sl_sand),
-        BoreholeLayer("Clay@BH1",  -8.0, -12.0, sl_clay),
+        BoreholeLayer("Fill@BH1",  0.0, -1.5, sl_fill),
+        BoreholeLayer("Sand@BH1", -1.5, -8.0, sl_sand),
+        BoreholeLayer("Clay@BH1", -8.0, -25.0, sl_clay),
     ]
-    bh1 = Borehole("BH_1", Point(0, 0, 0), 0.0, layers=bh1_layers, water_head=-2.0)
-
-    # BH_2 (named BH_1 to trigger conflict)
     bh2_layers = [
-        BoreholeLayer("Fill@BH2",   0.0,  -2.0, sl_fill),
-        BoreholeLayer("Sand@BH2",  -2.0, -6.0,  sl_sand),
-        BoreholeLayer("Clay@BH2",  -6.0, -10.0, sl_clay),
+        BoreholeLayer("Fill@BH2",  0.0, -1.0, sl_fill),
+        BoreholeLayer("Sand@BH2", -1.0, -7.0, sl_sand),
+        BoreholeLayer("Clay@BH2", -7.0, -25.0, sl_clay),
     ]
-    bh2 = Borehole("BH_1", Point(12, 0, 0), 0.0, layers=bh2_layers, water_head=-1.5)
+    bh1 = Borehole("BH_1", Point(-10, 0, 0), 0.0, layers=bh1_layers, water_head=-1.5)
+    bh2 = Borehole("BH_2", Point( 10, 0, 0), 0.0, layers=bh2_layers, water_head=-1.0)
+    pit.borehole_set = BoreholeSet(name="BHSet", boreholes=[bh1, bh2], comment="Demo set")
 
-    # BH_3 (missing Fill)
-    bh3_layers = [
-        BoreholeLayer("Sand@BH3",   0.0,  -4.0, sl_sand),
-        BoreholeLayer("Clay@BH3",  -4.0,  -9.0, sl_clay),
-    ]
-    bh3 = Borehole("BH_3", Point(24, 0, 0), 0.0, layers=bh3_layers, water_head=-1.0)
+    # ---- Pit geometry ----
+    X0, Y0 = 0.0, 0.0
+    W, H   = 20.0, 16.0
+    Z_TOP  = 0.0
+    Z_L1   = -4.0       # first brace level
+    Z_L2   = -8.0       # second brace level
+    Z_EXC_BOTTOM = -10.0
+    Z_WALL_BOTTOM = -16.0   # deeper than excavation bottom
+    Z_WELL_BOTTOM = -18.0
 
-    # BH_4 (Gravel instead of Sand/Clay)
-    bh4_layers = [
-        BoreholeLayer("Fill@BH4",   0.0,  -1.0, sl_fill),
-        BoreholeLayer("Gravel@BH4", -1.0, -7.5, sl_gravel),
-    ]
-    bh4 = Borehole("BH_4", Point(36, 0, 0), 0.0, layers=bh4_layers, water_head=-1.2)
+    # ---- Structure materials ----
+    dwall_mat  = ElasticPlate(name="DWall_E", E=30e6, nu=0.2, d=0.8,  gamma=25.0)
+    anchor_mat = ElasticBeam(name="Anchor_E", E=35e6, nu=0.2, gamma=25.0)  # used as "anchor" material for braces
+    pit.add_material("plate_materials", dwall_mat)
+    pit.add_material("beam_materials",  anchor_mat)
 
-    bhset = BoreholeSet(name="Site BH", boreholes=[bh1, bh2, bh3, bh4], comment="Full demo set")
-    return bhset, [sl_fill, sl_sand, sl_clay, sl_gravel]
+    # ---- Vertical diaphragm walls (top flush with ground, bottom deeper than pit) ----
+    xL, xR = X0 - W/2, X0 + W/2
+    yB, yT = Y0 - H/2, Y0 + H/2
+    west_wall  = RetainingWall(name="DWall_W", surface=rect_wall_x(xL, yB, yT, Z_TOP, Z_WALL_BOTTOM), plate_type=dwall_mat)
+    east_wall  = RetainingWall(name="DWall_E", surface=rect_wall_x(xR, yB, yT, Z_TOP, Z_WALL_BOTTOM), plate_type=dwall_mat)
+    south_wall = RetainingWall(name="DWall_S", surface=rect_wall_y(yB, xL, xR, Z_TOP, Z_WALL_BOTTOM), plate_type=dwall_mat)
+    north_wall = RetainingWall(name="DWall_N", surface=rect_wall_y(yT, xL, xR, Z_TOP, Z_WALL_BOTTOM), plate_type=dwall_mat)
+    for w in (west_wall, east_wall, south_wall, north_wall):
+        pit.add_structure("retaining_walls", w)
+
+    # ---- Horizontal braces (anchors) on opposite and adjacent walls ----
+    # Use an inner offset so line endpoints lie inside the pit region (avoid coincident with wall edges).
+    off = 0.8
+
+    def add_brace(name: str, p0: Tuple[float, float, float], p1: Tuple[float, float, float]):
+        pit.add_structure("beams", Beam(name=name, line=line_2pts(p0, p1), beam_type=anchor_mat))
+
+    for z in (Z_L1, Z_L2):
+        # Opposite walls (X and Y directions)
+        add_brace(f"Brace_X_{abs(int(z))}",
+                  (xL + off, Y0, z), (xR - off, Y0, z))
+        add_brace(f"Brace_Y_{abs(int(z))}",
+                  (X0, yB + off, z), (X0, yT - off, z))
+
+        # Adjacent walls (diagonals among midpoints of adjacent walls)
+        add_brace(f"Brace_WN_{abs(int(z))}",
+                  (xL + off, Y0, z), (X0, yT - off, z))  # West -> North
+        add_brace(f"Brace_WS_{abs(int(z))}",
+                  (xL + off, Y0, z), (X0, yB + off, z))  # West -> South
+        add_brace(f"Brace_EN_{abs(int(z))}",
+                  (xR - off, Y0, z), (X0, yT - off, z))  # East -> North
+        add_brace(f"Brace_ES_{abs(int(z))}",
+                  (xR - off, Y0, z), (X0, yB + off, z))  # East -> South
+
+    # ---- Wells: perimeter ring + interior grid (then dedupe) ----
+    wells: List[Well] = []
+    wells += ring_wells("W", xL, yB, W, H, z_top=Z_TOP, z_bot=Z_WELL_BOTTOM, spacing=4.0, clearance=0.7)
+    wells += grid_wells("W", xL, yB, W, H, z_top=Z_TOP, z_bot=Z_WELL_BOTTOM, dx=6.0, dy=6.0, margin=2.0)
+    wells_unique, wells_dupes, _ = dedupe_wells_by_line(wells, tol=1e-6, keep="first")
+    print(f"[DEDUPE] wells total={len(wells)}, unique={len(wells_unique)}, dupes={len(wells_dupes)}")
+    for d in wells_dupes:
+        n = getattr(d, "name", None)
+        if n: print("  duplicate well:", n)
+    for w in wells_unique:
+        pit.add_structure("wells", w)
+
+    # ---- Phases ----
+    st_init  = PlasticStageSettings(load_type=LoadType.StageConstruction, max_steps=120, time_interval=0.5)
+    st_exc1  = PlasticStageSettings(load_type=LoadType.StageConstruction, max_steps=140, time_interval=1.0)
+    st_dewat = PlasticStageSettings(load_type=LoadType.StageConstruction, max_steps=120, time_interval=0.5)
+    st_exc2  = PlasticStageSettings(load_type=LoadType.StageConstruction, max_steps=140, time_interval=1.0)
+
+    ph0 = Phase(name="P0_Initial",    settings=st_init)   # walls active by default in builder
+    ph1 = Phase(name="P1_Excavate_L1",settings=st_exc1)   # excavate to Z_L1, activate first-level braces
+    ph2 = Phase(name="P2_Dewatering", settings=st_dewat)  # start wells + set water level
+    ph3 = Phase(name="P3_Excavate_L2",settings=st_exc2)   # excavate to Z_L2, activate second-level braces
+
+    # Optional per-phase settings if your SDK exposes helpers
+    try:
+        ph2.set_well_overrides({ w.name: {"h_min": -10.0, "q_well": 0.008} for w in wells_unique })
+    except Exception:
+        pass
+    try:
+        ph2.set_water_table(WaterLevelTable(head=-6.0))
+    except Exception:
+        pass
+
+    for p in (ph0, ph1, ph2, ph3):
+        pit.add_phase(p)
+
+    return pit
 
 
-# ---------------------------- main ----------------------------
+# --------------------------------- main ---------------------------------
+
 if __name__ == "__main__":
-    # 0) Connect
-    passwd = "yS9f$TMP?$uQ@rW3"
-    s_i, g_i = new_server("localhost", 10000, password=passwd)
-    s_i.new()
+    runner = PlaxisRunner(HOST, PORT, PASSWORD)
+    pit = assemble_pit()
 
-    # 1) MATERIALS (soil)
-    fill_mat, sand_mat, clay_mat, gravel_mat = make_soil_materials(g_i)
+    builder = ExcavationBuilder(runner, pit)
 
-    # 2) BOREHOLES & LAYERS (FIRST)
-    bhset, global_layers = build_borehole_set(fill_mat, sand_mat, clay_mat, gravel_mat)
-    bhset.ensure_unique_names()
-    summary = BoreholeSetMapper.create(g_i, bhset, normalize=True)
+    # Optional: relink SoilLayer.material to the library (if your data source created copies)
+    try:
+        builder._relink_borehole_layers_to_library()
+    except Exception:
+        pass
 
-    for i, bh in enumerate(bhset.boreholes):
-        assert_plx_id_set(bh, f"Borehole[{i}]")
-    uniq_layers = iter_unique(sl for bh in bhset.boreholes for sl in [ly.soil_layer for ly in bh.layers])
-    for sl in uniq_layers:
-        assert_plx_id_set(sl, f"SoilLayer[{sl.name}]")
-    print_summary(summary)
-    print("\n[CHECK] Borehole & layers created and imported -> OK")
+    print("[BUILD] start …")
+    builder.build()  # initial design only (materials/structures/walls/anchors/wells/mesh + phase shells)
+    print("[BUILD] done.")
 
-    # 3) GEOMETRY SAFETY
-    created_body = ensure_min_soil_body(g_i)
-    print(f"[GEOMETRY] Soil body present? {created_body}")
+    # Apply all phases (options + structures + water table + well overrides)
+    print("[APPLY] apply phases …")
+    result = builder.apply_phases(warn_on_missing=True)
+    print("[APPLY] result:", result)
 
-    # 4) STRUCTURE MATERIALS
-    plate_mat, beam_mat, pile_mat, anchor_mat = make_structure_materials(g_i)
-
-    # 5) STRUCTURE GEOMETRY
-    line_beam   = make_line(Point(0,  2,  0),   Point(0,  2, -10))
-    line_pile   = make_line(Point(4,  0,  0),   Point(4,  0, -15))
-    line_anchor = make_line(Point(0, -2, -2),   Point(6, -2,  -4))
-    line_waler  = make_line(Point(5.0, -2.0, -4.0), Point(7.0, -2.0, -4.0))
-
-    poly_wall   = make_rect_polygon_xy(x0=-1.0, y0=-3.0, z=-2.0, width=2.0, height=2.0)  # plate @ z=-2
-    poly_plate  = make_rect_polygon_xy(x0= 2.5, y0=-1.0, z= 0.0, width=3.0, height=2.0)  # extra plate @ z=0
-
-    # 6) STRUCTURES
-    beam1    = Beam(name="B1",            line=line_beam,   beam_type=beam_mat)
-    waler    = Beam(name="Waler_L2",      line=line_waler,  beam_type=beam_mat)
-    pile1    = EmbeddedPile(name="P1",    line=line_pile,   pile_type=pile_mat)
-    anchor1  = Anchor(name="A1",          line=line_anchor, anchor_type=anchor_mat)
-    wall1    = RetainingWall(name="WALL",   surface=poly_wall,  plate_type=plate_mat)
-    plate1   = RetainingWall(name="PLATE",  surface=poly_plate, plate_type=plate_mat)
-
-    # 7) CREATE STRUCTURES VIA MAPPERS (anchor depends on plate/waler -> create them first)
-    RetainingWallMapper.create(g_i, wall1)
-    BeamMapper.create(g_i, waler)
-    BeamMapper.create(g_i, beam1)
-    EmbeddedPileMapper.create(g_i, pile1)
-    RetainingWallMapper.create(g_i, plate1)
-    AnchorMapper.create(g_i, anchor1)
-
-    WellMapper.create(g_i, Well(name="W1",
-                                line=make_line(Point(10, 0, 0), Point(10, 0, -8)),
-                                well_type=WellType.Extraction, h_min=-5.0))
-
-    for s, n in [(beam1, "Beam B1"), (waler, "Waler_L2"), (pile1, "EmbeddedPile P1"),
-                 (anchor1, "Anchor A1"), (wall1, "Plate WALL@z=-2"), (plate1, "Plate PLATE@z=0")]:
-        assert_plx_id_set(s, n)
-    print("[CHECK] IDs after structure creation -> OK")
-
-    # 8) (OPTIONAL) MESH AFTER STRUCTURES EXIST
-    optional_mesh(g_i)
-
-    # 9) GO TO STAGES, FETCH INITIAL PHASE OBJECT (with bound plx_id)
-    PhaseMapper.goto_stages(g_i)
-    initial_phase = PhaseMapper.get_initial_phase(g_i)
-    assert getattr(initial_phase, "plx_id", None) is not None, "Initial phase handle not found."
-
-    # 10) SETTINGS
-    st_init = PlasticStageSettings(load_type=LoadType.StageConstruction,
-                                   max_steps=100, time_interval=0.5, over_relaxation_factor=1.05, ΣM_weight=1.0)
-    st_exc1 = PlasticStageSettings(load_type=LoadType.StageConstruction,
-                                   max_steps=150, time_interval=1.0, over_relaxation_factor=1.10, ΣM_stage=0.7, ΣM_weight=1.0)
-    st_exc2 = PlasticStageSettings(load_type=LoadType.StageConstruction,
-                                   max_steps=160, time_interval=1.0, over_relaxation_factor=1.10, ΣM_stage=0.8, ΣM_weight=1.0)
-    st_dewater = PlasticStageSettings(load_type=LoadType.StageConstruction,
-                                      max_steps=120, time_interval=0.5, over_relaxation_factor=1.05, ΣM_weight=1.0)
-    st_backfill = PlasticStageSettings(load_type=LoadType.StageConstruction,
-                                       max_steps=120, time_interval=1.0, over_relaxation_factor=1.05, ΣM_stage=0.5, ΣM_weight=1.0)
-
-    # 11) PHASE OBJECTS (each MUST inherit from a base phase)
-    phase0 = Phase(
-        name="Phase0_InitialSupports",
-        comment="Activate base supports the anchor depends on.",
-        settings=st_init,
-        activate=[wall1, waler, plate1, pile1],
-        deactivate=[],
-        inherits=initial_phase,  # <- MUST inherit
+    print(
+        "\n[NOTE] Braces use 'ElasticBeam' as anchor material. If your SDK has a specific AnchorMaterial, "
+        "replace 'ElasticBeam' with that class and update properties accordingly.\n"
+        "[NOTE] PLAXIS assumes well discharge is distributed evenly over the well length. "
+        "Intersections with other objects may lead to non-physical flow results; "
+        "adjust geometry or split wells if needed."
     )
-    phase1 = Phase(
-        name="Phase1_Excavation_1",
-        comment="Excavate to L1; bring Beam B1 and Anchor A1 online.",
-        settings=st_exc1,
-        activate=[beam1, anchor1],
-        deactivate=[],
-        inherits=phase0,  # <- chain
-    )
-    phase2 = Phase(
-        name="Phase2_Excavation_2",
-        comment="Excavate to L2; keep temporary members.",
-        settings=st_exc2,
-        activate=[],
-        deactivate=[],
-        inherits=phase1,
-    )
-    phase3 = Phase(
-        name="Phase3_Dewatering",
-        comment="Start well W1.",
-        settings=st_dewater,
-        activate=[],
-        deactivate=[],
-        inherits=phase2,
-    )
-    phase4 = Phase(
-        name="Phase4_Backfill_RemoveTemps",
-        comment="Backfill; remove temporary supports.",
-        settings=st_backfill,
-        activate=[],
-        deactivate=[anchor1, beam1],
-        inherits=phase3,
-    )
-
-    # 12) CREATE & APPLY: for each Phase -> create_for_phase (writes plx_id) -> apply_phase
-    ph_handles: List[Any] = []
-    for ph in [phase0, phase1, phase2, phase3, phase4]:
-        h = PhaseMapper.create(g_i, phase_obj=ph)                 # inherits from ph.inherits
-        ph_handles.append(h)
-        PhaseMapper.apply_phase(g_i, h, ph, warn_on_missing=True) # 1) options  2) activate/deactivate  3) water
-
-        print(f"[{ph.name}] created handle bound; activate={len(ph.activate)} deactivate={len(ph.deactivate)}")
-
-    # 13) Example: later option update on Phase2
-    phase2.settings.max_iterations = 80
-    PhaseMapper.apply_options(ph_handles[2], phase2.settings_payload(), warn_on_missing=True)
-    print("[UPDATE] Phase2 max_iterations -> 80")
-
-    # 14) Example: late structure change at Phase2 (explicit freeze)
-    PhaseMapper.apply_structures(g_i, ph_handles[2], activate=[], deactivate=[beam1])
-    print("[STRUCT] Phase2 additionally deactivated Beam B1")
-
-    print("\n[PIPELINE] Boreholes & layers -> geometry -> structures -> mesh -> stages -> inherited phases: COMPLETE")

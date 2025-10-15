@@ -53,6 +53,8 @@ class Phase(PlaxisObject):
         activate: Optional[Sequence[BaseStructure]] = None,
         deactivate: Optional[Sequence[BaseStructure]] = None,
         inherits: Optional["Phase"] = None,   # NEW: the phase this one derives from
+        # NEW: per-phase well parameter overrides, by well name
+        well_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> None:
         super().__init__(name=name, comment=comment)
 
@@ -87,6 +89,7 @@ class Phase(PlaxisObject):
 
         # NEW: inheritance reference (may carry an existing plx_id)
         self._inherits: Optional["Phase"] = inherits
+        self._well_overrides: Dict[str, Dict[str, Any]] = dict(well_overrides or {})
 
     # ---------------------- properties ----------------------
     @property
@@ -116,6 +119,19 @@ class Phase(PlaxisObject):
     @property
     def water_table(self) -> Optional[WaterLevelTable]:
         return self._water_table
+    
+    @water_table.setter
+    def water_table(self, wt: Any) -> None:
+        self._water_table = wt
+
+    @property
+    def well_overrides(self) -> Dict[str, Dict[str, Any]]:
+        """Mapping: well_name -> { 'q_well': float, 'h_min': float, 'well_type': str|enum }"""
+        return self._well_overrides
+
+    @well_overrides.setter
+    def well_overrides(self, mapping: Optional[Dict[str, Dict[str, Any]]]) -> None:
+        self._well_overrides = dict(mapping or {})
 
     @property
     def activate(self) -> List[BaseStructure]:
@@ -159,6 +175,11 @@ class Phase(PlaxisObject):
     def set_water_table(self, tbl: WaterLevelTable) -> "Phase":
         self._water_table = tbl
         return self
+    
+    def set_well_overrides(self, mapping: Optional[Dict[str, Dict[str, Any]]]) -> "Phase":
+        """Fluent helper."""
+        self.well_overrides = mapping
+        return self
 
     def activate_structures(self, *objs: BaseStructure) -> "Phase":
         self._activate.extend(objs)
@@ -170,10 +191,10 @@ class Phase(PlaxisObject):
 
     # ---------------------- exports for mappers ----------------------
     def settings_payload(self) -> Dict[str, Any]:
-        """Export settings in a mapper-friendly schema (delegates to StageSettings.to_settings_dict())."""
-        if hasattr(self._settings, "to_settings_dict"):
-            return self._settings.to_settings_dict()  # type: ignore[no-any-return]
-        return self._settings.to_dict()
+        # keep your original logic; this is a placeholder
+        if hasattr(self._settings, "to_dict"):
+            return self._settings.to_dict()
+        return getattr(self._settings, "__dict__", {}) or {}
 
     def actions(self) -> Dict[str, Any]:
         """
@@ -196,6 +217,7 @@ class Phase(PlaxisObject):
             "activate": [s.to_dict() for s in self._activate],
             "deactivate": [s.to_dict() for s in self._deactivate],
             "water_table": None if self._water_table is None else self._water_table.to_dict(),
+            "well_overrides": self._well_overrides,
             "inherits": None if self._inherits is None else {
                 "name": self._inherits.name,
                 "plx_id": getattr(self._inherits, "plx_id", None),
@@ -213,6 +235,7 @@ class Phase(PlaxisObject):
             "dynamic_loads": [L.to_dict() for L in self._dynamic_loads],
             "load_multipliers": {k: m.to_dict() for k, m in self._load_multipliers.items()},
             "water_table": None if self._water_table is None else self._water_table.to_dict(),
+            "well_overrides": self._well_overrides,
             "activate": [s.to_dict() for s in self._activate],
             "deactivate": [s.to_dict() for s in self._deactivate],
             "inherits": None if self._inherits is None else {
@@ -278,6 +301,7 @@ class Phase(PlaxisObject):
         # Water table (single)
         wt = d.get("water_table")
         water_table = _rehydrate_one(wt) if wt is not None else None
+        well_overrides = data.get("well_overrides") or {}
 
         # Activation lists: **objects**
         activate_objs = _rehydrate_list(d.get("activate"))
@@ -304,6 +328,7 @@ class Phase(PlaxisObject):
             dynamic_loads=dynamic_loads,    # type: ignore[arg-type]
             load_multipliers=mults,
             water_table=water_table,        # type: ignore[arg-type]
+            well_overrides=well_overrides,
             activate=activate_objs,         # type: ignore[arg-type]
             deactivate=deactivate_objs,     # type: ignore[arg-type]
             inherits=inherits_phase,

@@ -336,4 +336,3 @@ class WaterTableMapper:
                     f"label={label} tried={tried}",
                     h,
                     extra=("OK" if ok else "FAILED"))
-

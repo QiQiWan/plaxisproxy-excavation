@@ -1,818 +1,666 @@
-# static, tolerant mapper for StageSettings + Phase structure toggles.
+# phasemapper.py
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple, List
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
-# Phase + default settings to construct the initial Phase object
-from ..components.phase import Phase
-from ..components.phasesettings import PlasticStageSettings, LoadType
-
-
-# ----------------------------- module helpers -----------------------------
-def _is_mapping(x: Any) -> bool:
-    """Duck typing for dict-like proxies (Remote Scripting often exposes these)."""
-    try:
-        return isinstance(x, MutableMapping) or (hasattr(x, "keys") and hasattr(x, "__getitem__"))
-    except Exception:
-        return False
+PhaseLike = Any          # your domain Phase object (has name/comment/settings/activate/deactivate/…)
+PhaseHandle = Any        # PLAXIS-side handle for a phase
+ModelHandle = Any        # PLAXIS-side handle for any created object
 
 
-def set_dotted_attr(root: Any, path: str, value: Any) -> bool:
-    """
-    Try to set `root.a.b.c = value` for a dotted path.
-    Supports attribute objects and dict-like objects. Returns True on success. Never raises.
-    """
-    try:
-        parts = [p for p in str(path).split(".") if p]
-        if not parts:
-            return False
-        obj = root
-        for p in parts[:-1]:
-            if hasattr(obj, p):
-                obj = getattr(obj, p)
-                continue
-            if _is_mapping(obj) and p in obj:
-                obj = obj[p]  # type: ignore[index]
-                continue
-            return False  # cannot traverse
-        leaf = parts[-1]
-        if hasattr(obj, leaf):
-            try:
-                setattr(obj, leaf, value)
-                return True
-            except Exception:
-                pass
-        if _is_mapping(obj):
-            try:
-                obj[leaf] = value  # type: ignore[index]
-                return True
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return False
-
-
-def merged_candidates(base: Mapping[str, Tuple[str, ...]],
-                      overlay: Optional[Mapping[str, Sequence[str]]]) -> Dict[str, Tuple[str, ...]]:
-    """Merge the base candidates with an optional overlay (no mutation on inputs)."""
-    out: Dict[str, Tuple[str, ...]] = dict(base)
-    if overlay:
-        for k, v in overlay.items():
-            out[k] = tuple(v)
-    return out
-
-
-def default_initial_phase(g_i: Any) -> Optional[Any]:
-    """Best-effort handle to find an initial phase in g_i."""
-    prev = getattr(g_i, "InitialPhase", None) or getattr(g_i, "initialphase", None) or None
-    if prev is not None:
-        return prev
-    try:
-        phases = getattr(g_i, "phases", None) or getattr(g_i, "Phases", None)
-        if phases:
-            return phases[0]
-    except Exception:
-        return None
-    return None
-
-
-def resolve_runtime_handle(g_i: Any, obj: Any) -> Optional[Any]:
-    """
-    Tolerant runtime handle resolver:
-    1) Guess a collection by class name plural (Beam -> Beams, Anchor -> Anchors, ...),
-       then try name-based lookup (dict-like or iterables with .name).
-    2) Fallback to a few common collections (Structures, Beams, Anchors, EmbeddedPiles, Plates, Walls, Wells).
-    3) Last resort: try global 'Find'/'ByName' on g_i or g_i.Model.
-    """
-    name = getattr(obj, "name", None)
-    cls_name = type(obj).__name__
-    candidates = [
-        f"{cls_name}s",                   # Beam -> Beams, Anchor -> Anchors
-        f"{cls_name}Set",
-        f"{cls_name}Collection",
-        "Structures", "Beams", "Anchors", "EmbeddedPiles", "Plates", "Walls", "Wells",
-    ]
-
-    def _from_collection(coll: Any, nm: str) -> Optional[Any]:
-        if coll is None:
-            return None
-        if _is_mapping(coll) and nm in coll:
-            return coll[nm]  # type: ignore[index]
-        try:
-            for it in coll:
-                if getattr(it, "name", getattr(it, "Name", None)) == nm:
-                    return it
-        except Exception:
-            pass
-        if hasattr(coll, nm):
-            return getattr(coll, nm)
-        return None
-
-    for cname in candidates:
-        coll = getattr(g_i, cname, None) or getattr(getattr(g_i, "Model", None), cname, None)
-        if coll and name:
-            h = _from_collection(coll, name)
-            if h is not None:
-                return h
-
-    for fn in ("Find", "ByName", "get"):
-        finder = getattr(g_i, fn, None) or getattr(getattr(g_i, "Model", None), fn, None)
-        if callable(finder) and name:
-            try:
-                h = finder(name)
-                if h is not None:
-                    return h
-            except Exception:
-                pass
-    return None
-
-
-def _handle_name(h: Any, fallback: str = "") -> str:
-    """Extract a human-readable name from a PLAXIS handle."""
-    try:
-        n = getattr(h, "Name", None)
-        if n is not None:
-            return str(n)
-    except Exception:
-        pass
-    try:
-        n = getattr(h, "name", None)
-        if n is not None:
-            return str(n)
-    except Exception:
-        pass
-    return fallback
-
-
-# ----------------------------- reporting -----------------------------
-@dataclass
-class PhaseMapReport:
-    assigned: List[Tuple[str, str]] = field(default_factory=list)  # (key, dotted_path) for options
-    skipped:  List[str] = field(default_factory=list)              # logical keys w/o candidates
-    failed:   List[Tuple[str, str]] = field(default_factory=list)  # (key, dotted_path) attempts that failed
-    struct_on:  List[str] = field(default_factory=list)            # names activated
-    struct_off: List[str] = field(default_factory=list)            # names deactivated
-    water_applied: bool = False
-
-@dataclass
-class PhaseUpdateResult:
-    handle: Any                          # the (final) phase handle that was updated or recreated
-    report: PhaseMapReport               # options + structure toggles report
-    recreated: bool = False              # whether we had to recreate the phase
-    previous_handle: Optional[Any] = None# old handle if recreated
-    prev_changed: bool = False           # whether PreviousPhase was changed (or intended to)
-
-# ----------------------------- static mapper -----------------------------
 class PhaseMapper:
-    """Pure static utility. Do NOT instantiate."""
+    """
+    A defensive, version-tolerant mapper for PLAXIS Staged Construction phases.
 
-    # ----------- options candidates  (aligned to your phasesettings.to_settings_dict) -----------
-    CANDIDATES: Dict[str, Tuple[str, ...]] = {
-        # General
-        "calc_type": ("CalculationType", "Deform.CalculationType"),
-        "load_type": ("Loading.LoadingType", "Deform.LoadingType", "Deform.Loading"),
-        "pore_cal_type": ("Flow.PoreCalculationType", "Loading.PoreCalculationType", "Loading.PoreCalculation"),
-        # ΣM
-        "ΣM_stage": ("Deform.SumMStage", "Deform.SigmaMStage", "Deform.SumMstage"),
-        "ΣM_weight": ("Deform.SumMWeight", "Deform.SigmaMWeight", "Deform.SumMweight"),
-        "SigmaMstage": ("Deform.SumMStage",),
-        "SigmaMweight": ("Deform.SumMWeight",),
-        # Loading
-        "time_interval": ("Loading.TimeInterval", "Deform.TimeInterval"),
-        "estimated_end_time": ("Loading.EstimatedEndTime", "Deform.EstimatedEndTime"),
-        "first_step": ("Loading.FirstStep", "Deform.FirstStep"),
-        "last_step": ("Loading.LastStep", "Deform.LastStep"),
-        "special_option": ("Loading.SpecialOption", "Deform.SpecialOption"),
-        # Consolidation extras
-        "p_stop": ("Loading.MinExcessPorePressure", "Loading.MinimumExcessPorePressure", "Loading.PStop"),
-        "degree_of_consolidation": ("Loading.DegreeOfConsolidation", "Loading.SolidationDegree"),
-        "solidation_degree": ("Loading.DegreeOfConsolidation", "Loading.SolidationDegree"),
-        # Deform
-        "ignore_undr_behavior": ("Deform.IgnoreUndrainedBehaviour", "Deform.IgnoreUndrainedBehavior"),
-        "force_fully_drained": ("Deform.ForceFullyDrainedNewClusters", "Deform.ForceFullyDrained"),
-        "reset_displacemnet": ("Deform.ResetDisplacements",),
-        "reset_small_strain": ("Deform.ResetSmallStrains", "Deform.ResetSmallStrain"),
-        "reset_state_variable": ("Deform.ResetStateVariables", "Deform.ResetStateVariable"),
-        "reset_time": ("Deform.ResetTime",),
-        "update_mesh": ("Deform.UpdatedMesh", "Deform.UpdateMesh"),
-        "ignore_suction_F": ("Deform.IgnoreSuction",),
-        "cavitation_cutoff": ("Deform.CavitationCutOff", "Deform.CavitationCutoff"),
-        "cavitation_limit": ("Deform.CavitationStress", "Deform.CavitationLimit"),
-        # Numerical
-        "solver": ("Numerical.SolverType", "Numerical.Solver"),
-        "max_cores_use": ("Numerical.MaxNumberOfCores", "Numerical.MaxCores"),
-        "max_number_of_step_store": ("Numerical.MaxNumberOfStepStore",),
-        "use_compression_result": ("Numerical.UseCompression", "Numerical.UseCompressionResult"),
-        "use_default_iter_param": ("Numerical.UseDefaultIterativeParameters", "Numerical.UseDefaultIterParam"),
-        "max_steps": ("Numerical.MaxSteps",),
-        "time_step_determination": ("Numerical.TimeStepDetermination",),
-        "first_time_step": ("Numerical.FirstTimeStep",),
-        "min_time_step": ("Numerical.MinTimeStep",),
-        "max_time_step": ("Numerical.MaxTimeStep",),
-        "tolerance_error": ("Numerical.Tolerance", "Numerical.ToleranceError"),
-        "max_unloading_step": ("Numerical.MaxUnloadingSteps",),
-        "max_load_fraction_per_step": ("Numerical.MaxLoadFractionPerStep", "Numerical.MaxLoadFractionStep"),
-        "over_relaxation_factor": ("Numerical.Overrelaxation", "Numerical.OverRelaxation", "Numerical.OverrelaxationFactor"),
-        "max_iterations": ("Numerical.MaxIterations",),
-        "desired_min_iterations": ("Numerical.DesiredMinIterations",),
-        "desired_max_iterations": ("Numerical.DesiredMaxIterations",),
-        "Arc_length_control": ("Numerical.ArcLengthControl", "Numerical.Arc_length_control"),
-        "use_subspace_accelerator": ("Numerical.UseSubspaceAcceleration", "Numerical.SubspaceAccelerator"),
-        "subspace_size": ("Numerical.SubspaceSize",),
-        "line_search": ("Numerical.UseLineSearch", "Numerical.LineSearch"),
-        "use_gradual_error_reduction": ("Numerical.UseGradualErrorReduction", "Numerical.GradualErrorReduction"),
-        "number_sub_steps": ("Numerical.NumberOfSubsteps", "Numerical.NumberOfSubSteps"),
-        # Dynamics
-        "dynamic_time_interval": ("Dynamics.TimeInterval", "Dynamic.TimeInterval", "Deform.TimeInterval"),
-        "newmark_alpha": ("Dynamics.NewmarkAlpha", "Deform.NewmarkAlpha"),
-        "newmark_beta": ("Dynamics.NewmarkBeta", "Deform.NewmarkBeta"),
-        "mass_matrix": ("Dynamics.MassMatrix", "Deform.MassMatrix", "Deform.MassMatrixType"),
-        # Flow
-        "flow_use_default_iter_param": ("Flow.UseDefaultIterativeParameters", "Flow.UseDefaultIterParam"),
-        "flow_max_steps": ("Flow.MaxSteps",),
-        "flow_tolerance_error": ("Flow.Tolerance", "Flow.ToleranceError"),
-        "flow_over_relaxation_factor": ("Flow.Overrelaxation", "Flow.OverRelaxation"),
-        # Safety
-        "safety_multiplier": ("Safety.SafetyMultiplier", "Numerical.SafetyMultiplier"),
-        "msf": ("Safety.Msf", "Safety.MSF", "Loading.Msf"),
-        "sum_msf": ("Safety.TargetSumMsf", "Safety.SumMsf"),
-    }
+    Public API (static):
+      - goto_stages(g_i) -> None
+      - get_initial_phase(g_i) -> PhaseHandle
+      - find_phase_handle(g_i, name:str) -> Optional[PhaseHandle]
+      - create(g_i, *, phase_obj:PhaseLike, inherits:Optional[PhaseHandle]) -> PhaseHandle
+      - apply_phase(g_i, phase_handle:PhaseHandle, phase_obj:PhaseLike, warn_on_missing=False) -> None
+      - apply_options(phase_handle:PhaseHandle, options:Dict[str,Any], warn_on_missing=False) -> None
+      - apply_structures(g_i, phase_handle:PhaseHandle, activate, deactivate, warn_on_missing=False) -> None
+      - apply_well_overrides_dict(g_i, phase_handle:PhaseHandle, overrides:Dict[str,Dict[str,Any]], warn_on_missing=False) -> None
+      - apply_well_overrides(g_i, phase_handle:PhaseHandle, phase_like:PhaseLike, warn_on_missing=False) -> None
+      - apply_plan(g_i, phases:Sequence[PhaseLike], warn_on_missing=False) -> List[PhaseHandle]
+      - update(g_i, phase_obj:PhaseLike, base:Optional[PhaseHandle], warn_on_missing=False) -> Dict[str,Any]
+    """
 
-    # ===================== public static API =====================
+    # ---------------------------------------------------------------------
+    # Stage navigation & discovery
+    # ---------------------------------------------------------------------
 
-    # --- navigation helpers ---
     @staticmethod
-    def goto_stages(g_i: Any) -> bool:
-        """Enter the Stages mode to make sure phase creation API is available."""
-        for fn in ("gotostages", "GoToStages", "to_stages"):
+    def goto_stages(g_i: Any) -> None:
+        """Switch PLAXIS UI to Staged Construction; try common variants."""
+        for fn in ("gotostages", "GoToStages", "goto_stages"):
             f = getattr(g_i, fn, None)
             if callable(f):
                 try:
-                    f(); return True
+                    f()
+                    return
                 except Exception:
                     pass
+        # Some builds implicitly switch; do not hard-fail.
+
+    @staticmethod
+    def get_initial_phase(g_i: Any) -> PhaseHandle:
+        """
+        Return the Initial Phase handle (robust).
+        Tries: g_i.InitialPhase, first of g_i.Phases, or search by Identification.
+        """
+        # 1) direct property
+        initial = getattr(g_i, "InitialPhase", None)
+        if initial is not None:
+            return initial
+
+        # 2) first in phases collection
+        try:
+            phases = getattr(g_i, "Phases", None)
+            if phases:
+                try:
+                    return phases[0]  # indexing
+                except Exception:
+                    for p in phases:
+                        return p
+        except Exception:
+            pass
+
+        # 3) search by name
+        try:
+            for p in g_i.Phases[:]:
+                name = getattr(p, "Identification", "") or getattr(p, "Name", "")
+                if name in ("InitialPhase", "Initial Phase", "Initial phase"):
+                    return p
+        except Exception:
+            pass
+
+        raise RuntimeError("Initial phase handle not found.")
+
+    @staticmethod
+    def find_phase_handle(g_i: Any, name: str) -> Optional[PhaseHandle]:
+        """Find a phase by Identification/Name."""
+        if not name:
+            return None
+        try:
+            col = getattr(g_i, "Phases", None)
+            if not col:
+                return None
+            # Try slicing first (faster in most builds)
+            try:
+                for p in col[:]:
+                    ident = getattr(p, "Identification", None) or getattr(p, "Name", None)
+                    if ident == name:
+                        return p
+            except Exception:
+                for p in col:
+                    ident = getattr(p, "Identification", None) or getattr(p, "Name", None)
+                    if ident == name:
+                        return p
+        except Exception:
+            pass
+        return None
+
+    # ---------------------------------------------------------------------
+    # Low-level creation helpers
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def _create_phase_from_base(g_i: Any, previous: PhaseHandle) -> PhaseHandle:
+        """
+        Create a new phase that inherits from 'previous'. Try several APIs:
+          1) g_i.phase(previous)
+          2) g_i.addphase(previous)
+          3) g_i.Phase(previous)
+          4) g_i.phase() then set PreviousPhase attribute
+        """
+        for fn in ("phase", "addphase", "Phase"):
+            f = getattr(g_i, fn, None)
+            if callable(f):
+                try:
+                    return f(previous)
+                except Exception:
+                    pass
+
+        # Empty create then point 'PreviousPhase' to previous
+        for fn in ("phase", "addphase", "Phase"):
+            f = getattr(g_i, fn, None)
+            if callable(f):
+                try:
+                    new_ph = f()
+                    # set inheritance link
+                    for attr in ("PreviousPhase", "Parent", "ParentPhase"):
+                        try:
+                            setattr(new_ph, attr, previous)
+                            break
+                        except Exception:
+                            continue
+                    return new_ph
+                except Exception:
+                    pass
+
+        raise RuntimeError("No usable phase creation API found (phase/addphase/Phase).")
+
+    @staticmethod
+    def _maybe_set_identification(ph: PhaseHandle, name: Optional[str]) -> None:
+        if not name:
+            return
+        for attr in ("Identification", "Name"):
+            try:
+                setattr(ph, attr, str(name))
+                return
+            except Exception:
+                continue
+
+    @staticmethod
+    def _maybe_set_comment(ph: PhaseHandle, comment: Optional[str]) -> None:
+        if not comment:
+            return
+        for attr in ("Comments", "Comment"):
+            try:
+                setattr(ph, attr, str(comment))
+                return
+            except Exception:
+                continue
+
+    # ---------------------------------------------------------------------
+    # Public: create a PLAXIS phase from a Phase object
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def create(g_i: Any, *, phase_obj: PhaseLike, inherits: Optional[PhaseHandle]) -> PhaseHandle:
+        """
+        Create a new PLAXIS phase:
+          - inherits from 'inherits' or Initial Phase if None
+          - sets Identification/Comment if available
+          - writes the new handle back to phase_obj.plx_id (if present)
+        """
+        base = inherits or PhaseMapper.get_initial_phase(g_i)
+        new_ph = PhaseMapper._create_phase_from_base(g_i, base)
+
+        PhaseMapper._maybe_set_identification(new_ph, getattr(phase_obj, "name", None))
+        PhaseMapper._maybe_set_comment(new_ph, getattr(phase_obj, "comment", None))
+
+        # bind back
+        try:
+            setattr(phase_obj, "plx_id", new_ph)
+        except Exception:
+            pass
+
+        return new_ph
+
+    # ---------------------------------------------------------------------
+    # Options application
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def _set_phase_attr(phase: PhaseHandle, key: str, value: Any) -> bool:
+        """
+        Try to set phase attribute by key, with a few alias tricks:
+          - replace Greek 'Σ' with 'Sum' / 'Sigma'
+          - support dotted keys like 'Deform.ResetDisplacements'
+        """
+        # dot path (e.g., "Deform.ResetDisplacements")
+        if "." in key:
+            cur = phase
+            parts = key.split(".")
+            try:
+                for p in parts[:-1]:
+                    cur = getattr(cur, p)
+                setattr(cur, parts[-1], value)
+                return True
+            except Exception:
+                return False
+
+        # direct attr or greek alias
+        candidates = [key, key.replace("Σ", "Sum"), key.replace("Σ", "Sigma")]
+        for k in candidates:
+            try:
+                setattr(phase, k, value)
+                return True
+            except Exception:
+                continue
         return False
 
     @staticmethod
-    def get_initial_phase(g_i: Any) -> Phase:
+    def apply_options(phase_handle: PhaseHandle, options: Dict[str, Any],
+                      *, warn_on_missing: bool = False) -> None:
         """
-        Return a concrete Phase object representing the current project's initial phase.
-        - It carries a default PlasticStageSettings (values will be those you define as defaults).
-        - `plx_id` on the returned Phase is set to the actual PLAXIS phase handle.
+        Apply solver/stage options in a tolerant way.
+        Accepts flat dict or nested dict; dotted keys are allowed.
         """
-        h = default_initial_phase(g_i)
-        # robust name extraction
-        nm = "InitialPhase"
-        try:
-            nm = str(getattr(h, "Name", nm))
-        except Exception:
-            pass
-        st = PlasticStageSettings(load_type=LoadType.StageConstruction)  # default baseline settings
-        ph = Phase(name=nm, comment="(initial phase)", settings=st, inherits=None)
-        setattr(ph, "plx_id", h)
-        return ph
+        if not isinstance(options, dict):
+            return
+
+        # flatten nested dicts with dotted paths
+        def _flatten(prefix: str, d: Dict[str, Any], out: Dict[str, Any]) -> None:
+            for k, v in d.items():
+                kk = f"{prefix}.{k}" if prefix else k
+                if isinstance(v, dict):
+                    _flatten(kk, v, out)
+                else:
+                    out[kk] = v
+
+        flat: Dict[str, Any] = {}
+        _flatten("", options, flat)
+
+        for key, val in flat.items():
+            if not PhaseMapper._set_phase_attr(phase_handle, key, val) and warn_on_missing:
+                print(f"[PhaseMapper.apply_options] Unknown or unsupported option '{key}' (ignored).")
+
+    # ---------------------------------------------------------------------
+    # Structure activation/deactivation
+    # ---------------------------------------------------------------------
 
     @staticmethod
-    def _set_previous_phase(new_phase_handle: Any, prev_phase_handle: Any) -> bool:
+    def _resolve_handle(obj: Any) -> Optional[ModelHandle]:
         """
-        Best-effort to set inheritance: new.PreviousPhase = prev.
-        Return True if succeeded.
+        Resolve a PLAXIS handle from a domain object or a raw handle.
+        Tries .plx_id first; otherwise returns obj if it already looks like a handle.
         """
-        # 1) direct attribute
+        if obj is None:
+            return None
+        h = getattr(obj, "plx_id", None)
+        return h if h is not None else obj
+
+    @staticmethod
+    def _activate(g_i: Any, handle: ModelHandle, phase: PhaseHandle) -> bool:
+        # preferred API
+        for fn in ("activate", "Activate"):
+            f = getattr(g_i, fn, None)
+            if callable(f):
+                try:
+                    f(handle, phase=phase)
+                    return True
+                except Exception:
+                    pass
+        # attribute toggle fallback
         try:
-            new_phase_handle.PreviousPhase = prev_phase_handle
+            # many objects expose Active[phase] indexing
+            active = getattr(handle, "Active", None)
+            if active is not None:
+                active[phase] = True
+                return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _deactivate(g_i: Any, handle: ModelHandle, phase: PhaseHandle) -> bool:
+        for fn in ("deactivate", "Deactivate"):
+            f = getattr(g_i, fn, None)
+            if callable(f):
+                try:
+                    f(handle, phase=phase)
+                    return True
+                except Exception:
+                    pass
+        try:
+            inactive = getattr(handle, "Active", None)
+            if inactive is not None:
+                inactive[phase] = False
+                return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def apply_structures(g_i: Any, phase_handle: PhaseHandle,
+                         activate: Iterable[Any], deactivate: Iterable[Any],
+                         *, warn_on_missing: bool = False) -> None:
+        """Activate/deactivate model objects for this phase."""
+        # activate
+        for obj in (activate or []):
+            h = PhaseMapper._resolve_handle(obj)
+            if h is None:
+                if warn_on_missing:
+                    print("[PhaseMapper.apply_structures] activate: missing handle; skipped.")
+                continue
+            if not PhaseMapper._activate(g_i, h, phase_handle) and warn_on_missing:
+                print(f"[PhaseMapper.apply_structures] activate failed for '{getattr(obj,'name',obj)}'.")
+
+        # deactivate
+        for obj in (deactivate or []):
+            h = PhaseMapper._resolve_handle(obj)
+            if h is None:
+                if warn_on_missing:
+                    print("[PhaseMapper.apply_structures] deactivate: missing handle; skipped.")
+                continue
+            if not PhaseMapper._deactivate(g_i, h, phase_handle) and warn_on_missing:
+                print(f"[PhaseMapper.apply_structures] deactivate failed for '{getattr(obj,'name',obj)}'.")
+
+    # ---------------------------------------------------------------------
+    # Water table (best-effort)
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_head_from_mapping(mp: Dict[str, Any]) -> Optional[float]:
+        for k in ("head", "level", "z", "H", "h"):
+            if k in mp:
+                try:
+                    return float(mp[k])
+                except Exception:
+                    return None
+        return None
+
+    @staticmethod
+    def _extract_head(water_tbl: Any) -> Optional[float]:
+        """
+        Return a scalar head (z) when possible.
+        Accepts WaterTable/WaterLevelTable objects, dict-like payloads, or a plain number.
+        """
+        # direct numeric
+        if isinstance(water_tbl, (int, float)):
+            try:
+                return float(water_tbl)
+            except Exception:
+                return None
+
+        # mapping/dict
+        if isinstance(water_tbl, dict):
+            return PhaseMapper._extract_head_from_mapping(water_tbl)
+
+        # object with to_dict / to_payload
+        for meth in ("to_payload", "to_dict", "as_dict"):
+            fn = getattr(water_tbl, meth, None)
+            if callable(fn):
+                try:
+                    mp = fn() or {}
+                    if isinstance(mp, dict):
+                        h = PhaseMapper._extract_head_from_mapping(mp)
+                        if h is not None:
+                            return h
+                except Exception:
+                    pass
+
+        # object attributes (head / level / z / H / h)
+        for k in ("head", "level", "z", "H", "h"):
+            try:
+                v = getattr(water_tbl, k, None)
+                if v is not None:
+                    return float(v)
+            except Exception:
+                continue
+
+        return None
+
+    @staticmethod
+    def _apply_water_table(g_i: Any, phase_handle: Any, water_tbl: Any,
+                           *, warn_on_missing: bool = False) -> None:
+        """
+        Best-effort application:
+        1) If scalar head is extractable -> set as a phase property.
+        2) Otherwise, try to pass the object to a solver API if present.
+        """
+        head = PhaseMapper._extract_head(water_tbl)
+        if head is not None:
+            # Try common phase attributes first
+            for attr in ("WaterLevel", "PhreaticLevel", "WaterLevelHead", "Head"):
+                try:
+                    setattr(phase_handle, attr, head)
+                    return
+                except Exception:
+                    pass
+            # Or solver helpers with phase kw
+            for fn_name in ("setwaterlevel", "SetWaterLevel", "set_water_level"):
+                fn = getattr(g_i, fn_name, None)
+                if callable(fn):
+                    try:
+                        fn(head, phase=phase_handle)
+                        return
+                    except Exception:
+                        pass
+            if warn_on_missing:
+                print("[PhaseMapper] Could not set scalar head on phase; skipped.")
+            return
+
+        # If head not extractable, try to pass the whole object to solver-level API
+        for fn_name in ("setwaterlevelobj", "SetWaterLevelObject", "set_water_level_object"):
+            fn = getattr(g_i, fn_name, None)
+            if callable(fn):
+                try:
+                    fn(water_tbl, phase=phase_handle)
+                    return
+                except Exception:
+                    pass
+
+        if warn_on_missing:
+            print("[PhaseMapper] No supported API found to apply water table object; skipped.")
+
+    # ---------------------------------------------------------------------
+    # Wells: name-based overrides per phase
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def _iter_candidate_collections(g_i: Any) -> List[Any]:
+        """
+        Return possible containers that may hold well-like objects.
+        We search by Identification across these.
+        """
+        names = [
+            "Wells", "Pipes", "LineConstructs", "Lines",
+            "EmbeddedBeams", "Beams", "Plates", "Walls",
+            "Anchors", "Structures", "Objects"
+        ]
+        cols: List[Any] = []
+        for n in names:
+            try:
+                c = getattr(g_i, n, None)
+                if c:
+                    try:
+                        _ = iter(c)
+                        cols.append(c)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        return cols
+
+    @staticmethod
+    def _find_model_object_by_name(g_i: Any, name: str) -> Optional[ModelHandle]:
+        if not name:
+            return None
+        for col in PhaseMapper._iter_candidate_collections(g_i):
+            # fast slice
+            try:
+                for obj in col[:]:
+                    if getattr(obj, "Identification", None) == name:
+                        return obj
+            except Exception:
+                try:
+                    for obj in col:
+                        if getattr(obj, "Identification", None) == name:
+                            return obj
+                except Exception:
+                    continue
+        return None
+
+    @staticmethod
+    def _set_object_param(g_i: Any, handle: ModelHandle, key: str, value: Any,
+                          phase: Optional[PhaseHandle]) -> bool:
+        """
+        Try to set a parameter on a model object, optionally for a phase.
+        """
+        # 1) setattr directly on the object
+        try:
+            setattr(handle, key, value)
             return True
         except Exception:
             pass
-        # 2) dotted setter fallback
-        try:
-            return set_dotted_attr(new_phase_handle, "PreviousPhase", prev_phase_handle)
-        except Exception:
-            return False
 
-    @staticmethod
-    def create(g_i: Any, phase_obj: "Phase", inherits: Optional[Any] = None) -> Any:
-        """
-        Create a new PLAXIS phase for `phase_obj`.
-        Inheritance source (base phase) resolution priority:
-          1) explicit `inherits` param (if provided),
-          2) `phase_obj.inherits.plx_id`.
-        Raises:
-          ValueError if no base phase can be resolved.
-        Side effects:
-          - Binds `phase_obj.plx_id` to the created PLAXIS phase handle.
-        """
-        # 1) resolve base (prefer explicit override)
-        base = inherits
-        if base is None:
-            inh = getattr(phase_obj, "inherits", None)
-            if inh is not None:
-                base = getattr(inh, "plx_id", None)
-
-        if base is None:
-            raise ValueError(
-                f"Phase '{getattr(phase_obj, 'name', 'Phase')}' must inherit from a base phase: "
-                "provide `phase_obj.inherits` or `inherits=...`."
-            )
-
-        # 2) preferred path: empty-new, then set PreviousPhase explicitly
-        new_h = None
-        for method_name in ("phase", "Phase", "phases.New", "Phases.New"):
-            creator = getattr(g_i, method_name, None)
-            if not creator:
-                continue
-            try:
-                new_h = creator()  # empty creation
-                break
-            except Exception:
-                continue
-
-        # 3) fallback: create directly with base (older APIs)
-        if new_h is None:
-            for method_name in ("phase", "Phase", "phases.New", "Phases.New"):
-                creator = getattr(g_i, method_name, None)
-                if not creator:
-                    continue
+        # 2) g_i.SetParameter(handle, key, value, phase=phase)
+        for fn in ("setparameter", "SetParameter", "set"):
+            f = getattr(g_i, fn, None)
+            if callable(f):
                 try:
-                    new_h = creator(base)
-                    break
+                    if phase is not None:
+                        f(handle, key, value, phase=phase)
+                    else:
+                        f(handle, key, value)
+                    return True
                 except Exception:
                     continue
 
-        if new_h is None:
-            raise RuntimeError("Failed to create phase in PLAXIS.")
-
-        # 4) enforce inheritance via property (even if fallback already used)
-        try:
-            PhaseMapper._set_previous_phase(new_h, base)
-        except Exception:
-            pass
-
-        # 5) write back handle
-        setattr(phase_obj, "plx_id", new_h)
-        return new_h
-
-    @staticmethod
-    def apply_options(
-        phase: Any,
-        settings: Mapping[str, Any],
-        *,
-        warn_on_missing: bool = False,
-        custom_candidates: Optional[Mapping[str, Sequence[str]]] = None,
-        setter: Optional[Callable[[Any, str, Any], bool]] = None,
-    ) -> PhaseMapReport:
-        """Apply a settings dict (from StageSettingsBase.to_settings_dict()) to a Phase-like object."""
-        rep = PhaseMapReport()
-        if not settings:
-            return rep
-        cand = merged_candidates(PhaseMapper.CANDIDATES, custom_candidates)
-        _set = setter or set_dotted_attr
-
-        for key, val in settings.items():
-            if val is None:
-                continue
-            paths = cand.get(key)
-            if not paths:
-                if warn_on_missing:
-                    rep.skipped.append(key)
-                continue
-            assigned = False
-            for path in paths:
-                ok = _set(phase, path, val)
-                if ok:
-                    rep.assigned.append((key, path))
-                    assigned = True
-                    break
-                else:
-                    rep.failed.append((key, path))
-            # Tiny semantic fallback for ΣM stage aliases
-            if not assigned and key in ("ΣM_stage", "SigmaMstage"):
-                for alt in ("Deform.SumMWeight", "Deform.SigmaMWeight"):
-                    if _set(phase, alt, val):
-                        rep.assigned.append((key, alt))
-                        assigned = True
-                        break
-        return rep
-
-    @staticmethod
-    def apply_structures(
-        g_i: Any,
-        phase_handle: Any,
-        activate: Optional[Sequence[Any]] = None,
-        deactivate: Optional[Sequence[Any]] = None,
-    ) -> Tuple[List[str], List[str]]:
-        """
-        Toggle structures ON/OFF for a given phase.
-        This resolver guarantees we pass a valid top-level STRUCTURE HANDLE to PLAXIS:
-        - domain object -> obj.plx_id
-        - geometry/nested handle -> climb owner to structure
-        - pure name string -> resolve handle from model collections
-        Call order tries (1) object-first then (2) legacy phase-first, then (3) property fallback.
-        """
-        def _name_of(h: Any, fallback: str = "unnamed") -> str:
-            try:
-                return str(getattr(h, "Name", getattr(h, "name", fallback)))
-            except Exception:
-                return fallback
-
-        def _activate_one(h: Any) -> bool:
-            # 1) object-first
-            try:
-                g_i.activate(h, phase_handle); return True
-            except Exception:
-                pass
-            # 2) legacy order
-            try:
-                g_i.activate(phase_handle, h); return True
-            except Exception:
-                pass
-            # 3) property fallback
-            try:
-                h.Active[phase_handle] = True; return True
-            except Exception:
-                return False
-
-        def _deactivate_one(h: Any) -> bool:
-            try:
-                g_i.deactivate(h, phase_handle); return True
-            except Exception:
-                pass
-            try:
-                g_i.deactivate(phase_handle, h); return True
-            except Exception:
-                pass
-            try:
-                h.Active[phase_handle] = False; return True
-            except Exception:
-                return False
-
-        def _iter_struct_handles(seq: Optional[Sequence[Any]]):
-            if not seq:
-                return
-            for obj in seq:
-                # string name → handle
-                if isinstance(obj, str):
-                    h = PhaseMapper._resolve_handle_by_name(g_i, obj)
-                    if h is not None:
-                        yield h
-                    continue
-                # domain or raw → canonical handle
-                h, _ = PhaseMapper._canonical_structure_handle(g_i, obj)
-                if h is not None:
-                    yield h
-
-        turned_on: List[str] = []
-        turned_off: List[str] = []
-
-        # Deactivate first, then activate (safer)
-        for h in _iter_struct_handles(deactivate):
-            if _deactivate_one(h):
-                turned_off.append(_name_of(h))
-
-        for h in _iter_struct_handles(activate):
-            if _activate_one(h):
-                turned_on.append(_name_of(h))
-
-        return turned_on, turned_off
-
-    @staticmethod
-    def apply_water_table(phase_handle: Any, water_table_obj: Any) -> bool:
-        """
-        Apply a single WaterLevelTable to the target phase.
-        Tries common property names on Flow/Loading/Model-level ancestors.
-        """
-        if water_table_obj is None:
-            return False
-        payload = water_table_obj.to_dict() if hasattr(water_table_obj, "to_dict") else water_table_obj
-        paths = (
-            "Flow.WaterLevelTable",
-            "Flow.WaterTable",
-            "Flow.GroundwaterTable",
-            "Loading.WaterLevelTable",
-            "Model.WaterLevelTable",
-            "Model.WaterTable",
-            "WaterLevelTable",
-            "WaterTable",
-        )
-        for p in paths:
-            if set_dotted_attr(phase_handle, p, payload):
-                return True
         return False
 
     @staticmethod
-    def apply_phase(
-        g_i: Any,
-        phase_handle: Any,
-        phase_obj: Any,
-        *,
-        warn_on_missing: bool = False,
-        custom_candidates: Optional[Mapping[str, Sequence[str]]] = None,
-        option_setter: Optional[Callable[[Any, str, Any], bool]] = None,
-        resolver: Optional[Callable[[Any, Any], Optional[Any]]] = None,  # reserved for future lookups
-    ) -> PhaseMapReport:
+    def apply_well_overrides_dict(g_i: Any, phase_handle: PhaseHandle,
+                                  overrides: Dict[str, Dict[str, Any]],
+                                  *, warn_on_missing: bool = False) -> None:
         """
-        Apply both settings and structure toggles (and water table) from a Phase object
-        onto an existing PLAXIS phase handle.
-        NOTE: creation/inheritance is done separately via `create(...)`.
+        Apply well parameter overrides per phase using a simple mapping:
+            { "Well-1": {"q_well": 0.008, "h_min": -10.0, "well_type": "Extraction"} }
+        Notes:
+        - Discharge is assumed evenly distributed along well length by PLAXIS.
+        - If wells intersect other geometry, solver warnings may appear (modeling issue).
         """
-        # Bind plx_id if not yet bound (so Phase object can be reused across calls)
-        if getattr(phase_obj, "plx_id", None) is None:
+        if not isinstance(overrides, dict):
+            return
+
+        # canonical key map
+        alias_map = {
+            "q_well": ("q_well", "QWell", "qwell", "Discharge", "Q", "Qwell"),
+            "h_min": ("h_min", "HMin", "HeadMin"),
+            "well_type": ("well_type", "WellType", "Mode", "Type"),
+        }
+
+        for well_name, params in overrides.items():
+            handle = PhaseMapper._find_model_object_by_name(g_i, well_name)
+            if handle is None:
+                if warn_on_missing:
+                    print(f"[PhaseMapper.well_overrides] Well '{well_name}' not found; skipped.")
+                continue
+
+            for canonical, candidates in alias_map.items():
+                # if canonical or any alias is present, set canonical key
+                value_present = None
+                if canonical in params:
+                    value_present = params[canonical]
+                else:
+                    for a in candidates:
+                        if a in params:
+                            value_present = params[a]
+                            break
+                if value_present is None:
+                    continue
+
+                # try all alias keys on the handle
+                applied = False
+                for key_try in candidates:
+                    if PhaseMapper._set_object_param(g_i, handle, key_try, value_present, phase_handle):
+                        applied = True
+                        break
+                if not applied:
+                    # final attempt with canonical name
+                    PhaseMapper._set_object_param(g_i, handle, canonical, value_present, phase_handle)
+
+    @staticmethod
+    def apply_well_overrides(g_i: Any, phase_handle: PhaseHandle, phase_like: PhaseLike,
+                             *, warn_on_missing: bool = False) -> None:
+        """Compatibility wrapper expecting an object with `.well_overrides`."""
+        mapping = getattr(phase_like, "well_overrides", None)
+        if isinstance(mapping, dict):
+            PhaseMapper.apply_well_overrides_dict(g_i, phase_handle, mapping, warn_on_missing=warn_on_missing)
+
+    # ---------------------------------------------------------------------
+    # High-level "apply phase"
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def apply_phase(g_i: Any, phase_handle: PhaseHandle, phase_obj: PhaseLike,
+                    *, warn_on_missing: bool = False) -> None:
+        """
+        Apply one phase in four steps:
+          1) options/settings
+          2) water table (optional)
+          3) structure activation/deactivation
+          4) well overrides (optional)
+        """
+        # bind back (useful for later updates)
+        try:
             setattr(phase_obj, "plx_id", phase_handle)
+        except Exception:
+            pass
 
         # 1) options
-        rep = PhaseMapReport()
-        opt_payload = getattr(phase_obj, "settings_payload")() if hasattr(phase_obj, "settings_payload") else {}
-        opt_rep = PhaseMapper.apply_options(
-            phase_handle,
-            opt_payload,
-            warn_on_missing=warn_on_missing,
-            custom_candidates=custom_candidates,
-            setter=option_setter,
-        )
-        rep.assigned.extend(opt_rep.assigned)
-        rep.skipped.extend(opt_rep.skipped)
-        rep.failed.extend(opt_rep.failed)
+        options = {}
+        if hasattr(phase_obj, "settings_payload") and callable(getattr(phase_obj, "settings_payload")):
+            try:
+                options = phase_obj.settings_payload() or {}
+            except Exception:
+                options = {}
+        elif hasattr(phase_obj, "settings"):
+            s = getattr(phase_obj, "settings")
+            if hasattr(s, "to_dict"):
+                try:
+                    options = s.to_dict() or {}
+                except Exception:
+                    options = {}
+            else:
+                options = s if isinstance(s, dict) else {}
 
-        # 2) structures
-        act_list = getattr(phase_obj, "activate", []) or []
-        deact_list = getattr(phase_obj, "deactivate", []) or []
-        on_names, off_names = PhaseMapper.apply_structures(
-            g_i, phase_handle, activate=act_list, deactivate=deact_list
-        )
-        rep.struct_on.extend(on_names)
-        rep.struct_off.extend(off_names)
+        PhaseMapper.apply_options(phase_handle, options, warn_on_missing=warn_on_missing)
 
-        # 3) water table (single)
+        # 2) water table
         wt = getattr(phase_obj, "water_table", None)
-        if wt is not None:
-            rep.water_applied = PhaseMapper.apply_water_table(phase_handle, wt)
+        PhaseMapper._apply_water_table(g_i, phase_handle, wt, warn_on_missing=warn_on_missing)
 
-        return rep
-
-    @staticmethod
-    def apply_plan(
-        g_i: Any,
-        phases: Sequence["Phase"],  # a sequence of Phase domain objects
-        *,
-        start_from: Optional[Any] = None,     # Phase or handle; defaults to InitialPhase if None
-        warn_on_missing: bool = False,
-        custom_candidates: Optional[Mapping[str, Sequence[str]]] = None,
-        option_setter: Optional[Callable[[Any, str, Any], bool]] = None,
-    ) -> List[PhaseMapReport]:
-        """
-        Create a chain of phases and apply each Phase (options + structures).
-        Inheritance priority per phase:
-          Phase.inherits.plx_id > last-created handle > start_from > InitialPhase.
-        On success:
-          - Each Phase gets `plx_id` bound to the created handle.
-          - Each report contains options and structure toggles applied on that handle.
-        """
-        reports: List[PhaseMapReport] = []
-
-        # Resolve starting handle
-        prev_handle = getattr(start_from, "plx_id", start_from)
-        if prev_handle is None:
-            prev_handle = default_initial_phase(g_i)
-
-        for ph in phases:
-            # Resolve base/inherits for current phase
-            base_handle = None
-            inh = getattr(ph, "inherits", None)
-            if inh is not None:
-                base_handle = getattr(inh, "plx_id", None)
-            if base_handle is None:
-                base_handle = prev_handle
-
-            # 1) Create phase (empty-new -> set PreviousPhase); this writes ph.plx_id
-            new_handle = PhaseMapper.create(g_i, ph, inherits=base_handle)
-
-            # 2) Apply settings + structure toggles (+ water table)
-            rep = PhaseMapper.apply_phase(
-                g_i,
-                new_handle,
-                ph,
-                warn_on_missing=warn_on_missing,
-                custom_candidates=custom_candidates,
-                option_setter=option_setter,  # <-- correct param name
-            )
-            reports.append(rep)
-
-            # 3) Continue the chain
-            prev_handle = new_handle
-
-        return reports
-
-    # ===== helpers: pools and name-based resolution =====
-    def _enum_structure_pools(g_i: Any):
-        """Yield likely structure collections from g_i and g_i.Model."""
-        pools = (
-            "Structures", "Plates", "Walls", "Beams", "Anchors",
-            "EmbeddedPiles", "EmbeddedBeams", "Wells", "Ribs", "Geogrids", "Interfaces",
-        )
-        model = getattr(g_i, "Model", None)
-        for p in pools:
-            coll = getattr(g_i, p, None)
-            if coll is not None:
-                yield coll
-            if model is not None:
-                coll_m = getattr(model, p, None)
-                if coll_m is not None:
-                    yield coll_m
-
-    def _lookup_by_name_in_pool(coll: Any, name: str) -> Optional[Any]:
-        """Try several access patterns to get an item named `name` out of a PLAXIS collection."""
-        if not name or coll is None:
-            return None
-        # dict-like (index by key)
-        try:
-            if hasattr(coll, "keys") and name in coll:
-                return coll[name]  # type: ignore[index]
-        except Exception:
-            pass
-        # attribute access
-        try:
-            if hasattr(coll, name):
-                return getattr(coll, name)
-        except Exception:
-            pass
-        # linear scan
-        try:
-            for it in coll:
-                nm = None
-                try:
-                    nm = getattr(it, "Name", None) or getattr(it, "name", None)
-                except Exception:
-                    pass
-                if nm and str(nm) == name:
-                    return it
-        except Exception:
-            pass
-        return None
-
-    def _resolve_handle_by_name(g_i: Any, name: str) -> Optional[Any]:
-        """Search all known structure pools for an object whose Name equals `name`."""
-        for coll in PhaseMapper._enum_structure_pools(g_i):
-            h = PhaseMapper._lookup_by_name_in_pool(coll, name)
-            if h is not None:
-                return h
-        # last resort: try global attribute (rare but cheap)
-        try:
-            if hasattr(g_i, name):
-                return getattr(g_i, name)
-        except Exception:
-            pass
-        return None
-
-    def _canonical_structure_handle(g_i: Any, raw: Any) -> Tuple[Optional[Any], str]:
-        """
-        Normalize domain/geometry/nested handle to a top-level structure handle.
-        Returns (handle_or_None, name_guess).
-        """
-        def _has_active(h: Any) -> bool:
-            try:
-                _ = h.Active   # probe only
-                return True
-            except Exception:
-                return False
-
-        # prefer an existing handle on domain object
-        h = getattr(raw, "plx_id", raw)
-        name_guess = ""
-        try:
-            name_guess = str(getattr(h, "Name", getattr(h, "name", getattr(raw, "name", ""))))
-        except Exception:
-            pass
-
-        # case A: already a structure
-        if _has_active(h):
-            return h, name_guess
-
-        # case B: climb likely owners
-        cur = h
-        for attr in ("Plate", "Beam", "Anchor", "EmbeddedPile", "Parent", "Owner", "Structure"):
-            try:
-                nxt = getattr(cur, attr, None)
-            except Exception:
-                nxt = None
-            if not nxt:
-                continue
-            if _has_active(nxt):
-                try:
-                    name_guess = str(getattr(nxt, "Name", getattr(nxt, "name", name_guess)))
-                except Exception:
-                    pass
-                return nxt, name_guess
-            cur = nxt
-
-        # case C: resolve by GUI name
-        if name_guess:
-            byname = PhaseMapper._resolve_handle_by_name(g_i, name_guess)
-            if byname is not None:
-                return byname, name_guess
-
-        return None, name_guess or "unnamed"
-
-
-    @staticmethod
-    def update(
-        g_i: Any,
-        phase_obj: "Phase",
-        *,
-        warn_on_missing: bool = False,
-        custom_candidates: Optional[Mapping[str, Sequence[str]]] = None,
-        option_setter: Optional[Callable[[Any, str, Any], bool]] = None,
-        allow_recreate: bool = False,
-        sync_meta: bool = True,
-    ) -> PhaseUpdateResult:
-        """
-        One-shot update after you modify a Phase object:
-        - Ensures the phase exists (create if missing, honoring `phase_obj.inherits`).
-        - Tries to align inheritance to `phase_obj.inherits`:
-            * if current handle has a different PreviousPhase, try to set it;
-            * if not supported and `allow_recreate=True`, recreate the phase and re-apply.
-        - Re-applies options + structure toggles (+ water table).
-        - Optionally sync phase name/comment to the handle.
-
-        Returns PhaseUpdateResult with details (including whether a recreation happened).
-        """
-        # Resolve (or create) target handle
-        h = getattr(phase_obj, "plx_id", None)
-        recreated = False
-        prev_changed = False
-        old_h = None
-
-        # Desired base
-        desired_base = None
-        inh = getattr(phase_obj, "inherits", None)
-        if inh is not None:
-            desired_base = getattr(inh, "plx_id", None)
-
-        # If no handle yet -> create now
-        if h is None:
-            h = PhaseMapper.create(g_i, phase_obj, inherits=desired_base)
-            recreated = True
-        else:
-            # Try to read current PreviousPhase
-            need_change = False
-            try:
-                current_prev = getattr(h, "PreviousPhase", None)
-                # If caller指定了目标基相位，且与当前不同，则尝试切换
-                if desired_base is not None and current_prev is not None and current_prev != desired_base:
-                    need_change = True
-            except Exception:
-                # Cannot read current PreviousPhase; if desired_base is provided, try change anyway
-                need_change = desired_base is not None
-
-            if need_change:
-                prev_changed = True
-                # Try to set on the same handle
-                if not PhaseMapper._set_previous_phase(h, desired_base):
-                    # If not supported & allowed, recreate the phase on the new base
-                    if allow_recreate:
-                        old_h = h
-                        h = PhaseMapper.create(g_i, phase_obj, inherits=desired_base)
-                        recreated = True
-                    # else: keep going with the old linkage
-
-        # Optionally sync meta (name/comment)
-        if sync_meta:
-            try:
-                PhaseMapper._sync_phase_meta(h, phase_obj)
-            except Exception:
-                pass
-
-        # Apply options + structure toggles (+ water table)
-        rep = PhaseMapper.apply_phase(
+        # 3) structures
+        PhaseMapper.apply_structures(
             g_i,
-            h,
-            phase_obj,
+            phase_handle,
+            getattr(phase_obj, "activate", []) or [],
+            getattr(phase_obj, "deactivate", []) or [],
             warn_on_missing=warn_on_missing,
-            custom_candidates=custom_candidates,
-            option_setter=option_setter,
         )
 
-        return PhaseUpdateResult(
-            handle=h,
-            report=rep,
-            recreated=recreated,
-            previous_handle=old_h,
-            prev_changed=prev_changed,
-        )
+        # 4) well overrides
+        PhaseMapper.apply_well_overrides(g_i, phase_handle, phase_obj, warn_on_missing=warn_on_missing)
+
+    # ---------------------------------------------------------------------
+    # Batch helpers (quality-of-life)
+    # ---------------------------------------------------------------------
 
     @staticmethod
-    def _sync_phase_meta(phase_handle: Any, phase_obj: Any) -> Any:
+    def apply_plan(g_i: Any, phases: Sequence[PhaseLike], *,
+                   warn_on_missing: bool = False) -> List[PhaseHandle]:
         """
-        Best-effort sync of name/comment from domain Phase to PLAXIS handle.
-        Ignored silently if properties are read-only in your build.
+        Create and apply a chain of phases in order (each inherits from previous).
+        Returns the created phase handles (in order).
         """
-        nm = getattr(phase_obj, "name", None)
-        if nm:
-            # (some builds expose Name / Title)
-            return set_dotted_attr(phase_handle, "Name", nm) or set_dotted_attr(phase_handle, "Title", nm)
+        if not phases:
+            return []
 
-        cm = getattr(phase_obj, "comment", None)
-        if cm:
-            # (some builds expose Comments / Description)
-            return set_dotted_attr(phase_handle, "Comments", cm) or set_dotted_attr(phase_handle, "Description", cm)
+        PhaseMapper.goto_stages(g_i)
+        previous = PhaseMapper.get_initial_phase(g_i)
+
+        handles: List[PhaseHandle] = []
+        for ph in phases:
+            h = PhaseMapper.create(g_i, phase_obj=ph, inherits=previous)
+            PhaseMapper.apply_phase(g_i, h, ph, warn_on_missing=warn_on_missing)
+            handles.append(h)
+            previous = h
+        return handles
+
+    @staticmethod
+    def update(g_i: Any, phase_obj: PhaseLike, base: Optional[PhaseHandle] = None,
+               *, warn_on_missing: bool = False) -> Dict[str, Any]:
+        """
+        Idempotent update:
+          - If phase_obj has handle: apply on it.
+          - Else create inheriting from `base` (or Initial), then apply.
+        """
+        report = {"created": False, "applied": False, "handle": None}
+
+        h = getattr(phase_obj, "plx_id", None)
+        if h is None:
+            base = base or PhaseMapper.get_initial_phase(g_i)
+            h = PhaseMapper.create(g_i, phase_obj=phase_obj, inherits=base)
+            report["created"] = True
+
+        try:
+            PhaseMapper.apply_phase(g_i, h, phase_obj, warn_on_missing=warn_on_missing)
+            report["applied"] = True
+        finally:
+            report["handle"] = h
+        return report

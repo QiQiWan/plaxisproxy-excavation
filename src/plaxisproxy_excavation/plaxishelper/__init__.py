@@ -36,7 +36,7 @@ from .loadmapper import LoadMapper, LoadMultiplierMapper
 from .watertablemapper import WaterTableMapper
 from .meshmapper import MeshMapper
 from .monitormapper import MonitorMapper
-from .phasemapper import PhaseMapper, PhaseMapReport, PhaseUpdateResult
+from .phasemapper import PhaseMapper
 
 # Runner (session orchestration)
 from .plaxisrunner import PlaxisRunner

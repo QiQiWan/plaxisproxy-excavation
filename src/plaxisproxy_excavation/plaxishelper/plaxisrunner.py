@@ -13,7 +13,7 @@ try:
     from .plaxismapper import PlaxisMapper  # type: ignore  # noqa: F401
 except Exception:
     PlaxisMapper = None  # type: ignore
-from plxscripting.server import new_server, Server, PlxProxyFactory
+from third_party.plxscripting.server import new_server, Server, PlxProxyFactory
 from ..geometry import *  # Point, PointSet, Line3D, Polygon3D, etc.
 
 # NEW: use the static geometry mapper that wraps g_i.point/line/surface
@@ -99,7 +99,7 @@ class PlaxisRunner:
 
     # ------------------------- connection management -------------------------
 
-    def connect(self) -> bool:
+    def connect(self) -> "PlaxisRunner":
         """
         Establishes connections with the Plaxis Input server.
         """
@@ -110,7 +110,7 @@ class PlaxisRunner:
             print("Successfully connected to Plaxis Input.")
             time.sleep(1)
             self.is_connected = True
-            return True
+            return self
 
         except ConnectionRefusedError:
             print("-----------------------------------------------------------------------")
@@ -120,13 +120,13 @@ class PlaxisRunner:
             print(f"3. The port number ({PORT}) and password settings are correct.")
             print("-----------------------------------------------------------------------")
             print("Please check for any errors and then re-execute the 'connect()' function.")
-            return False
+            return self
 
         except Exception as e:
             print(f"[Error] An unexpected error occurred during connection: {e}")
-            return False
+            return self
 
-    def new(self) -> bool:
+    def new(self) -> "PlaxisRunner":
         """
         Creates a new project in the Plaxis Input application.
 
@@ -136,7 +136,7 @@ class PlaxisRunner:
         if not self.is_connected or self.g_i is None or self.input_server is None:
             print("[Error] Cannot create a new project: Not connected to Plaxis server.")
             print("Please call the connect() method first.")
-            return False
+            return self
 
         try:
             print("Sending 'new' command to Plaxis...")
@@ -144,13 +144,13 @@ class PlaxisRunner:
             if result == "OK":
                 time.sleep(1)
                 print("New project successfully created.")
-                return True
+                return self
             else:
                 raise Exception(f"Bad result: {result}!")
         except Exception as e:
             print(f"[Error] An unexpected error occurred while creating a new project: {e}")
             print("Please check the Plaxis application for any error messages or alerts.")
-            return False
+            return self
 
     # ===================== convenience wrappers to GeometryPlaxisMapper =====================
 
@@ -356,6 +356,33 @@ class PlaxisRunner:
             raise RuntimeError("Not connected: g_i is None.")
         return WaterTableMapper.delete_table(self.g_i, table)
 
+    def apply_well_overrides(
+        self,
+        phase_handle: Any,
+        overrides: Dict[str, Dict[str, Any]],
+        *,
+        warn_on_missing: bool = False
+    ):
+        """Update well parameters for a given phase using a plain dict of overrides."""
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return PhaseMapper.apply_well_overrides(self.g_i, phase_handle, overrides, warn_on_missing=warn_on_missing)
+
+    def find_phase_handle(self, name: str) -> Any:
+        """Resolve an existing PLAXIS Phase handle by its display name. Returns None if not found."""
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        try:
+            # Generic traversal; adapt if your API exposes phases differently
+            for ph in list(getattr(self.g_i, "Phases", [])) or []:
+                try:
+                    if str(getattr(getattr(ph, "Name", None), "value", "")) == str(name):
+                        return ph
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
     # ===================== Mesh =====================
     def mesh(self, mesh: Mesh) -> str:
         if self.g_i is None:
@@ -372,26 +399,50 @@ class PlaxisRunner:
     #     return MonitorMapper.create_monitors(self.g_i, monitors)
 
     # ===================== Phases =====================
-    def goto_stages(self) -> bool:
+    def goto_stages(self) -> Any:
+        """Open Staged Construction mode in PLAXIS UI."""
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
         return PhaseMapper.goto_stages(self.g_i)
 
-    def get_initial_phase(self) -> Phase:
+    def get_initial_phase(self) -> Any:
+        """Return the handle of the InitialPhase."""
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
         return PhaseMapper.get_initial_phase(self.g_i)
 
     def create_phase(self, phase: Phase, inherits: Optional[Any] = None) -> Any:
+        """
+        Create a phase in PLAXIS that inherits from 'inherits' (handle or Phase-like object).
+        DO NOT send the Phase object to PLAXIS as a token. Always go through the mapper.
+        """
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
         base = inherits if inherits is not None else (getattr(getattr(phase, "inherits", None), "plx_id", None))
         return PhaseMapper.create(self.g_i, phase, inherits=base)
 
     def apply_phase(self, phase_handle: Any, phase: Phase, *, warn_on_missing: bool = False) -> Any:
+        """
+        Apply phase options, structure (de)activations, water table, wells overrides, etc.
+        """
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
         return PhaseMapper.apply_phase(self.g_i, phase_handle, phase, warn_on_missing=warn_on_missing)
+
+    def find_phase_handle(self, name: str) -> Optional[Any]:
+        """Best-effort lookup of a phase handle by name."""
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        # If your PhaseMapper has a dedicated lookup, use it; else, scan phases.
+        if hasattr(PhaseMapper, "find_phase_by_name"):
+            return PhaseMapper.find_phase_by_name(self.g_i, name)  # type: ignore
+        try:
+            for ph in self.g_i.Phases[:]:
+                if getattr(ph, "Identification", None) == name:
+                    return ph
+        except Exception:
+            pass
+        return None
 
     def update_phase(
         self,
@@ -410,3 +461,20 @@ class PlaxisRunner:
             allow_recreate=allow_recreate,
             sync_meta=sync_meta,
         )
+
+    def apply_well_overrides(self, phase_handle: Any, overrides: Dict[str, Dict[str, Any]],
+                             *, warn_on_missing: bool = False) -> Any:
+        """
+        Update well parameters for an existing phase. This variant avoids any fake/placeholder class.
+        `overrides` example: {"Well-1": {"q_well": 900.0, "h_min": -5.0}, ...}
+        """
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        # Provide an explicit mapper entry point that takes a dict directly.
+        if hasattr(PhaseMapper, "apply_well_overrides_dict"):
+            return PhaseMapper.apply_well_overrides_dict(self.g_i, phase_handle, overrides,
+                                                         warn_on_missing=warn_on_missing)
+        # Fallback: pass a simple object with the expected attribute name if your mapper expects it
+        holder = SimpleNamespace(well_overrides=overrides)
+        return PhaseMapper.apply_well_overrides(self.g_i, phase_handle, holder,
+                                                warn_on_missing=warn_on_missing)

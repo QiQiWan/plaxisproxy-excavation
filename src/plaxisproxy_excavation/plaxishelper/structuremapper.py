@@ -237,7 +237,7 @@ class AnchorMapper:
                 raise RuntimeError("PLAXIS returned empty result when creating Anchor.")
             if len(created_raw) >= 2:
                 line_h = created_raw[0]
-            anchor_h = created_raw[-1]
+            anchor_h = created_raw[len(created_raw)-1]
         else:
             anchor_h = created_raw
 
@@ -590,6 +590,27 @@ class SoilBlockMapper:
                 "SoilBlock creation failed. For Polygon3D please use extrusion; "
                 "for closed volumes ensure you pass a set of bounding surfaces compatible with soil()."
             ) from e
+
+    @staticmethod
+    def update(g_i: Any, obj_or_handle: Any, *, 
+               q_well: Optional[float] = None,
+               h_min: Optional[float] = None,
+               well_type: Optional[Any] = None) -> Any:
+        """
+        Update parameters on an existing PLAXIS Well handle.
+        Prefer PhaseMapper.apply_well_overrides for per-phase logic.
+        """
+        h = getattr(obj_or_handle, "plx_id", None) if hasattr(obj_or_handle, "plx_id") else obj_or_handle
+        if h is None:
+            raise ValueError("Well handle is None.")
+        if q_well is not None:
+            _set_many_props(h, {"Qwell": float(q_well), "Q": float(q_well), "Discharge": float(q_well)})
+        if h_min is not None:
+            _set_many_props(h, {"Hmin": float(h_min), "HeadMin": float(h_min)})
+        if well_type is not None:
+            sval = getattr(well_type, "value", well_type)
+            _set_many_props(h, {"WellType": str(sval), "Type": str(sval), "Behaviour": str(sval)})
+        return h
 
     @staticmethod
     def delete(g_i: Any, obj_or_handle: Union[SoilBlock, Any]) -> bool:

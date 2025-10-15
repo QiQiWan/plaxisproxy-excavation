@@ -1,15 +1,20 @@
-from .basematerial import BaseMaterial
+from __future__ import annotations
+
 from enum import Enum, auto
-from typing import Optional
+from typing import Any, Dict, Optional
+
+from .basematerial import BaseMaterial
+
 
 # ---------------------------------------------------------------------------
-# Enums (strings must match mapper.model_name_map and PLAXIS enumerations)
+# Enums (strings should match mapper.model_name_map / PLAXIS names)
 # ---------------------------------------------------------------------------
 
 class SoilMaterialsType(Enum):
     MC  = "Mohr-Coulomb"       # Mohr-Coulomb
-    MCC = "Modified Cam-clay"  # NOTE: exact spelling, used by the mapper
+    MCC = "Modified Cam-clay"  # exact spelling used by the mapper
     HSS = "HS small"           # Hardening Soil small-strain (HS small)
+
 
 class MCGWType(Enum):
     Standard = auto()
@@ -17,13 +22,16 @@ class MCGWType(Enum):
     USDA     = auto()
     Staring  = auto()
 
+
 class MCGwSWCC(Enum):
-    Van         = auto()
-    Approx_Van  = auto()
+    Van        = auto()
+    Approx_Van = auto()
+
 
 class RayleighInputMethod(Enum):
-    Direct          = "Direct"
-    SDOFEquivalent  = "SDOFEquivalent"
+    Direct         = "Direct"
+    SDOFEquivalent = "SDOFEquivalent"
+
 
 # ---------------------------------------------------------------------------
 # Base class and concrete soil material classes
@@ -38,50 +46,84 @@ class BaseSoilMaterial(BaseMaterial):
     - type               -> SoilModel (via SoilMaterialsType)
     - gamma (unsat)      -> gammaUnsat
     - gamma_sat          -> gammaSat
-    - E                  -> (model-specific meaning, e.g., E50ref for HSS)
+    - E                  -> model-specific meaning (e.g., E50ref for HSS)
     - nu                 -> nu
     - e_init             -> eInit (initial void ratio)
-    - n_init             -> derived as e/(1+e) if e is provided
+    - n_init             -> derived as e/(1+e) if e provided
 
-    NOTE:
     MCC-specific interface inputs (v_ur, c_inter, phi_in, psi_inter, _R_inter)
-    are NOT stored here anymore. They belong to MCCMaterial only.
+    are NOT stored here; they live in MCCMaterial only.
     """
 
     def __init__(
         self,
-        name,
-        type,
-        comment,
-        gamma,
-        E,
-        nu,
-        gamma_sat,
-        e_init,
-        **kwargs
+        name: str,
+        type: SoilMaterialsType,  # noqa: A003 (intentional: mapper expects .type)
+        comment: str,
+        gamma: float,
+        E: float,
+        nu: float,
+        gamma_sat: float,
+        e_init: float,
+        **_: Any,
     ) -> None:
         # BaseMaterial is assumed to store name, type, comment, gamma, E, nu
         super().__init__(name, type, comment, gamma, E, nu)
 
         # Primary shared fields consumed by the mapper
-        self._gamma_sat = gamma_sat
-        self._e_init    = e_init
-        self._n_init    = e_init / (1.0 + e_init) if e_init is not None else None
+        self._gamma_sat: float = float(gamma_sat)
+        self._e_init: float = float(e_init)
+        self._n_init: Optional[float] = (
+            self._e_init / (1.0 + self._e_init) if self._e_init is not None else None
+        )
 
-        # Optional feature flags handled by the mapper
-        self._set_pore_stress           = False
-        self._set_ug_water              = False
-        self._set_additional_interface  = False
-        self._set_additional_initial    = False
+        # Optional feature flags handled by the mapper (initialize to safe defaults)
+        self._set_pore_stress: bool = False
+        self._set_ug_water: bool = False
+        self._set_additional_interface: bool = False
+        self._set_additional_initial: bool = False
 
         # Rayleigh damping (mapper supports Direct method pass-through)
         self._input_method: RayleighInputMethod = RayleighInputMethod.Direct
         self._alpha: float = 0.0
-        self._beta:  float = 0.0
+        self._beta: float = 0.0
+
+        # Lazy-initialized option members (silences Pylance unknown attribute)
+        self._pore_stress_type: Optional[int] = None
+        self._vu: Optional[int] = None
+        self._water_value: Optional[float] = None
+
+        self._Gw_type: Optional[MCGWType] = None
+        self._SWCC_method: Optional[MCGwSWCC] = None
+        self._soil_posi: Any = None
+        self._soil_fine: Any = None
+        self._Gw_defaults: Any = None
+        self._infiltration: Any = None
+        self._default_method: Any = None
+        self._kx: Optional[float] = None
+        self._ky: Optional[float] = None
+        self._kz: Optional[float] = None
+        self._Gw_Psiunsat: Optional[float] = None
+
+        self._stiffness_define: Any = None
+        self._strengthen_define: Any = None
+        self._k_n: Optional[float] = None
+        self._k_s: Optional[float] = None
+        self._R_inter: float = 0.67
+        self._gap_closure: Any = None
+        self._cross_permeability: Any = None
+        self._drainage_conduct1: Any = None
+        self._drainage_conduct2: Any = None
+
+        self._K_0_define: Any = None
+        self._K_0_x: Optional[float] = None
+        self._K_0_y: Optional[float] = None
 
     # ---------------- Optional groups consumed by the mapper -----------------
 
-    def set_super_pore_stress_parameters(self, pore_stress_type=0, vu=0, value=None):
+    def set_super_pore_stress_parameters(
+        self, pore_stress_type: int = 0, vu: int = 0, value: Optional[float] = None
+    ) -> None:
         """
         Configure super pore-stress options (forwarded by the mapper).
 
@@ -92,222 +134,257 @@ class BaseSoilMaterial(BaseMaterial):
         pore_stress_type = 1 -> Biot Effective Stress:
             value -> sigma_Biot (naming follows your UI/DB convention)
         """
-        self._set_pore_stress   = True
-        self._pore_stress_type  = pore_stress_type
-        self._vu                = vu
-        self._water_value       = value
+        self._set_pore_stress = True
+        self._pore_stress_type = pore_stress_type
+        self._vu = vu
+        self._water_value = value
 
     def set_under_ground_water(
         self,
         type: MCGWType,
         SWCC_method: MCGwSWCC,
-        soil_posi, soil_fine, Gw_defaults,
-        infiltration, default_method,
-        kx, ky, kz, Gw_Psiunsat
-    ):
+        soil_posi: Any,
+        soil_fine: Any,
+        Gw_defaults: Any,
+        infiltration: Any,
+        default_method: Any,
+        kx: float,
+        ky: float,
+        kz: float,
+        Gw_Psiunsat: float,
+    ) -> None:
         """Configure underground water & SWCC options (forwarded by the mapper)."""
-        self._set_ug_water   = True
-        self._Gw_type        = type
-        self._SWCC_method    = SWCC_method
-        self._soil_posi      = soil_posi
-        self._soil_fine      = soil_fine
-        self._Gw_defaults    = Gw_defaults
-        self._infiltration   = infiltration
+        self._set_ug_water = True
+        self._Gw_type = type
+        self._SWCC_method = SWCC_method
+        self._soil_posi = soil_posi
+        self._soil_fine = soil_fine
+        self._Gw_defaults = Gw_defaults
+        self._infiltration = infiltration
         self._default_method = default_method
-        self._kx, self._ky, self._kz = kx, ky, kz
-        self._Gw_Psiunsat    = Gw_Psiunsat
+        self._kx, self._ky, self._kz = float(kx), float(ky), float(kz)
+        self._Gw_Psiunsat = float(Gw_Psiunsat)
 
     def set_additional_interface_parameters(
         self,
-        stiffness_define, strengthen_define,
-        k_n, k_s, R_inter,
-        gap_closure, cross_permeability,
-        drainage_conduct1, drainage_conduct2
-    ):
+        stiffness_define: Any,
+        strengthen_define: Any,
+        k_n: float,
+        k_s: float,
+        R_inter: float,
+        gap_closure: Any,
+        cross_permeability: Any,
+        drainage_conduct1: Any,
+        drainage_conduct2: Any,
+    ) -> None:
         """
         Configure additional interface parameters (forwarded by the mapper).
         The mapper can still override Rinter based on model-specific inputs
         (for MCC: c_inter/phi_in or explicit _R_inter).
         """
         self._set_additional_interface = True
-        self._stiffness_define  = stiffness_define
+        self._stiffness_define = stiffness_define
         self._strengthen_define = strengthen_define
-        self._k_n, self._k_s    = k_n, k_s
-        self._R_inter           = R_inter
-        self._gap_closure       = gap_closure
+        self._k_n, self._k_s = float(k_n), float(k_s)
+        self._R_inter = float(R_inter)
+        self._gap_closure = gap_closure
         self._cross_permeability = cross_permeability
         self._drainage_conduct1 = drainage_conduct1
         self._drainage_conduct2 = drainage_conduct2
 
-    def set_additional_initial_parameters(self, K_0_define, K_0_x=0.5, K_0_y=0.5):
+    def set_additional_initial_parameters(
+        self, K_0_define: Any, K_0_x: float = 0.5, K_0_y: float = 0.5
+    ) -> None:
         """Configure additional K0 parameters (forwarded by the mapper)."""
         self._set_additional_initial = True
         self._K_0_define = K_0_define
-        self._K_0_x      = K_0_x
-        self._K_0_y      = K_0_y
+        self._K_0_x = float(K_0_x)
+        self._K_0_y = float(K_0_y)
 
     # -------------------------- Representation & props -----------------------
 
-    def __repr__(self) -> str:
-        return "<plx.materials.soilbase>"
+    def __repr__(self) -> str:  # pragma: no cover - friendly string
+        return f"<plx.materials.soilbase name={self.name!r} model={self.type.value!r}>"
 
     @property
-    def gamma_sat(self): return self._gamma_sat
+    def gamma_sat(self) -> float: return self._gamma_sat
 
     @property
-    def e_init(self): return self._e_init
+    def e_init(self) -> float: return self._e_init
 
     @property
-    def n_init(self): return self._n_init
+    def n_init(self) -> Optional[float]: return self._n_init
 
     @property
-    def pore_stress_type(self): return getattr(self, "_pore_stress_type", None)
+    def pore_stress_type(self) -> Optional[int]: return self._pore_stress_type
 
     @property
-    def vu(self): return getattr(self, "_vu", None)
+    def vu(self) -> Optional[int]: return self._vu
 
     @property
-    def water_value(self): return getattr(self, "_water_value", None)
+    def water_value(self) -> Optional[float]: return self._water_value
 
     @property
-    def set_ug_water(self): return self._set_ug_water
+    def set_ug_water(self) -> bool: return self._set_ug_water
 
     @property
-    def Gw_type(self): return getattr(self, "_Gw_type", None)
+    def Gw_type(self) -> Optional[MCGWType]: return self._Gw_type
 
     @property
-    def SWCC_method(self): return getattr(self, "_SWCC_method", None)
+    def SWCC_method(self) -> Optional[MCGwSWCC]: return self._SWCC_method
 
     @property
-    def soil_posi(self): return getattr(self, "_soil_posi", None)
+    def soil_posi(self) -> Any: return self._soil_posi
 
     @property
-    def soil_fine(self): return getattr(self, "_soil_fine", None)
+    def soil_fine(self) -> Any: return self._soil_fine
 
     @property
-    def Gw_defaults(self): return getattr(self, "_Gw_defaults", None)
+    def Gw_defaults(self) -> Any: return self._Gw_defaults
 
     @property
-    def infiltration(self): return getattr(self, "_infiltration", None)
+    def infiltration(self) -> Any: return self._infiltration
 
     @property
-    def default_method(self): return getattr(self, "_default_method", None)
+    def default_method(self) -> Any: return self._default_method
 
     @property
-    def kx(self): return getattr(self, "_kx", None)
+    def kx(self) -> Optional[float]: return self._kx
 
     @property
-    def ky(self): return getattr(self, "_ky", None)
+    def ky(self) -> Optional[float]: return self._ky
 
     @property
-    def kz(self): return getattr(self, "_kz", None)
+    def kz(self) -> Optional[float]: return self._kz
 
     @property
-    def Gw_Psiunsat(self): return getattr(self, "_Gw_Psiunsat", None)
+    def Gw_Psiunsat(self) -> Optional[float]: return self._Gw_Psiunsat
 
     @property
-    def stiffness_define(self): return getattr(self, "_stiffness_define", None)
+    def stiffness_define(self) -> Any: return self._stiffness_define
 
     @property
-    def strengthen_define(self): return getattr(self, "_strengthen_define", None)
+    def strengthen_define(self) -> Any: return self._strengthen_define
 
     @property
-    def k_n(self): return getattr(self, "_k_n", None)
+    def k_n(self) -> Optional[float]: return self._k_n
 
     @property
-    def k_s(self): return getattr(self, "_k_s", None)
+    def k_s(self) -> Optional[float]: return self._k_s
 
     @property
-    def R_inter(self): return getattr(self, "_R_inter", None)
+    def R_inter(self) -> Optional[float]: return self._R_inter
 
     @property
-    def gap_closure(self): return getattr(self, "_gap_closure", None)
+    def gap_closure(self) -> Any: return self._gap_closure
 
     @property
-    def cross_permeability(self): return getattr(self, "_cross_permeability", None)
+    def cross_permeability(self) -> Any: return self._cross_permeability
 
     @property
-    def drainage_conduct1(self): return getattr(self, "_drainage_conduct1", None)
+    def drainage_conduct1(self) -> Any: return self._drainage_conduct1
 
     @property
-    def drainage_conduct2(self): return getattr(self, "_drainage_conduct2", None)
+    def drainage_conduct2(self) -> Any: return self._drainage_conduct2
 
     @property
-    def K_0_define(self): return getattr(self, "_K_0_define", None)
+    def K_0_define(self) -> Any: return self._K_0_define
 
     @property
-    def K_0_x(self): return getattr(self, "_K_0_x", None)
+    def K_0_x(self) -> Optional[float]: return self._K_0_x
 
     @property
-    def K_0_y(self): return getattr(self, "_K_0_y", None)
+    def K_0_y(self) -> Optional[float]: return self._K_0_y
 
+# Numerical guard for tiny denominators
+_EPS_DENOM: float = 1e-12
+
+def _clamp01(x: float) -> float:
+    """Clamp a float to [0, 1]."""
+    if x < 0.0:
+        return 0.0
+    if x > 1.0:
+        return 1.0
+    return x
 
 class MCMaterial(BaseSoilMaterial):
     """
     Mohr-Coulomb soil material.
-    The mapper expects fields: E_ref, c_ref, phi, psi, tensile_strength.
+    The mapper typically reads: E_ref, c_ref, phi, psi, tensile_strength.
     """
-    def __init__(self, 
-                 name: str = "MediumDenseSand", type: SoilMaterialsType = SoilMaterialsType.MC, 
-                 comment: str = "", gamma: float = 18.0, E: float = 4e4, nu: float = 0.3, 
-                 gamma_sat: float = 20.0, e_init: float = 0.65, E_ref: float = 4e4, 
-                 c_ref: float = 1.0, phi: float = 32.0, psi: float = 2.0, 
-                 tensile_strength: float = 1.0, **kwargs) -> None:
+
+    def __init__(
+        self,
+        name: str = "MediumDenseSand",
+        type: SoilMaterialsType = SoilMaterialsType.MC,  # noqa: A003
+        comment: str = "",
+        gamma: float = 18.0,
+        E: float = 4.0e4,
+        nu: float = 0.30,
+        gamma_sat: float = 20.0,
+        e_init: float = 0.65,
+        E_ref: float = 4.0e4,
+        c_ref: float = 1.0,
+        phi: float = 32.0,
+        psi: float = 2.0,
+        tensile_strength: float = 1.0,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(name, type, comment, gamma, E, nu, gamma_sat, e_init, **kwargs)
-        self._E_ref            = E_ref
-        self._c_ref            = c_ref
-        self._phi              = phi
-        self._psi              = psi
-        self._tensile_strength = tensile_strength
+        self._E_ref: float = float(E_ref)
+        self._c_ref: float = float(c_ref)
+        self._phi: float = float(phi)
+        self._psi: float = float(psi)
+        self._tensile_strength: float = float(tensile_strength)
 
-    def __repr__(self) -> str:
-        return "<plx.materials.MCSoil>"
-
-    @property
-    def E_ref(self): return self._E_ref
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<plx.materials.MC name={self.name!r}>"
 
     @property
-    def c_ref(self): return self._c_ref
+    def E_ref(self) -> float: return self._E_ref
 
     @property
-    def phi(self): return self._phi
+    def c_ref(self) -> float: return self._c_ref
 
     @property
-    def psi(self): return self._psi
+    def phi(self) -> float: return self._phi
 
     @property
-    def tensile_strength(self): return self._tensile_strength
+    def psi(self) -> float: return self._psi
+
+    @property
+    def tensile_strength(self) -> float: return self._tensile_strength
+
 
 class MCCMaterial(BaseSoilMaterial):
     """
     Modified Cam-Clay soil material.
 
-    Mapper will read core parameters:
+    Mapper reads core parameters:
     - lam -> lambda
     - kar -> kappa
     - M_CSL -> M
 
     MCC-specific interface inputs stored ONLY here:
-    - v_ur: unloading-reloading Poisson's ratio (alias for nu when nu is None)
-            (dimensionless), default = None
-    - c_inter: interface cohesion [kPa], default = None
-    - phi_in: interface friction angle [deg], default = None
-    - psi_inter: interface dilatancy angle [deg], default = None
-    - _R_inter: explicit Rinter override (dimensionless), default = None
+    - v_ur: unloading-reloading Poisson's ratio (dimensionless)
+    - c_inter: interface cohesion [kPa]
+    - phi_in: interface friction angle [deg]
+    - psi_inter: interface dilatancy angle [deg]
+    - _R_inter: explicit Rinter override (dimensionless)
 
-    The mapper converts (c_inter, phi_in) to InterfaceStrength="Manual" and
-    Rinter (using a conservative ratio rule), or uses _R_inter when provided.
+    If _R_inter is not provided, a conservative ratio is inferred from (phi_in, psi_inter).
     """
+
     def __init__(
         self,
-        name,
-        type,
-        comment,
-        gamma,
-        E,
-        nu,
-        gamma_sat,
-        e_init,
+        name: str,
+        type: SoilMaterialsType,  # noqa: A003
+        comment: str,
+        gamma: float,
+        E: float,
+        nu: float,
+        gamma_sat: float,
+        e_init: float,
         lam: float = 0.2,
         kar: float = 0.03,
         M_CSL: float = 1.2,
@@ -315,53 +392,70 @@ class MCCMaterial(BaseSoilMaterial):
         c_inter: float = 30e3,
         phi_in: float = 30.0,
         psi_inter: float = 15.0,
-        _R_inter: Optional[float] = None,
-        **kwargs
+        _R_inter: float = 0.67,
+        **kwargs: Any,
     ) -> None:
         super().__init__(name, type, comment, gamma, E, nu, gamma_sat, e_init, **kwargs)
 
         # Core MCC parameters
-        self._lam   = lam
-        self._kar   = kar
-        self._M_CSL = M_CSL
+        self._lam: float = float(lam)
+        self._kar: float = float(kar)
+        self._M_CSL: float = float(M_CSL)
 
         # MCC-specific interface parameters with defaults
-        self.v_ur: float      = v_ur
-        self.c_inter: float   = c_inter
-        self.phi_in: float    = phi_in
-        self.psi_inter: float = psi_inter
-        if _R_inter:
-            self._R_inter: float  = _R_inter
+        self.v_ur: float = float(v_ur)
+        self.c_inter: float = float(c_inter)
+        self.phi_in: float = float(phi_in)
+        self.psi_inter: float = float(psi_inter)
+
+        # R_inter (protect against division-by-zero and clamp to [0, 1.0])
+        if _R_inter is not None:
+            self._R_inter = float(_R_inter)
         else:
-            from math import tan, pi
-            _psi_inter = psi_inter / 180 * pi
-            _phi_in = phi_in / 180 * pi
-            self._R_inter = tan(_psi_inter) / tan(_phi_in)
+            self._R_inter = self._compute_R_inter(self.phi_in, self.psi_inter, fallback=1.0)
 
-    def __repr__(self) -> str:
-        return "<plx.materials.MCCSoil>"
+    @staticmethod
+    def _compute_R_inter(phi_in_deg: float, psi_in_deg: float, *, fallback: float = 1.0) -> float:
+        """
+        Compute interface reduction factor R_inter = tan(psi) / tan(phi), clamped to [0, 1].
 
-    # region properties
+        Robustness:
+          - If phi_in is ~0° (or tan(phi) is non-finite / too small), return `fallback`.
+          - Result is clamped to [0, 1] to avoid unphysical values.
+        """
+        import math
+        phi_rad =  math.radians(float(phi_in_deg))
+        psi_rad = math.radians(float(psi_in_deg))
+        denom = math.tan(phi_rad)
+        numer = math.tan(psi_rad)
+
+        if (not math.isfinite(denom)) or abs(denom) < _EPS_DENOM:
+            return float(fallback)
+
+        return _clamp01(numer / denom)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<plx.materials.MCC name={self.name!r}>"
+
     @property
-    def lam(self):
+    def lam(self) -> float:
         """Compression index (λ)."""
         return self._lam
 
     @property
-    def kar(self):
+    def kar(self) -> float:
         """Swelling/recompression index (κ)."""
         return self._kar
 
     @property
-    def M_CSL(self):
+    def M_CSL(self) -> float:
         """Critical state line slope (M) in p-q space."""
         return self._M_CSL
 
     @property
-    def R_inter(self):
-        """Explicit Rinter override (dimensionless)."""
+    def R_inter(self) -> float:
+        """Interface reduction factor (dimensionless)."""
         return self._R_inter
-    # endregion
 
 
 class HSSMaterial(BaseSoilMaterial):
@@ -370,53 +464,68 @@ class HSSMaterial(BaseSoilMaterial):
     Mapper expects: E (-> E50ref), E_oed (-> Eoedref), E_ur (-> Eurref), m, P_ref,
                     G0, gamma_07, c, phi, psi.
     """
+
     def __init__(
-        self, name: str = "SoftClay_HSS", type: SoilMaterialsType = SoilMaterialsType.HSS, 
-        comment: str = "", gamma: float = 16.0, E: float = 8e3, nu: float = 0.35, gamma_sat: float = 18.0, 
-        e_init: float = 0.9, E_oed: float = 5600.0, E_ur: float = 24000.0, m: float = 1.0, 
-        P_ref: float = 100.0, G0: float = 180000.0, gamma_07: float = 0.0015, c: float = 15.0, 
-        phi: float = 22.0, psi: float = 0.0, **kwargs
+        self,
+        name: str = "SoftClay_HSS",
+        type: SoilMaterialsType = SoilMaterialsType.HSS,  # noqa: A003
+        comment: str = "",
+        gamma: float = 16.0,
+        E: float = 8.0e3,
+        nu: float = 0.35,
+        gamma_sat: float = 18.0,
+        e_init: float = 0.9,
+        E_oed: float = 5600.0,
+        E_ur: float = 24000.0,
+        m: float = 1.0,
+        P_ref: float = 100.0,
+        G0: float = 180000.0,
+        gamma_07: float = 0.0015,
+        c: float = 15.0,
+        phi: float = 22.0,
+        psi: float = 0.0,
+        **kwargs: Any,
     ) -> None:
         super().__init__(name, type, comment, gamma, E, nu, gamma_sat, e_init, **kwargs)
-        self._E_oed    = E_oed
-        self._E_ur     = E_ur
-        self._m        = m
-        self._P_ref    = P_ref
-        self._G0       = G0
-        self._gamma_07 = gamma_07
-        self._c        = c
-        self._phi      = phi
-        self._psi      = psi
+        self._E_oed: float = float(E_oed)
+        self._E_ur: float = float(E_ur)
+        self._m: float = float(m)
+        self._P_ref: float = float(P_ref)
+        self._G0: float = float(G0)
+        self._gamma_07: float = float(gamma_07)
+        self._c: float = float(c)
+        self._phi: float = float(phi)
+        self._psi: float = float(psi)
 
-    def __repr__(self) -> str:
-        return "<plx.materials.HSSSoil>"
-
-    @property
-    def E_oed(self): return self._E_oed
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<plx.materials.HSS name={self.name!r}>"
 
     @property
-    def E_ur(self): return self._E_ur
+    def E_oed(self) -> float: return self._E_oed
 
     @property
-    def m(self): return self._m
+    def E_ur(self) -> float: return self._E_ur
 
     @property
-    def P_ref(self): return self._P_ref
+    def m(self) -> float: return self._m
 
     @property
-    def G0(self): return self._G0
+    def P_ref(self) -> float: return self._P_ref
 
     @property
-    def gamma_07(self): return self._gamma_07
+    def G0(self) -> float: return self._G0
 
     @property
-    def c(self): return self._c
+    def gamma_07(self) -> float: return self._gamma_07
 
     @property
-    def phi(self): return self._phi
+    def c(self) -> float: return self._c
 
     @property
-    def psi(self): return self._psi
+    def phi(self) -> float: return self._phi
+
+    @property
+    def psi(self) -> float: return self._psi
 
 
 # ---------------------------------------------------------------------------
@@ -424,83 +533,262 @@ class HSSMaterial(BaseSoilMaterial):
 # ---------------------------------------------------------------------------
 
 class SoilMaterialFactory:
-    """
-    Factory for constructing specific soil material instances.
+    """Factory for soil materials with alias-aware, validated argument parsing."""
 
-    NOTE:
-    - For MCC, interface inputs (`v_ur`, `c_inter`, `phi_in`, `psi_inter`, `_R_inter`)
-      are accepted here and stored in MCCMaterial only (not in Base).
-    """
+    # ------------------------- helpers (private) -------------------------
+
+    _SENTINEL: object = object()
 
     @staticmethod
-    def create(material_type: SoilMaterialsType, **kwargs) -> BaseSoilMaterial:
+    def _coalesce(
+        mapping: Dict[str, Any],
+        *names: str,
+        default: Any = _SENTINEL,
+        allow_none: bool = False,
+    ) -> Any:
+        """Return the first present (and not-None unless allowed) value among aliases."""
+        for n in names:
+            if n in mapping:
+                v = mapping[n]
+                if allow_none or v is not None:
+                    return v
+        if default is not SoilMaterialFactory._SENTINEL:
+            return default
+        raise KeyError(f"Expected one of {names}")
+
+    @staticmethod
+    def _num(
+        mapping: Dict[str, Any],
+        *aliases: str,
+        required: bool = False,
+        gt: Optional[float] = None,
+        ge: Optional[float] = None,
+        lt: Optional[float] = None,
+        le: Optional[float] = None,
+        default: float = 0,
+        name: Optional[str] = None,
+    ) -> float:
+        """
+        Pick first available alias and validate as float with optional bounds.
+        """
+        try:
+            val = SoilMaterialFactory._coalesce(mapping, *aliases, default=default)
+        except KeyError:
+            if required:
+                n = name or (aliases[0] if aliases else "value")
+                raise TypeError(f"Missing required argument: '{n}'")
+            return default
+
+        if val is None:
+            if required:
+                n = name or (aliases[0] if aliases else "value")
+                raise TypeError(f"Missing required argument: '{n}'")
+            return 0
+
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            n = name or (aliases[0] if aliases else "value")
+            raise TypeError(f"Parameter '{n}' must be numeric, got: {val!r}")
+
+        if gt is not None and not (num > gt):
+            n = name or (aliases[0] if aliases else "value")
+            raise ValueError(f"Parameter '{n}' must be > {gt}, got {num}")
+        if ge is not None and not (num >= ge):
+            n = name or (aliases[0] if aliases else "value")
+            raise ValueError(f"Parameter '{n}' must be >= {ge}, got {num}")
+        if lt is not None and not (num < lt):
+            n = name or (aliases[0] if aliases else "value")
+            raise ValueError(f"Parameter '{n}' must be < {lt}, got {num}")
+        if le is not None and not (num <= le):
+            n = name or (aliases[0] if aliases else "value")
+            raise ValueError(f"Parameter '{n}' must be <= {le}, got {num}")
+        return num
+
+    @staticmethod
+    def _str(
+        mapping: Dict[str, Any],
+        *aliases: str,
+        required: bool = False,
+        default: str = "",
+        name: Optional[str] = None,
+    ) -> str:
+        """Pick first available alias and cast to str."""
+        try:
+            val = SoilMaterialFactory._coalesce(mapping, *aliases, default=default)
+        except KeyError:
+            if required:
+                n = name or (aliases[0] if aliases else "value")
+                raise TypeError(f"Missing required argument: '{n}'")
+            return default
+
+        if val is None:
+            if required:
+                n = name or (aliases[0] if aliases else "value")
+                raise TypeError(f"Missing required argument: '{n}'")
+            return default
+        return str(val)
+
+    # --------------------------- main factory ---------------------------
+
+    @staticmethod
+    def create(material_type: SoilMaterialsType, **kwargs: Any) -> BaseSoilMaterial:
+        """
+        Create a soil material of the requested type.
+
+        Safe behavior:
+        - Accept multiple aliases (E/E_ref/YoungsModulus/E50, nu/poisson, etc.).
+        - Validate numbers and ranges.
+        - Supply sensible defaults for optional parameters.
+        - Avoid passing unknown kwargs to constructors.
+        """
+
+        # Common fields across models
+        name = SoilMaterialFactory._str(kwargs, "name", required=True)
+        comment = SoilMaterialFactory._str(kwargs, "comment", default="")
+        gamma = SoilMaterialFactory._num(
+            kwargs, "gamma", "gamma_unsat", "unit_weight",
+            required=False, gt=0.0, default=18.0, name="gamma"
+        )
+        gamma_sat = SoilMaterialFactory._num(
+            kwargs, "gamma_sat", "unit_weight_sat",
+            required=False, gt=0.0, default=20.0, name="gamma_sat"
+        )
+        nu = SoilMaterialFactory._num(
+            kwargs, "nu", "poisson", "poisson_ratio",
+            required=False, ge=0.0, lt=0.5, default=0.30, name="nu"
+        )
+        e_init = SoilMaterialFactory._num(
+            kwargs, "e_init", "e0", "void_ratio_init",
+            required=False, ge=0.0, default=0.60, name="e_init"
+        )
+        # Base Young's modulus (many models need it)
+        E_base = SoilMaterialFactory._num(
+            kwargs, "E", "E_ref", "YoungsModulus", "E50",
+            required=True, gt=0.0, name="E"
+        )
+
         if material_type == SoilMaterialsType.MC:
-            try:
-                return MCMaterial(
-                    name=kwargs["name"],
-                    type=material_type,
-                    comment=kwargs.get("comment", ""),
-                    gamma=kwargs["gamma"],
-                    E=kwargs["E"],
-                    nu=kwargs["nu"],
-                    gamma_sat=kwargs["gamma_sat"],
-                    e_init=kwargs["e_init"],
-                    E_ref=kwargs["E_ref"],
-                    c_ref=kwargs["c_ref"],
-                    phi=kwargs["phi"],
-                    psi=kwargs["psi"],
-                    tensile_strength=kwargs["tensile_strength"],
-                )
-            except KeyError as e:
-                raise TypeError(f"Missing required argument for MCMaterial: {e}")
+            # MC model
+            c_ref = SoilMaterialFactory._num(
+                kwargs, "c_ref", "c", "cohesion",
+                required=False, ge=0.0, default=0.0, name="c_ref"
+            )
+            phi = SoilMaterialFactory._num(
+                kwargs, "phi", "phi_deg",
+                required=True, ge=0.0, name="phi"
+            )
+            psi = SoilMaterialFactory._num(
+                kwargs, "psi", "dilatancy", "psi_deg",
+                required=False, default=0.0, name="psi"
+            )
+            ft = SoilMaterialFactory._num(
+                kwargs, "tensile_strength", "ft", "sigma_t", "sig_t",
+                required=False, ge=0.0, default=0.0, name="tensile_strength"
+            )
 
-        elif material_type == SoilMaterialsType.MCC:
-            try:
-                return MCCMaterial(
-                    name=kwargs["name"],
-                    type=material_type,
-                    comment=kwargs.get("comment", ""),
-                    gamma=kwargs["gamma"],
-                    E=kwargs["E"],
-                    nu=kwargs["nu"],
-                    gamma_sat=kwargs["gamma_sat"],
-                    e_init=kwargs["e_init"],
-                    lam=kwargs["lam"],
-                    kar=kwargs["kar"],
-                    M_CSL=kwargs["M_CSL"],
-                    # MCC-only extras with defaults (all optional)
-                    v_ur=kwargs.get("v_ur", kwargs["nu"]),
-                    c_inter=kwargs.get("c_inter", 30e3),
-                    phi_in=kwargs.get("phi_in", 30.0),
-                    psi_inter=kwargs.get("psi_inter", 15.0),
-                    _R_inter=kwargs.get("_R_inter", 0.46),
-                )
-            except KeyError as e:
-                raise TypeError(f"Missing required argument for MCCMaterial: {e}")
+            mat = MCMaterial(
+                name=name,
+                type=material_type,  # noqa: A003
+                comment=comment,
+                gamma=gamma if gamma is not None else 18.0,
+                E=E_base if E_base is not None else 1.0,
+                nu=nu if nu is not None else 0.30,
+                gamma_sat=gamma_sat if gamma_sat is not None else 20.0,
+                e_init=e_init if e_init is not None else 0.60,
+                c_ref=c_ref if c_ref is not None else 0.0,
+                phi=phi if phi is not None else 30.0,
+                psi=psi if psi is not None else 0.0,
+                tensile_strength=ft if ft is not None else 0.0,
+            )
 
-        elif material_type == SoilMaterialsType.HSS:
-            try:
-                return HSSMaterial(
-                    name=kwargs["name"],
-                    type=material_type,
-                    comment=kwargs.get("comment", ""),
-                    gamma=kwargs["gamma"],
-                    E=kwargs["E"],
-                    nu=kwargs["nu"],
-                    gamma_sat=kwargs["gamma_sat"],
-                    e_init=kwargs["e_init"],
-                    E_oed=kwargs["E_oed"],
-                    E_ur=kwargs["E_ur"],
-                    m=kwargs["m"],
-                    P_ref=kwargs["P_ref"],
-                    G0=kwargs["G0"],
-                    gamma_07=kwargs["gamma_07"],
-                    c=kwargs["c"],
-                    phi=kwargs["phi"],
-                    psi=kwargs["psi"],
-                )
-            except KeyError as e:
-                raise TypeError(f"Missing required argument for HSSMaterial: {e}")
+            # Optional: if MCMaterial exposes E_ref, set it to the best-available value
+            E_ref_val = SoilMaterialFactory._num(
+                kwargs, "E_ref", "E", default=E_base, gt=0.0, name="E_ref"
+            )
+            if E_ref_val is not None and hasattr(mat, "E_ref"):
+                try:
+                    setattr(mat, "_E_ref", float(E_ref_val))
+                except Exception:
+                    pass
+            return mat
 
-        else:
-            raise ValueError(f"Unknown soil material type: {material_type}")
+        if material_type == SoilMaterialsType.MCC:
+            # Modified Cam-Clay
+            lam = SoilMaterialFactory._num(kwargs, "lam", "lambda", "λ",
+                                           required=False, gt=0.0, default=0.10, name="lam")
+            kar = SoilMaterialFactory._num(kwargs, "kar", "kappa", "κ",
+                                           required=False, gt=0.0, default=0.02, name="kar")
+            M_CSL = SoilMaterialFactory._num(kwargs, "M_CSL", "M", "M_csl",
+                                             required=False, gt=0.0, default=1.20, name="M_CSL")
+
+            v_ur = SoilMaterialFactory._num(kwargs, "v_ur", "nu_ur",
+                                            required=False, ge=0.0, lt=0.5, default=(nu if nu is not None else 0.30),
+                                            name="v_ur")
+            c_inter = SoilMaterialFactory._num(kwargs, "c_inter", required=False, ge=0.0, default=30e3, name="c_inter")
+            phi_in = SoilMaterialFactory._num(kwargs, "phi_in", required=False, ge=0.0, default=30.0, name="phi_in")
+            psi_inter = SoilMaterialFactory._num(kwargs, "psi_inter", required=False, default=15.0, name="psi_inter")
+            R_inter = SoilMaterialFactory._num(kwargs, "_R_inter", "R_inter", required=False, ge=0.0, default=0.67, name="_R_inter")
+
+            return MCCMaterial(
+                name=name,
+                type=material_type,  # noqa: A003
+                comment=comment,
+                gamma=gamma if gamma is not None else 18.0,
+                E=E_base if E_base is not None else 1.0,
+                nu=nu if nu is not None else 0.30,
+                gamma_sat=gamma_sat if gamma_sat is not None else 20.0,
+                e_init=e_init if e_init is not None else 0.60,
+                lam=lam if lam is not None else 0.10,
+                kar=kar if kar is not None else 0.02,
+                M_CSL=M_CSL if M_CSL is not None else 1.20,
+                v_ur=v_ur if v_ur is not None else 0.30,
+                c_inter=c_inter if c_inter is not None else 30e3,
+                phi_in=phi_in if phi_in is not None else 30.0,
+                psi_inter=psi_inter if psi_inter is not None else 15.0,
+                _R_inter=R_inter,
+            )
+
+        if material_type == SoilMaterialsType.HSS:
+            # Hardening Soil Small-strain
+            E_oed = SoilMaterialFactory._num(kwargs, "E_oed", "Eoed",
+                                             required=False, gt=0.0, default=E_base, name="E_oed")
+            E_ur = SoilMaterialFactory._num(kwargs, "E_ur", "Eur",
+                                            required=False, gt=0.0, default=(3.0 * (E_base if E_base else 1.0)), name="E_ur")
+            m = SoilMaterialFactory._num(kwargs, "m", required=False, gt=0.0, default=0.50, name="m")
+            P_ref = SoilMaterialFactory._num(kwargs, "P_ref", "Pref", "p_ref", "pRef",
+                                             required=False, gt=0.0, default=100.0, name="P_ref")
+            G0 = SoilMaterialFactory._num(kwargs, "G0", "G_0",
+                                          required=False, gt=0.0,
+                                          default=(E_base / (2.0 * (1.0 + (nu if nu is not None else 0.30)))) if E_base else 1.0,
+                                          name="G0")
+            gamma_07 = SoilMaterialFactory._num(kwargs, "gamma_07", "gamma07",
+                                                required=False, gt=0.0, default=1e-4, name="gamma_07")
+            c = SoilMaterialFactory._num(kwargs, "c", "c_ref", "cohesion",
+                                         required=False, ge=0.0, default=0.0, name="c")
+            phi = SoilMaterialFactory._num(kwargs, "phi", "phi_deg",
+                                           required=False, ge=0.0, default=30.0, name="phi")
+            psi = SoilMaterialFactory._num(kwargs, "psi", "dilatancy", "psi_deg",
+                                           required=False, default=0.0, name="psi")
+
+            return HSSMaterial(
+                name=name,
+                type=material_type,  # noqa: A003
+                comment=comment,
+                gamma=gamma if gamma is not None else 16.0,
+                E=E_base if E_base is not None else 1.0,
+                nu=nu if nu is not None else 0.35,
+                gamma_sat=gamma_sat if gamma_sat is not None else 18.0,
+                e_init=e_init if e_init is not None else 0.90,
+                E_oed=E_oed if E_oed is not None else (E_base if E_base is not None else 1.0),
+                E_ur=E_ur if E_ur is not None else (3.0 * (E_base if E_base else 1.0)),
+                m=m if m is not None else 0.50,
+                P_ref=P_ref if P_ref is not None else 100.0,
+                G0=G0 if G0 is not None else (E_base / (2.0 * (1.0 + (nu if nu is not None else 0.30))) if E_base else 1.0),
+                gamma_07=gamma_07 if gamma_07 is not None else 1e-4,
+                c=c if c is not None else 0.0,
+                phi=phi if phi is not None else 30.0,
+                psi=psi if psi is not None else 0.0,
+            )
+
+        raise ValueError(f"Unknown soil material type: {material_type}")
