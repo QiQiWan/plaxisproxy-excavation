@@ -368,21 +368,6 @@ class PlaxisRunner:
             raise RuntimeError("Not connected: g_i is None.")
         return PhaseMapper.apply_well_overrides(self.g_i, phase_handle, overrides, warn_on_missing=warn_on_missing)
 
-    def find_phase_handle(self, name: str) -> Any:
-        """Resolve an existing PLAXIS Phase handle by its display name. Returns None if not found."""
-        if self.g_i is None:
-            raise RuntimeError("Not connected: g_i is None.")
-        try:
-            # Generic traversal; adapt if your API exposes phases differently
-            for ph in list(getattr(self.g_i, "Phases", [])) or []:
-                try:
-                    if str(getattr(getattr(ph, "Name", None), "value", "")) == str(name):
-                        return ph
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        return None
     # ===================== Mesh =====================
     def mesh(self, mesh: Mesh) -> str:
         if self.g_i is None:
@@ -411,7 +396,8 @@ class PlaxisRunner:
             raise RuntimeError("Not connected: g_i is None.")
         return PhaseMapper.get_initial_phase(self.g_i)
 
-    def create_phase(self, phase: Phase, inherits: Optional[Any] = None) -> Any:
+    def create_phase(self, phase: Phase, inherits: Optional[Any] = None,
+                     return_handle: bool = False, apply_structure: bool = True) -> Any:
         """
         Create a phase in PLAXIS that inherits from 'inherits' (handle or Phase-like object).
         DO NOT send the Phase object to PLAXIS as a token. Always go through the mapper.
@@ -419,7 +405,8 @@ class PlaxisRunner:
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
         base = inherits if inherits is not None else (getattr(getattr(phase, "inherits", None), "plx_id", None))
-        return PhaseMapper.create(self.g_i, phase, inherits=base)
+        return PhaseMapper.create(self.g_i, phase=phase, inherits=base, 
+                                  return_handle=return_handle, apply_structure=apply_structure)
 
     def apply_phase(self, phase_handle: Any, phase: Phase, *, warn_on_missing: bool = False) -> Any:
         """
@@ -461,20 +448,3 @@ class PlaxisRunner:
             allow_recreate=allow_recreate,
             sync_meta=sync_meta,
         )
-
-    def apply_well_overrides(self, phase_handle: Any, overrides: Dict[str, Dict[str, Any]],
-                             *, warn_on_missing: bool = False) -> Any:
-        """
-        Update well parameters for an existing phase. This variant avoids any fake/placeholder class.
-        `overrides` example: {"Well-1": {"q_well": 900.0, "h_min": -5.0}, ...}
-        """
-        if self.g_i is None:
-            raise RuntimeError("Not connected: g_i is None.")
-        # Provide an explicit mapper entry point that takes a dict directly.
-        if hasattr(PhaseMapper, "apply_well_overrides_dict"):
-            return PhaseMapper.apply_well_overrides_dict(self.g_i, phase_handle, overrides,
-                                                         warn_on_missing=warn_on_missing)
-        # Fallback: pass a simple object with the expected attribute name if your mapper expects it
-        holder = SimpleNamespace(well_overrides=overrides)
-        return PhaseMapper.apply_well_overrides(self.g_i, phase_handle, holder,
-                                                warn_on_missing=warn_on_missing)

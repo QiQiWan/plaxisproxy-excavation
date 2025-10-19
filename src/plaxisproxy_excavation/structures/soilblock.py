@@ -3,9 +3,10 @@ from typing import List, Tuple, Optional, Dict, Any
 from types import SimpleNamespace
 from ..core.plaxisobject import PlaxisObject
 from ..materials.soilmaterial import BaseSoilMaterial
-from ..geometry import Polygon3D, Polyhedron
+from .basestructure import BaseStructure
+from ..geometry import Polygon3D, Polyhedron, Volume
 
-class SoilBlock(PlaxisObject):
+class SoilBlock(BaseStructure):
     """Soil volume: geometry + soil material, with consistent plx_id access."""
 
     _SERIAL_VERSION: int = 1
@@ -15,7 +16,7 @@ class SoilBlock(PlaxisObject):
         name: str,
         comment: str = "",
         material: Optional[BaseSoilMaterial] = None,
-        geometry: Optional[Polyhedron | Polygon3D | List[Tuple[float, float, float]]] = None,
+        geometry: Optional[Polyhedron | Polygon3D | Volume | List[Tuple[float, float, float]]] = None,
     ):
         super().__init__(name, comment)
         self._material = self._coerce_material(material)

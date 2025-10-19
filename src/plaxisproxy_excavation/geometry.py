@@ -598,6 +598,19 @@ class Polygon3D(GeometryBase):
         # 已闭合直接用
         return cls([Line3D(point_set)])
     
+    @classmethod
+    def from_rectangle(cls, x_min, y_min, x_max, y_max, z=0) -> "Polygon3D":
+        if x_min > x_max or y_min > y_max:
+            raise ValueError("x_min and y_min should be less than x_max and y_max.")
+        closed_ps = PointSet([
+            Point(x_min, y_min, z),
+            Point(x_min, y_max, z),
+            Point(x_max, y_max, z),
+            Point(x_max, y_min, z),
+            Point(x_min, y_min, z)
+        ])
+        return cls([Line3D(closed_ps)])
+        
     # ---------------- mutation ---------------------------------------
     def add_hole(self, line: Line3D) -> None:
         """Add an inner hole (closed ring) to the polygon."""
@@ -616,6 +629,26 @@ class Polygon3D(GeometryBase):
 
         self._lines.append(line)
         self.update_points()
+
+    def extrude(self, z1: float, z2: float) -> Cube:
+        """
+        Extrude the current planar polygon vertically between z1 and z2,
+        returning a Cube that bounds the prism. This assumes the polygon is
+        horizontal and rectangular.
+        """
+        if not self._is_closed():
+            raise ValueError("Cannot extrude an open polygon.")
+
+        # 取平面范围
+        xs = [p.x for p in self.get_points()]
+        ys = [p.y for p in self.get_points()]
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
+
+        from .geometry import Point, Cube
+        p0 = Point(x_min, y_min, min(z1, z2))
+        p1 = Point(x_max, y_max, max(z1, z2))
+        return Cube(p0, p1)
 
     # ---------------- shapely interop --------------------------------
     def to_shapely(self):

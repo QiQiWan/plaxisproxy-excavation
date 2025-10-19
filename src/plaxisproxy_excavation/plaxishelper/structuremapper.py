@@ -139,7 +139,104 @@ def _first_non_none(*vals):
     for v in vals:
         if v is not None:
             return v
+    return -1
+
+# =============================================================================
+# Name helpers
+# =============================================================================
+
+# ---- helpers for name & rebind (put near other helpers) ----
+import re
+
+def _ident_str(x):
+    if x is None: return ""
+    v = getattr(x, "value", None)
+    return str(v) if v is not None else str(x)
+
+def _sync_final_name(obj, handle) -> str:
+    """Read Identification/Name from handle and write back to obj.name."""
+    final = _ident_str(getattr(handle, "Identification", None)) or _ident_str(getattr(handle, "Name", None))
+    if final:
+        try: obj.name = final
+        except Exception: pass
+    return final
+
+def _canon(s: str) -> str:
+    s = _ident_str(s).replace(" ", "_")
+    s = re.sub(r"[^A-Za-z0-9_]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s
+
+def _family_base(name: str) -> str:
+    c = _canon(name)
+    m = re.match(r"^(.*?)(?:_)?\d+$", c)  # A1 / A1_1 -> A1
+    return m.group(1) if m else c
+
+def _first_nonempty(*vals):
+    for v in vals:
+        if v: return v
+    return ""
+
+def _get_first_collection(g_i, names):
+    for n in names:
+        try:
+            c = getattr(g_i, n, None)
+            if c: return c
+        except Exception: pass
     return None
+
+def _try_iter(col):
+    try: return col[:]  # slice when possible
+    except Exception: return col
+
+def _anchor_children(handle):
+    """Return child anchors if the handle is a group-like object; else []."""
+    out = []
+    for attr in ("Children", "Members", "Items", "SubObjects"):
+        try:
+            c = getattr(handle, attr, None)
+            if c:
+                for x in _try_iter(c):
+                    out.append(x)
+        except Exception: pass
+    return out
+
+def _rebind_n2n_anchor_handle(g_i, obj, created_handle):
+    """
+    Return the container 'leaf' anchor handle:
+      1) find 'Node-to-node anchors' container
+      2) match by final name family (A1 ⇄ A1_1)
+      3) prefer leaf (child); if only group -> use group
+    """
+    final_name = _first_nonempty(
+        getattr(obj, "name", None),
+        _ident_str(getattr(created_handle, "Identification", None)),
+        _ident_str(getattr(created_handle, "Name", None)),
+    )
+    fam = _family_base(final_name)
+    col = _get_first_collection(g_i, ["NodeToNodeAnchors", "NodetoNodeAnchors", "Anchors", "Node_to_node_anchors"])
+    if not col:
+        return created_handle
+
+    # pass 1: exact match on canon name
+    for o in _try_iter(col):
+        ident = _ident_str(getattr(o, "Identification", None)) or _ident_str(getattr(o, "Name", None))
+        if not ident: continue
+        if _canon(ident) == _canon(final_name):
+            ch = _anchor_children(o)
+            return ch[0] if ch else o
+
+    # pass 2: family match (A1 ↔ A1_1, A1_2)
+    pat = re.compile(rf"^{re.escape(fam)}(?:_\d+)?$", flags=re.I)
+    for o in _try_iter(col):
+        ident = _ident_str(getattr(o, "Identification", None)) or _ident_str(getattr(o, "Name", None))
+        if not ident: continue
+        if pat.match(_canon(ident)):
+            ch = _anchor_children(o)
+            return ch[0] if ch else o
+
+    return created_handle
+
 
 # =============================================================================
 # Geometry helpers
@@ -288,15 +385,15 @@ class AnchorMapper:
         # 6) Bind runtime handles back to domain objects
         obj.plx_id = anchor_h
         if (line_h is not None) and hasattr(obj, "line") and (obj.line is not None):
-            # Keep helper Line3D consistent with Beam-style "keep, don't delete"
             try:
                 setattr(obj.line, "plx_id", line_h)
             except Exception:
                 pass
 
         # 7) Logging (avoid dereferencing handles beyond necessity)
-        extra_str = " line=<kept>" if (line_h is not None) else ""
-        _log_create("Anchor", f"name={obj.name}", anchor_h, extra=extra_str)
+        _sync_final_name(obj, anchor_h)  # ✅ 新增
+        obj.plx_id = _rebind_n2n_anchor_handle(g_i, obj, anchor_h)
+        _log_create("Anchor", f"name={obj.name}", anchor_h)
         return anchor_h
 
     @staticmethod
@@ -398,7 +495,11 @@ class RetainingWallMapper:
         else:
             _set_many_props(created, {"MaterialType": getattr(t, "value", t)})
 
+        # ✅ 正确：plx_id 就是刚创建的句柄
         obj.plx_id = created
+        # ✅ 回写最终存档名（WALL1 -> WALL_1）
+        _sync_final_name(obj, created)
+
         _log_create("RetainingWall", f"name={obj.name}", created)
         return created
 
@@ -566,12 +667,13 @@ class SoilBlockMapper:
                 except Exception:
                     H = -5.0
                 # 默认向下挤出
-                extrude_vec = (0.0, 0.0, -abs(H))
+                extrude_vec = (0.0, 0.0, H)
 
             # 3) extrude and assign material
             created = SoilBlockMapper._extrude_surface(g_i, surf_h, extrude_vec)
             _assign_material(created, getattr(obj, "material", None))
             setattr(obj, "plx_id", created)
+            _sync_final_name(obj, created)   # ✅ 可选
             _log_create("SoilBlock", f"name={obj.name} extrude={extrude_vec}", created)
             return created
 

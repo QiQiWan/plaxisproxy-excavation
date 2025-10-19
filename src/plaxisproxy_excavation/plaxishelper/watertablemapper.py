@@ -146,7 +146,7 @@ class WaterTableMapper:
     """
 
     # candidates for creation
-    _CREATE_WL: Tuple[str, ...] = ("waterlevel", "create_waterlevel", "userwaterlevel", "WaterLevel")
+    _CREATE_WL: Tuple[str, ...] = ("waterlevel", "addwaterpoint", "create_waterlevel", "userwaterlevel", "WaterLevel")
     # candidates for renaming
     _RENAME_KEYS: Tuple[str, ...] = ("Name", "Identification", "Label")
     # candidates for movepoint (3D variant usually accepts index + (x y z))
@@ -170,7 +170,7 @@ class WaterTableMapper:
 
     # ---------- create table ----------
     @staticmethod
-    def create_table(g_i: Any, tbl: WaterLevelTable, *, goto_flow: bool = True) -> Any:
+    def create_table(g_i: Any, tbl: WaterLevelTable, *, goto_flow: bool = False) -> Any:
         """
         Create a new UserWaterLevel from the points in `tbl.levels`.
         Stores the returned handle as `tbl.plx_id` and sets its name/label if provided.
@@ -185,13 +185,13 @@ class WaterTableMapper:
 
             # Ensure geometry for each level point (for logging/consistency)
             for lvl in levels:
-                WaterTableMapper.create_level_point(g_i, lvl)
+                # WaterTableMapper.create_level_point(g_i, lvl)
 
-            # Build tuple list for the command: ((x,y,z), (x,y,z), ...)
-            pts = tuple((float(lvl.x), float(lvl.y), float(lvl.z)) for lvl in levels)
+                # Build tuple list for the command: ((x,y,z), (x,y,z), ...)
+                pt = tuple((float(lvl.x), float(lvl.y), float(lvl.z), 0))
 
-            # Create UserWaterLevel object
-            h = _normalize(_try_call(g_i, WaterTableMapper._CREATE_WL, *pts))
+                # Create UserWaterLevel object
+                h = _normalize(_try_call(g_i, WaterTableMapper._CREATE_WL, *pt))
 
             # Rename if label present
             label = getattr(tbl, "label", None)

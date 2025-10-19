@@ -7,6 +7,9 @@ from typing import List, Dict, Any, Optional
 from .plaxisproxy_excavation.plaxishelper.plaxisrunner import PlaxisRunner
 from .plaxis_config import *
 from .plaxisproxy_excavation.excavation import FoundationPit
+from .plaxisproxy_excavation.structures.soilblock import SoilBlock
+from .plaxisproxy_excavation.geometry import Polygon3D
+from .plaxisproxy_excavation.components.mesh import Mesh
 
 
 """
@@ -147,7 +150,7 @@ class ExcavationBuilder:
                 "embedded_piles": [],
             }
         else:
-            for k in ("retaining_walls", "anchors", "beams", "wells", "embedded_piles"):
+            for k in ("retaining_walls", "anchors", "beams", "wells", "embedded_piles", "soil_blocks"):
                 if k not in st:
                     st[k] = []
 
@@ -297,6 +300,12 @@ class ExcavationBuilder:
             except Exception as e:
                 print(f"[build] Warning: create_well failed: {e}")
 
+        if not structures.get("soil_blocks"):
+            self._cut_inside_soil_blocks(self.excavation_object)
+
+        for blk in structures.get("soil_blocks", []):
+            app.create_soil_block(blk)
+
         # ---------------- 6) Loads (+ optional multipliers) --------------------
         loads = getattr(pit, "loads", {}) or {}
         total_loads = 0
@@ -330,14 +339,15 @@ class ExcavationBuilder:
         # ---------------- 8) Mesh (optional) -----------------------------------
         meshed = False
         mesh_cfg = getattr(pit, "mesh", None)
-        if mesh_cfg is not None:
-            try:
-                app.mesh(mesh_cfg)
-                meshed = True
-            except Exception as e:
-                print(f"[build] Warning: mesh() failed: {e}")
+        if mesh_cfg is None:
+            mesh_cfg = Mesh()
         else:
-            print("[build] Info: no mesh config on FoundationPit; skipping meshing step.")
+            print("[build] Info: no mesh config on FoundationPit; use the default!")
+        try:
+            app.mesh(mesh_cfg)
+            meshed = True
+        except Exception as e:
+            print(f"[build] Warning: mesh() failed: {e}")
 
         # ---------------- 9) Phase shells ONLY (no apply) ----------------------
         phases = list(getattr(pit, "phases", [])) or getattr(pit, "stages", []) or []
@@ -347,6 +357,12 @@ class ExcavationBuilder:
                 app.goto_stages()
                 prev = app.get_initial_phase()
                 for ph in phases:
+                    for blk in pit.structures.get("soil_blocks", []):
+                        if blk.name.endswith("_in"):
+                            phase_name = blk.name[:-3]  # 去掉后缀“_in”得到阶段名
+                            for ph in phases:  # phases为待应用的Phase列表
+                                if ph.name == phase_name:
+                                    ph.deactivate_structures(blk)
                     # Create the phase entity (inheriting sequence), DO NOT apply here
                     h = app.create_phase(ph, inherits=prev)
                     created_phase_handles.append(h)
@@ -438,6 +454,54 @@ class ExcavationBuilder:
             print(f"[materials] Relinked {fixed} soil-layer → material references to library.")
         return fixed
 
+    # -------------------------------------------------------------------------
+    # SoilBlocks helpers
+    # -------------------------------------------------------------------------
+
+    def _cut_inside_soil_blocks(self, pit: FoundationPit):
+        """
+        Identify enclosed soil bodies (inside the diaphragm walls) per soil layer,
+        extrude and register them as SoilBlock objects.
+        This assumes the retaining walls form a closed rectangle in plan.
+        """
+        if not pit.borehole_set:
+            raise ValueError("Borehole set is required to compute soil layer depths.")
+
+        walls = pit.structures.get("retaining_walls", [])
+        if len(walls) < 4:
+            raise ValueError("Need at least 4 walls to define an enclosed region.")
+
+        # Assume rectangular pit: extract envelope from wall geometry (z=top surface)
+        all_pts = []
+        for w in walls:
+            poly = w.surface
+            if hasattr(poly, "get_points"):
+                all_pts.extend(poly.get_points())
+        if not all_pts:
+            raise ValueError("Cannot extract polygon points from walls.")
+
+        z_top = max(p.z for p in all_pts)
+        x_min = min(p.x for p in all_pts)
+        x_max = max(p.x for p in all_pts)
+        y_min = min(p.y for p in all_pts)
+        y_max = max(p.y for p in all_pts)
+
+        # Build rectangular top polygon and extrude layer-by-layer
+        pit_polygon = Polygon3D.from_rectangle(x_min, y_min, x_max, y_max, z=z_top)
+
+        # Extract ordered layers from canonical soil layers (not borehole layers)
+        layers = pit.borehole_set.unique_soil_layers
+        layers = sorted(layers, key=lambda l: float(l.top_z or 0.0), reverse=True)
+
+        for i, layer in enumerate(layers):
+            if layer.top_z is None or layer.bottom_z is None:
+                continue  # skip incomplete layers
+            z1 = layer.top_z
+            z2 = layer.bottom_z
+            name = f"L{i+1}_in"
+            geom = pit_polygon.extrude(z1, z2)
+            blk = SoilBlock(name=name, geometry=geom, material=layer.material)
+            pit.add_structure("soil_blocks", blk)
     # -------------------------------------------------------------------------
     # Phase helpers
     # -------------------------------------------------------------------------

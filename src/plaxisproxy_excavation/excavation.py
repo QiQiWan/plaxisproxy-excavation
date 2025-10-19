@@ -83,7 +83,8 @@ class FoundationPit(SerializableBase):
             "anchors": [],
             "beams": [],
             "wells": [],
-            "embedded_piles": []
+            "embedded_piles": [],
+            "soil_blocks": []
         }
 
         # Load library
