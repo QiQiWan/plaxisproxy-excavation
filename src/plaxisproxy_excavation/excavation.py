@@ -48,6 +48,7 @@ class FoundationPit(SerializableBase):
         "_id",
         "_version",
         "project_information",
+        "_excava_depth",
         "borehole_set",
         "materials",
         "structures",
@@ -67,7 +68,7 @@ class FoundationPit(SerializableBase):
         self._version = "1.0.0"  # Semantic versioning for the data model
         self.project_information = project_information
         self.borehole_set: BoreholeSet = BoreholeSet(boreholes=[])
-        
+        self._excava_depth = 0.0
         # Material library: managed in categories using a dictionary
         self.materials: Dict[str, List[Any]] = {
             "soil_materials": [],
@@ -99,6 +100,17 @@ class FoundationPit(SerializableBase):
 
         # Monitors: for storing curve points to be monitored
         self.monitors: List[CurvePoint] = []
+
+    @property
+    def excava_depth(self):
+        return self._excava_depth
+
+    @excava_depth.setter
+    def excava_depth(self, value):
+        if value > 0:
+            value = -value
+        print(f"[INFO] Set {value} m as the depth of the excavation.")
+        self._excava_depth = value
 
     def _is_duplicate(self, new_obj: PlaxisObject, existing_list: Sequence[PlaxisObject]) -> bool:
         """

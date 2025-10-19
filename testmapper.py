@@ -1,6 +1,6 @@
-# testmapper.py — Builder + PhaseMapper demo aligned with Phase API (methods)
+# testmapper.py — Builder + Runner-forwarded soil mapping demo (Phase API aligned)
 from math import ceil
-from typing import List, Tuple, Iterable, Any, Dict
+from typing import List, Tuple, Iterable, Any, Dict, Optional
 
 from config.plaxis_config import HOST, PORT, PASSWORD
 
@@ -13,7 +13,7 @@ from src.plaxisproxy_excavation.excavation import FoundationPit
 from src.plaxisproxy_excavation.components.projectinformation import ProjectInformation, Units
 from src.plaxisproxy_excavation.components.phase import Phase
 from src.plaxisproxy_excavation.components.phasesettings import PlasticStageSettings, LoadType
-from src.plaxisproxy_excavation.components.watertable import WaterLevel, WaterLevelTable  # per new API
+from src.plaxisproxy_excavation.components.watertable import WaterLevel, WaterLevelTable
 
 # Boreholes & materials
 from src.plaxisproxy_excavation.borehole import SoilLayer, BoreholeLayer, Borehole, BoreholeSet
@@ -174,9 +174,31 @@ def dedupe_wells_by_line(
     return unique, dupes, key_to_master
 
 
+# ----------------------------- soil overrides helper -----------------------------
+
+def mk_soil_overrides(names: Iterable[str],
+                      active: Optional[bool] = None,
+                      deformable: Optional[bool] = None) -> Dict[str, Dict[str, bool]]:
+    """
+    Build a dict compatible with Phase.set_soil_overrides():
+        { "Soil_1_1": {"active": False, "deformable": True}, ... }
+    Any parameter left as None will be omitted for that soil.
+    """
+    overrides: Dict[str, Dict[str, bool]] = {}
+    for nm in names:
+        opts: Dict[str, bool] = {}
+        if active is not None:
+            opts["active"] = bool(active)
+        if deformable is not None:
+            opts["deformable"] = bool(deformable)
+        if opts:
+            overrides[nm] = opts
+    return overrides
+
+
 # ----------------------------- assemble pit -----------------------------
 
-def assemble_pit() -> FoundationPit:
+def assemble_pit(runner: Optional[PlaxisRunner] = None) -> FoundationPit:
     """Rectangular pit with D-walls, two brace levels, wells, and phased actions."""
 
     # 1) Project information (XY = 50 x 80)
@@ -199,6 +221,18 @@ def assemble_pit() -> FoundationPit:
 
     pit = FoundationPit(project_information=proj)
 
+    # --- Discover split soils in Staged view BEFORE adding phases (via runner minimal API) ---
+    excav_names: List[str] = []
+    remain_names: List[str] = []
+    if runner is not None:
+        try:
+            excav_names = runner.get_excavation_soil_names(prefer_volume=True)
+            remain_names = runner.get_remaining_soil_names(prefer_volume=True)
+            print(f"[MAPPER] excav soils: {excav_names}")
+            print(f"[MAPPER] remain soils: {remain_names}")
+        except Exception as ex:
+            print(f"[MAPPER] soil split discovery failed: {ex}")
+
     # 2) Soil materials
     fill = SoilMaterialFactory.create(
         SoilMaterialsType.MC, name="Fill",
@@ -219,7 +253,8 @@ def assemble_pit() -> FoundationPit:
         pit.add_material("soil_materials", m)
 
     # 3) Boreholes & layers
-    sl_fill, sl_sand, sl_clay = SoilLayer("Fill", fill), SoilLayer("Sand", sand), SoilLayer("Clay", clay)
+    sl_fill, sl_sand, sl_clay = SoilLayer("Fill", material=fill), SoilLayer("Sand", material=sand), SoilLayer("Clay", material=clay)
+
     bh1_layers = [
         BoreholeLayer("Fill@BH1",  0.0, -1.5, sl_fill),
         BoreholeLayer("Sand@BH1", -1.5, -8.0, sl_sand),
@@ -260,6 +295,7 @@ def assemble_pit() -> FoundationPit:
     for w in (west_wall, east_wall, south_wall, north_wall):
         pit.add_structure("retaining_walls", w)
 
+    pit.excava_depth = Z_EXC_BOTTOM
     # 7) Horizontal braces (two levels)
     off = 0.8
     braces_L1: List[Beam] = []
@@ -299,18 +335,32 @@ def assemble_pit() -> FoundationPit:
     ph2 = Phase(name="P2_Dewatering",  settings=st_dewat)
     ph3 = Phase(name="P3_Excavate_L2", settings=st_exc2)
 
-    # inherits chain (use method)
+    # inherits chain
     ph1.set_inherits(ph0)
     ph2.set_inherits(ph1)
     ph3.set_inherits(ph2)
 
-    # activation lists（用方法）
+    # ---------------- Soil activation / freezing BEFORE phases are added ----------------
+    # Deactivate the enclosed (pit) pieces at the first excavation stage.
+    if excav_names:
+        ph1.set_soil_overrides(mk_soil_overrides(excav_names, active=False))
+        # Deactivation carries forward via inheritance.
+
+    # During dewatering, freeze the remaining large pieces for flow-only calculation.
+    if remain_names:
+        ph2.set_soil_overrides(mk_soil_overrides(remain_names, deformable=False))
+
+    # Unfreeze them again for the next excavation stage.
+    if remain_names:
+        ph3.set_soil_overrides(mk_soil_overrides(remain_names, deformable=True))
+
+    # activation lists (structures)
     ph0.activate_structures(west_wall, east_wall, south_wall, north_wall)
     ph1.activate_structures(*braces_L1)
     ph2.activate_structures(*wells_unique)
     ph3.activate_structures(*braces_L2)
 
-    # per-phase well overrides + water table（都用 Phase 方法）
+    # per-phase well overrides + water table
     ph2.set_well_overrides({ w.name: {"h_min": -10.0, "q_well": 0.008} for w in wells_unique })
 
     x_min, x_max, y_min, y_max = proj.x_min, proj.x_max, proj.y_min, proj.y_max
@@ -321,6 +371,7 @@ def assemble_pit() -> FoundationPit:
     ]
     ph2.set_water_table(WaterLevelTable(water_pts))
 
+    # register phases
     for p in (ph0, ph1, ph2, ph3):
         pit.add_phase(p)
 
@@ -330,11 +381,12 @@ def assemble_pit() -> FoundationPit:
 # --------------------------------- main ---------------------------------
 
 if __name__ == "__main__":
+    # Create runner first so assemble_pit() can query split soils in Stages
     runner = PlaxisRunner(HOST, PORT, PASSWORD)
-    pit = assemble_pit()
+    pit = assemble_pit(runner=runner)
     builder = ExcavationBuilder(runner, pit)
 
-    # 确保钻孔层材料引用到库中的同一实例
+    # Ensure borehole layer materials reference shared library instances
     try:
         builder._relink_borehole_layers_to_library()
     except Exception:
@@ -344,12 +396,25 @@ if __name__ == "__main__":
     builder.build()
     print("[BUILD] done.")
 
+    print("[BUILD] Pick up soillayer.")
+    excava_soils = builder.get_remaining_soil_names()
+    print("[BUILD] Applied the soilayer status for phases.")
+
     print("[APPLY] apply phases …")
-    result = builder.apply_phases(warn_on_missing=True)
-    print("[APPLY] result:", result)
+    pit.phases[1].add_soils(excava_soils[0])
+    pit.phases[3].add_soils(excava_soils[1])
+    builder.apply_pit_soil_block()
+    print("[APPLY] Updated the status of soillayers")
 
     print(
         "\n[NOTE] Braces use 'ElasticBeam' as anchor-like members here."
         "\n[NOTE] PLAXIS assumes well discharge is evenly distributed along each well; "
         "if wells intersect other objects, consider splitting the well geometry."
     )
+
+
+#########################################################################
+# Next steps:
+# 1. Create a standard excavation with retaining structures
+# 2. Code the resultmapper to pick up the calculate result from the result panel.
+# ####################################################################### 

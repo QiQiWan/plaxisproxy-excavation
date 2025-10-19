@@ -164,6 +164,33 @@ class ExcavationBuilder:
                 if k not in loads:
                     loads[k] = []
 
+        try:
+            excava_depth = float(getattr(pit, "excava_depth", 0.0))
+        except Exception:
+            excava_depth = 0.0
+
+        walls_list = []
+        try:
+            # 按对象结构获取当前已定义的围护墙集合
+            walls_list = pit.structures.get("retaining_walls", []) if isinstance(pit.structures, dict) else []
+        except Exception:
+            walls_list = []
+
+        # default: do not create bottom surface
+        self._bottom_surface_ok = False
+
+        if excava_depth != 0.0 and walls_list and self._walls_form_closed_ring(walls_list):
+            z_shortest = self._shortest_wall_bottom_z(walls_list)
+            if excava_depth > z_shortest:
+                self._bottom_surface_ok = True
+            else:
+                errors.append(f"[check] Bottom surface NOT allowed: excava_depth={excava_depth:.3f} <= shortest wall bottom={z_shortest:.3f}")
+        else:
+            if excava_depth == 0.0:
+                errors.append("[check] excava_depth not set (0.0); bottom surface will not be created.")
+            else:
+                errors.append("[check] Walls do not form a closed ring; bottom surface will not be created.")
+
         # ---- Phases (optional at build-time; required only for apply_phases) ----
         phases = getattr(pit, "phases", None)
         if phases is None:
@@ -191,6 +218,95 @@ class ExcavationBuilder:
             f"name='{getattr(pit, 'name', '<unnamed>')}', "
             f"boreholes={bh_count}, walls={walls}, phases={len(pit.phases)}."
         )
+
+    # -------------------------------- Excavation volumn check --------------------------------
+
+    @staticmethod
+    def _walls_form_closed_ring(walls, tol: float = 1e-6) -> bool:
+        """
+        Minimal closure check in XY:
+        - need at least 3 walls;
+        - extents in both X and Y must be > tol.
+        """
+        if not walls or len(walls) < 3:
+            return False
+        xs, ys = [], []
+        for w in walls:
+            poly = getattr(w, "surface", None)
+            pts = poly.get_points() if (poly and hasattr(poly, "get_points")) else []
+            for p in pts:
+                xs.append(float(getattr(p, "x", 0.0)))
+                ys.append(float(getattr(p, "y", 0.0)))
+        if not xs or not ys:
+            return False
+        return (max(xs) - min(xs) > tol) and (max(ys) - min(ys) > tol)
+
+    @staticmethod
+    def _shortest_wall_bottom_z(walls) -> float:
+        """
+        'Shortest' wall = the one with the HIGHEST bottom z among walls.
+        For each wall, bottom z = min z of its surface points.
+        Return max of those bottoms (or -inf if none).
+        """
+        bottoms = []
+        for w in walls or []:
+            poly = getattr(w, "surface", None)
+            pts = poly.get_points() if (poly and hasattr(poly, "get_points")) else []
+            if not pts:
+                continue
+            zmin = min(float(getattr(p, "z", 0.0)) for p in pts)
+            bottoms.append(zmin)
+        return max(bottoms) if bottoms else float("-inf")
+
+    @staticmethod
+    def _collect_wall_xy_points(walls):
+        """
+        Collect all surface vertices of retaining walls (projected to XY).
+        """
+        pts2d = []
+        for w in walls or []:
+            poly = getattr(w, "surface", None)
+            pts = poly.get_points() if (poly and hasattr(poly, "get_points")) else []
+            for p in pts:
+                pts2d.append((float(p.x), float(p.y)))
+        return pts2d
+
+    @staticmethod
+    def _convex_hull_xy(points):
+        """
+        Monotone chain convex hull in 2D.
+        Returns vertices in counter-clockwise order, without repeating the first.
+        """
+        pts = sorted(set(points))
+        if len(pts) <= 2:
+            return pts
+        def cross(o, a, b):
+            return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+        lower = []
+        for p in pts:
+            while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+                lower.pop()
+            lower.append(p)
+        upper = []
+        for p in reversed(pts):
+            while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+                upper.pop()
+            upper.append(p)
+        hull = lower[:-1] + upper[:-1]
+        return hull
+
+    def _make_bottom_polygon3d(self, walls, z_value):
+        """
+        Build a Polygon3D at z=z_value using the wall-enclosed XY polygon.
+        We use convex hull of all wall surface vertices (assumes convex pit).
+        """
+        from src.plaxisproxy_excavation.geometry import Point, PointSet, Polygon3D
+        pts2d = self._collect_wall_xy_points(walls)
+        hull = self._convex_hull_xy(pts2d)
+        if len(hull) < 3:
+            return None
+        pts3d = [Point(x, y, z_value) for (x, y) in hull] + [Point(hull[0][0], hull[0][1], z_value)]
+        return Polygon3D.from_points(PointSet(pts3d))
 
     # -------------------------------------------------------------------------
     # Build (initial design only)
@@ -275,6 +391,28 @@ class ExcavationBuilder:
             except Exception as e:
                 print(f"[build] Warning: create_retaining_wall failed: {e}")
 
+        # ---------------- 5.1) Insert the bottom of the excavation -----------------------
+        try:
+            ok = bool(getattr(self, "_bottom_surface_ok", False))
+        except Exception:
+            ok = False
+
+        if ok:
+            try:
+                excava_depth = float(getattr(pit, "excava_depth", 0.0))
+                walls_now = pit.structures.get("retaining_walls", []) if isinstance(pit.structures, dict) else []
+
+                bottom_poly = self._make_bottom_polygon3d(walls_now, excava_depth)
+                if bottom_poly is None:
+                    print("[build] Warning: could not derive bottom polygon from walls (need >=3 points).")
+                else:
+                    app = self.App  # runner facade
+                    app.create_surface(bottom_poly, name="ExcavationBottom", auto_close=True)
+                    print(f"[build] Bottom surface created at z={excava_depth:.3f} using wall-enclosed polygon.")
+            except Exception as e:
+                print(f"[build] Warning: failed to create bottom surface: {e}")
+
+        # ---------------- 5.2) Create beams -----------------------
         for beam in structures.get("beams", []) or []:
             try:
                 app.create_beam(beam)
@@ -607,3 +745,107 @@ class ExcavationBuilder:
                 print(f"[apply_well_overrides_only] Warning: overrides on phase '{phase_key}' failed: {e}")
 
         return {"phases_updated": applied}
+
+    # =========================================================================================
+    # Excavation soillayers metthods
+    # =========================================================================================
+
+    def get_excavation_soil_names(self, *, prefer_volume: bool = True) -> list[str]:
+        """
+        Return candidate enclosed (pit) child clusters to excavate, discovered
+        in Staged Construction after build().
+        Selection per parent group:
+          - If volumes are available and prefer_volume=True: choose smallest volume.
+          - Else: choose smallest numeric suffix (e.g., *_1).
+        """
+        app = self.App
+        # make sure we are in stages (safe if already)
+        try:
+            app.goto_stages()
+        except Exception:
+            pass
+        return list(app.get_excavation_soil_names(prefer_volume=prefer_volume))
+
+    def get_remaining_soil_names(self, *, prefer_volume: bool = True) -> list[SoilBlock]:
+        """
+        Return remaining (non-excavated) child clusters, typically the larger pieces.
+        Useful for 'freeze during dewatering' policies.
+        """
+        app = self.App
+        try:
+            app.goto_stages()
+        except Exception:
+            pass
+        soil_blocks = []
+        soils_blocks_dict = app.get_excavation_soils(prefer_volume=prefer_volume)
+        for k, v in soils_blocks_dict.items():
+            sb = SoilBlock(v, f"Soil block {str(k)}")
+            sb.plx_id = k
+            soil_blocks.append(sb)
+
+        return soil_blocks
+
+    # -------------------------------------------------------------------------
+    # Soil blocks registration & application (names -> deactivate in a phase)
+    # -------------------------------------------------------------------------
+
+    def apply_soil_blocks(self, phase):
+        """
+        Resolve `phase.soil_blocks` (names -> PLAXIS soil handles) and perform
+        `deactivate` for each soil in the given phase handle (staged construction).
+
+        Notes:
+        - This is intentionally minimal and only performs 'deactivate', because
+            your requirement states "冻结土体" but the action specified is deactivate.
+        - If you later need "freeze (non-deformable)" instead, replace the action
+            with your project's freeze routine here.
+        """
+        try:
+            self.App.apply_deactivate_soilblock(phase)
+        except Exception as e:
+            print(f"[Warning] Deactivate soilblock in failed.")
+
+    def apply_pit_soil_block(self):
+        """
+        Apply deactivation of registered soil blocks for **all phases** in the
+        current excavation sequence.
+        """
+        for phase in self.excavation_object.phases:
+            self.apply_soil_blocks(phase)
+
+    def get_all_child_soils(self) -> list[SoilBlock]:
+        """
+        Return all split child soils as SoilBlock objects after build().
+
+        Each SoilBlock:
+        - name: PLAXIS soil cluster name (e.g., "Soil_2_1")
+        - description: simple label including the PLAXIS handle
+        - plx_id: the PLAXIS handle for direct operations later
+        """
+        app = self.App
+        # make sure we are in stages (safe if already)
+        try:
+            app.goto_stages()
+        except Exception:
+            pass
+
+        soil_blocks: list[SoilBlock] = []
+        # app.get_all_child_soils() is expected to return {handle -> name}
+        soils_map = app.get_all_child_soils()
+        for handle, name in soils_map.items():
+            sb = SoilBlock(name, f"Soil block {handle}")
+            sb.plx_id = handle
+            soil_blocks.append(sb)
+
+        return soil_blocks
+
+    def get_all_child_soil_names(self) -> list[str]:
+        """
+        Convenience wrapper returning only names (list).
+        """
+        app = self.App
+        try:
+            app.goto_stages()
+        except Exception:
+            pass
+        return app.get_all_child_soil_names()

@@ -424,7 +424,7 @@ class PlaxisRunner:
         if hasattr(PhaseMapper, "find_phase_by_name"):
             return PhaseMapper.find_phase_by_name(self.g_i, name)  # type: ignore
         try:
-            for ph in self.g_i.Phases[:]:
+            for ph in getattr(self.g_i, "Phases", [])[:]:
                 if getattr(ph, "Identification", None) == name:
                     return ph
         except Exception:
@@ -445,6 +445,69 @@ class PlaxisRunner:
             self.g_i,
             phase,
             warn_on_missing=warn_on_missing,
-            allow_recreate=allow_recreate,
-            sync_meta=sync_meta,
         )
+    
+    # ===================================================================================
+    # Soil helper
+    # ===================================================================================
+
+    def get_excavation_soils(self, phase=None, prefer_volume: bool = True) -> dict:
+        """
+        Return a dict {soil_handle -> soil_name} for enclosed (pit) pieces
+        selected per parent group:
+          - if volume available and prefer_volume=True: choose smallest volume
+          - else: choose smallest suffix index (e.g., *_1)
+        """
+        return PhaseMapper.guess_excavation_soil_names(
+            self.g_i, phase=phase, prefer_volume=prefer_volume
+        )
+
+    def get_excavation_soil_names(self, phase=None, prefer_volume: bool = True) -> list[str]:
+        """
+        Convenience wrapper returning only names (list), keeping backward compatibility.
+        """
+        m = self.get_excavation_soils(phase=phase, prefer_volume=prefer_volume)
+        return list(m.values())
+
+    # --- Remaining (non-excavated) child soils ---
+
+    def get_remaining_soils(self, phase=None, prefer_volume: bool = True) -> dict:
+        """
+        Return a dict {soil_handle -> soil_name} for the remaining child pieces
+        (i.e., not selected as excavation targets).
+        Useful for 'freeze during dewatering' policies.
+        """
+        groups = PhaseMapper.collect_split_groups(self.g_i, phase=phase)
+        exc_map = self.get_excavation_soils(phase=phase, prefer_volume=prefer_volume)
+        exc_names = set(exc_map.values())
+
+        remaining: dict = {}
+        for _, items in groups.items():
+            for handle, name, _, _ in items:
+                if name not in exc_names:
+                    remaining[handle] = name
+        return remaining
+
+    def get_remaining_soil_names(self, phase=None, prefer_volume: bool = True) -> list[str]:
+        """
+        Convenience wrapper returning only remaining names (list).
+        """
+        m = self.get_remaining_soils(phase=phase, prefer_volume=prefer_volume)
+        return list(m.values())
+    
+    def apply_deactivate_soilblock(self, phase: Phase):
+        """ Deactivate the selected soillayers in the specified phase. """
+        PhaseMapper.apply_deactivate_soilblock(self.g_i, phase)
+
+    def get_all_child_soils(self, phase=None) -> dict:
+        """
+        Forwarder: return {soil_handle -> soil_name} for ALL split child soils.
+        Only children with numeric suffix (Soil_k_1, Soil_k_2, ...) are included.
+        """
+        return PhaseMapper.get_all_child_soils(self.g_i, phase=phase)
+
+    def get_all_child_soil_names(self, phase=None) -> list[str]:
+        """
+        Convenience wrapper returning only names (list).
+        """
+        return list(self.get_all_child_soils(phase=phase).values())

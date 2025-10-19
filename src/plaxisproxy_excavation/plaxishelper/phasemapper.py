@@ -7,6 +7,7 @@ from ..components.phase import Phase
 from ..structures.basestructure import BaseStructure
 from ..components.phasesettings import *
 from .watertablemapper import WaterTableMapper
+from collections import defaultdict
 import re
 
 
@@ -1018,8 +1019,7 @@ class PhaseMapper:
         return False
 
     @staticmethod
-    def apply_well_overrides_dict(g_i: Any, phase: Phase,
-                                  overrides: Dict[str, Dict[str, Any]],
+    def apply_well_overrides_dict(g_i: Any, phase: Phase, overrides: Dict[str, Dict[str, Any]],
                                   *, warn_on_missing: bool = False) -> None:
         """
         Apply well parameter overrides per phase:
@@ -1151,3 +1151,193 @@ class PhaseMapper:
         finally:
             report["handle"] = getattr(phase, "plx_id", None)
         return report
+
+
+# ========================================================================================
+# Soil picker
+# ========================================================================================
+
+    @staticmethod
+    def _to_name(obj):
+        """Return the PLAXIS object name across API variants (obj.Name or obj.Name.value)."""
+        try:
+            return str(obj.Name.value)
+        except Exception:
+            try:
+                return str(obj.Name)
+            except Exception:
+                return ""
+
+    @staticmethod
+    def _enter_stages(g_i):
+        """Switch to the Staged construction view (safe to call multiple times)."""
+        try:
+            g_i.gotostages()
+        except Exception:
+            # Some versions may use a different command; if it fails, keep going.
+            pass
+
+    @staticmethod
+    def _iter_split_soils_in_stages(g_i, phase=None):
+        """
+        Read soils AFTER they have been split by retaining structures.
+        Must be called from the Staged view; otherwise child names (Soil_k_1, Soil_k_2, ...) are not visible.
+
+        Args:
+            g_i: PLAXIS Input object.
+            phase: optional phase handle; InitialPhase is used if not provided.
+
+        Returns:
+            List of tuples (handle, name) for split soil bodies.
+        """
+        PhaseMapper._enter_stages(g_i)
+
+        # Choose a phase (InitialPhase preferred, but not strictly required just to read names)
+        try:
+            ph = phase or g_i.InitialPhase
+        except Exception:
+            try:
+                ph = g_i.Phases[0]
+            except Exception:
+                ph = None  # Not used further; kept for future extension
+
+        items = []
+        try:
+            for s in g_i.Soils:
+                nm = PhaseMapper._to_name(s)
+                if nm:
+                    items.append((s, nm))
+        except Exception:
+            # If Soils is not available for any reason, return empty list
+            pass
+        return items
+
+    @staticmethod
+    def _parse_parent_and_index(soil_name):
+        """
+        Parse names like:
+            'Soil_2_1' -> parent='Soil_2', idx=1
+            'Soil_2'   -> parent='Soil_2', idx=None
+
+        Returns:
+            (parent_name, index_or_None)
+        """
+        m = re.match(r'^(Soil_\d+)(?:_(\d+))?$', soil_name)
+        if not m:
+            return None, None
+        parent = m.group(1)
+        idx = int(m.group(2)) if m.group(2) is not None else None
+        return parent, idx
+
+    @staticmethod
+    def collect_split_groups(g_i, phase=None):
+        """
+        Group split child soils by their parent.
+
+        Returns:
+            dict:
+            parent_name -> list of tuples (handle, name, idx, volume_or_None)
+            Only child pieces with a numeric suffix are included (Soil_k_1, Soil_k_2, ...).
+
+        Note:
+            This function does NOT filter on the number of children; the
+            filtering (>=2 children) is done in guess_excavation_soils().
+        """
+        groups = defaultdict(list)
+        for h, nm in PhaseMapper._iter_split_soils_in_stages(g_i, phase):
+            parent, idx = PhaseMapper._parse_parent_and_index(nm)
+            if parent is None or idx is None:
+                continue
+
+            # Try to read volume; API attributes may differ by version
+            vol = None
+            for attr in ("Volume", "volume", "V"):
+                try:
+                    vol = float(getattr(h, attr))
+                    break
+                except Exception:
+                    pass
+
+            groups[parent].append((h, nm, idx, vol))
+        return groups
+
+    @staticmethod
+    def get_all_child_soils(g_i, phase=None) -> Dict[Any, str]:
+        """
+        Return a flat dict of ALL split child soils visible in Staged view:
+            { soil_handle -> soil_name }
+        Only children with numeric suffix (Soil_k_1, Soil_k_2, ...) are included.
+        """
+        PhaseMapper._enter_stages(g_i)
+        groups = PhaseMapper.collect_split_groups(g_i, phase=phase)
+        flat: Dict[Any, str] = {}
+        for _, items in groups.items():
+            for handle, name, _, _ in items:
+                flat[handle] = name
+        return flat
+
+    @staticmethod
+    def get_all_child_soil_names(g_i, phase=None) -> List[str]:
+        """
+        Convenience wrapper returning only names (list), preserving insertion order.
+        """
+        return list(PhaseMapper.get_all_child_soils(g_i, phase=phase).values())
+
+    @staticmethod
+    def guess_excavation_soils(g_i, phase=None, prefer_volume=True):
+        """
+        Pick the excavated (enclosed) soil pieces before creating excavation phases.
+
+        Rules per parent group:
+        - Ignore parents that have ONLY ONE child (i.e., only *_1 and no *_2):
+            they are NOT considered excavation candidates.
+        - If volume is available AND prefer_volume is True: pick the smallest volume.
+        - Otherwise: pick the smallest numeric suffix (idx=1).
+        """
+        PhaseMapper._enter_stages(g_i)
+        groups = PhaseMapper.collect_split_groups(g_i, phase)
+        results = []
+        for parent, items in groups.items():
+            # NEW: skip parents with a single child (e.g., only Soil_k_1)
+            if len(items) < 2:
+                continue
+            if prefer_volume and all(v[3] is not None for v in items):
+                pick = min(items, key=lambda x: x[3])   # by volume
+            else:
+                pick = min(items, key=lambda x: x[2])   # by suffix index
+            results.append(pick[0])  # handle
+        return results
+
+    @staticmethod
+    def guess_excavation_soil_names(g_i, phase=None, prefer_volume: bool = True) -> Dict[Any, str]:
+        """
+        Return a dict mapping { soil_handle -> soil_name } for the candidate
+        enclosed (pit) soil clusters, discovered in Staged view.
+
+        Selection per parent group:
+          - If volumes are available and prefer_volume=True: choose smallest volume.
+          - Else: choose smallest numeric suffix (idx=1).
+
+        Note:
+          Python dict preserves insertion order; order follows the handle list returned
+          by guess_excavation_soils(...).
+        """
+        handles: List[Any] = PhaseMapper.guess_excavation_soils(
+            g_i, phase=phase, prefer_volume=prefer_volume
+        )
+        return {h: PhaseMapper._to_name(h) for h in handles}
+
+    # --- optional legacy helper (keep if some code still expects a list of names) ---
+    @staticmethod
+    def guess_excavation_soil_names_list(g_i, phase=None, prefer_volume: bool = True) -> List[str]:
+        """
+        Legacy convenience: return only names (list) for logging/inspection.
+        """
+        m = PhaseMapper.guess_excavation_soil_names(g_i, phase=phase, prefer_volume=prefer_volume)
+        return list(m.values())
+
+    @staticmethod
+    def apply_deactivate_soilblock(g_i, phase: Phase):
+        """ Deactivate the selected soillayers in the specified phase. """
+        for soil_block in phase.soil_blocks:
+            PhaseMapper._deactivate(g_i, soil_block.plx_id, phase.plx_id)

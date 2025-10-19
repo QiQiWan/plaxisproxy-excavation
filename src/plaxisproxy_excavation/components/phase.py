@@ -224,6 +224,25 @@ class Phase(PlaxisObject):
             }
         }
 
+    # ---------------------- Soil block helper ----------------------
+    def set_soil_overrides(self, overrides: Optional[Dict[str, Dict[str, bool]]]) -> "Phase":
+        """
+        Declare per-soil behavior for this phase. Example:
+            {
+              "Soil_2_1": {"active": False},                 # excavate this piece
+              "Soil_2_2": {"deformable": False},             # freeze this piece (flow-only)
+              "Soil_5_3": {"active": True, "deformable": True}
+            }
+        Notes:
+          - Omitted keys are left unchanged by the builder.
+          - This method only stores intent; the builder applies it to PLAXIS when creating the phase.
+        """
+        self._soil_overrides: Dict[str, Dict[str, bool]] = overrides or {}
+        return self
+
+    def get_soil_overrides(self) -> Dict[str, Dict[str, bool]]:
+        return getattr(self, "_soil_overrides", {})
+
     # ---------------------- (de)serialization ----------------------
     def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
