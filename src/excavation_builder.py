@@ -20,6 +20,112 @@ via a PlaxisRunner adapter. It builds only the *initial design*; phase
 options/activations and per-phase water/well overrides are applied later.
 """
 
+def _segments_from_wall_surfaces(walls, tol=1e-6):
+    """
+    Derive 2D axis-aligned segments from each wall surface by reading its outer ring.
+    For a rectangular vertical wall:
+    - If x is (nearly) constant and y varies: vertical segment (x, y1)–(x, y2).
+    - If y is (nearly) constant and x varies: horizontal segment (x1, y)–(x2, y).
+    Returns: [((x1,y1),(x2,y2)), ...] with snapping to 'tol'.
+    """
+    segs = []
+
+    def snap(v): return round(float(v) / tol) * tol
+
+    for w in (walls or []):
+        surf = getattr(w, "surface", None)
+        if surf is None:
+            continue
+        try:
+            ring = surf.outer_ring               # Line3D
+            pts = ring.get_points()              # [Point]
+        except Exception:
+            continue
+
+        xs = [p.x for p in pts]
+        ys = [p.y for p in pts]
+        x_lo, x_hi = min(xs), max(xs)
+        y_lo, y_hi = min(ys), max(ys)
+
+        # Detect orientation by span size
+        span_x = abs(x_hi - x_lo)
+        span_y = abs(y_hi - y_lo)
+
+        # Heuristics:
+        # - rect_wall_x: x is constant (span_x ~ 0), y varies
+        # - rect_wall_y: y is constant (span_y ~ 0), x varies
+        if span_x <= tol and span_y > tol:
+            x = snap((x_lo + x_hi) * 0.5)
+            segs.append(((x, snap(y_lo)), (x, snap(y_hi))))
+        elif span_y <= tol and span_x > tol:
+            y = snap((y_lo + y_hi) * 0.5)
+            segs.append(((snap(x_lo), y), (snap(x_hi), y)))
+        else:
+            # Non-rectangular or too small; ignore
+            continue
+
+    # Optional: merge collinear intervals along same x or y to reduce redundancy
+    return _merge_collinear_xy(segs, tol=tol)
+
+
+def _merge_collinear_xy(segs, tol=1e-6):
+    """Merge collinear, touching axis-aligned segments: tiny, clear 1D union."""
+    from collections import defaultdict
+
+    def snap(v): return round(v / tol) * tol
+
+    vertical = defaultdict(list)   # x -> [(y1,y2)]
+    horizontal = defaultdict(list) # y -> [(x1,x2)]
+
+    for (x1, y1), (x2, y2) in segs:
+        x1, y1, x2, y2 = snap(x1), snap(y1), snap(x2), snap(y2)
+        if abs(x1 - x2) <= tol:
+            y1, y2 = (y1, y2) if y1 <= y2 else (y2, y1)
+            vertical[x1].append((y1, y2))
+        elif abs(y1 - y2) <= tol:
+            x1, x2 = (x1, x2) if x1 <= x2 else (x2, x1)
+            horizontal[y1].append((x1, x2))
+
+    def merge_1d(intervals):
+        if not intervals: return []
+        intervals.sort()
+        out = [list(intervals[0])]
+        for a, b in intervals[1:]:
+            if a <= out[-1][1] + tol:
+                out[-1][1] = max(out[-1][1], b)
+            else:
+                out.append([a, b])
+        return [tuple(p) for p in out]
+
+    merged = []
+    for x, ys in vertical.items():
+        for y1, y2 in merge_1d(ys):
+            merged.append(((x, y1), (x, y2)))
+    for y, xs in horizontal.items():
+        for x1, x2 in merge_1d(xs):
+            merged.append(((x1, y), (x2, y)))
+    return merged
+
+
+def _signed_area_xy(verts_xy):
+    """Shoelace area on (x,y) verts; >0 means CCW."""
+    if len(verts_xy) < 3:
+        return 0.0
+    s = 0.0
+    for (x1, y1), (x2, y2) in zip(verts_xy, verts_xy[1:] + verts_xy[:1]):
+        s += x1 * y2 - x2 * y1
+    return 0.5 * s
+
+
+def _log(self, msg):
+    """Mirror logs to both print and a builder `msg` list if present."""
+    try:
+        print(msg)
+    finally:
+        if hasattr(self, "msg") and isinstance(self.msg, list):
+            self.msg.append(str(msg))
+
+
 
 class ExcavationBuilder:
     """
@@ -295,18 +401,92 @@ class ExcavationBuilder:
         hull = lower[:-1] + upper[:-1]
         return hull
 
-    def _make_bottom_polygon3d(self, walls, z_value):
+    def _make_bottom_polygon3d(self, walls, z_value, tol=1e-6):
         """
-        Build a Polygon3D at z=z_value using the wall-enclosed XY polygon.
-        We use convex hull of all wall surface vertices (assumes convex pit).
+        Build the excavation bottom polygon at z = z_value directly from wall surfaces.
+        Assumptions:
+        - Each wall surface is a rectangular vertical plane made by rect_wall_x / rect_wall_y.
+        - The outline is a single closed rectilinear loop.
+
+        Steps:
+        1) For each wall, read surface.outer_ring points.
+        2) Detect if the wall is x-const or y-const; create a 2D segment at z=z_value.
+        3) Check graph degrees (each vertex must have degree 2).
+        4) Trace the unique loop and lift to 3D.
+
+        Returns:
+        Polygon3D or None if outline cannot be reconstructed.
         """
-        from src.plaxisproxy_excavation.geometry import Point, PointSet, Polygon3D
-        pts2d = self._collect_wall_xy_points(walls)
-        hull = self._convex_hull_xy(pts2d)
-        if len(hull) < 3:
+        from src.plaxisproxy_excavation.geometry import Point, PointSet, Line3D, Polygon3D
+
+        segs = _segments_from_wall_surfaces(walls, tol=tol)
+        if not segs:
+            _log(self, "[bottom] No wall segments derived from surfaces.")
             return None
-        pts3d = [Point(x, y, z_value) for (x, y) in hull] + [Point(hull[0][0], hull[0][1], z_value)]
-        return Polygon3D.from_points(PointSet(pts3d))
+
+        # Build adjacency (snapped) and validate degrees
+        def snap(v): return round(float(v) / tol) * tol
+        def kxy(x, y): return (snap(x), snap(y))
+
+        adj = {}
+        for (x1, y1), (x2, y2) in segs:
+            a, b = kxy(x1, y1), kxy(x2, y2)
+            adj.setdefault(a, set()).add(b)
+            adj.setdefault(b, set()).add(a)
+
+        if not adj:
+            _log(self, "[bottom] Empty adjacency.")
+            return None
+
+        # Every node must have degree 2 for a single simple loop
+        bad = [(n, len(N)) for n, N in adj.items() if len(N) != 2]
+        if bad:
+            _log(self, f"[bottom] Open or branched graph: {len(bad)} non-2-degree nodes (e.g. {bad[:3]}).")
+            return None
+
+        # Trace the loop deterministically (start at lexicographically smallest node)
+        start = min(adj.keys())
+        loop = [start]
+        prev, curr = None, start
+
+        # Next neighbor helper: avoid immediately going back to prev
+        def next_of(u, p):
+            nbrs = sorted(adj[u])     # deterministic
+            if p is None:
+                return nbrs[0]
+            return nbrs[1] if len(nbrs) == 2 and nbrs[0] == p else nbrs[0]
+
+        # Walk until we return to start
+        for _ in range(len(adj) + len(segs) + 4):
+            nxt = next_of(curr, prev)
+            loop.append(nxt)
+            if nxt == start:
+                break
+            prev, curr = curr, nxt
+
+        # Validate closure and produce simple (x,y) list without the duplicated end
+        if len(loop) < 4 or loop[0] != loop[-1]:
+            _log(self, "[bottom] Failed to close the loop.")
+            return None
+
+        verts2d = loop[:-1]  # drop duplicate start
+        # Ensure CCW orientation for consistent normals
+        if _signed_area_xy(verts2d) < 0:
+            verts2d.reverse()
+
+        # Build Polygon3D
+        pts3d = [Point(x, y, z_value) for (x, y) in verts2d] + [Point(verts2d[0][0], verts2d[0][1], z_value)]
+        ring = Line3D(PointSet(pts3d))
+        try:
+            poly = Polygon3D([ring], require_horizontal=False)
+        except Exception as e:
+            _log(self, f"[bottom] Polygon3D construction failed: {e}")
+            return None
+
+        _log(self, f"[bottom] Bottom loop OK: {len(verts2d)} vertices; area={poly.area() if hasattr(poly,'area') else '?'}")
+        return poly
+
+
 
     # -------------------------------------------------------------------------
     # Build (initial design only)
@@ -378,11 +558,11 @@ class ExcavationBuilder:
 
         # ---------------- 4) Geometries / soil blocks (optional) ---------------
         structures = getattr(pit, "structures", {}) or {}
-        for blk in structures.get("soil_blocks", []) or []:
-            try:
-                app.create_soil_block(blk)
-            except Exception as e:
-                print(f"[build] Warning: create_soil_block failed: {e}")
+        # for blk in structures.get("soil_blocks", []) or []:
+        #     try:
+        #         app.create_soil_block(blk)
+        #     except Exception as e:
+        #         print(f"[build] Warning: create_soil_block failed: {e}")
 
         # ---------------- 5) Structures (including wells) ----------------------
         for wall in structures.get("retaining_walls", []) or []:
@@ -832,12 +1012,29 @@ class ExcavationBuilder:
         soil_blocks: list[SoilBlock] = []
         # app.get_all_child_soils() is expected to return {handle -> name}
         soils_map = app.get_all_child_soils()
-        for handle, name in soils_map.items():
+        for name, handle in soils_map.items():
             sb = SoilBlock(name, f"Soil block {handle}")
             sb.plx_id = handle
             soil_blocks.append(sb)
 
         return soil_blocks
+
+    def get_all_child_soils_dict(self) -> dict[str, SoilBlock]:
+        app = self.App
+        try:
+            app.goto_stages()
+        except Exception:
+            pass
+
+        soil_blocks_dict: dict[str, SoilBlock] = {}
+        # app.get_all_child_soils() is expected to return {handle -> name}
+        soils_map = app.get_all_child_soils()
+        for name, handle in soils_map.items():
+            sb = SoilBlock(name, f"Soil block {handle}")
+            sb.plx_id = handle
+            soil_blocks_dict[name] = sb
+
+        return soil_blocks_dict
 
     def get_all_child_soil_names(self) -> list[str]:
         """

@@ -215,8 +215,8 @@ def assemble_pit(runner: Optional[PlaxisRunner] = None) -> FoundationPit:
         stress_unit=Units.Stress.KPA,
         time_unit=Units.Time.DAY,
         gamma_water=9.81,
-        x_min=-25, x_max=25,   # 50 in X
-        y_min=-40, y_max=40,   # 80 in Y
+        x_min=-345, x_max=345,   # 50 in X
+        y_min=-50, y_max=50,   # 80 in Y
     )
 
     pit = FoundationPit(project_information=proj)
@@ -239,35 +239,87 @@ def assemble_pit(runner: Optional[PlaxisRunner] = None) -> FoundationPit:
         E_ref=15e6, c_ref=5e3, phi=25.0, psi=0.0, nu=0.30,
         gamma=18.0, gamma_sat=20.0, e_init=0.60
     )
-    sand = SoilMaterialFactory.create(
-        SoilMaterialsType.MC, name="Sand",
+    soft_clay = SoilMaterialFactory.create(
+        SoilMaterialsType.MC, name="Soft_Clay",
+        E_ref=10e6, c_ref=18e3, phi=20.0, psi=0.0, nu=0.35,
+        gamma=17.5, gamma_sat=19.0, e_init=0.95
+    )
+    silty_clay = SoilMaterialFactory.create(
+        SoilMaterialsType.MC, name="Silty_Clay",
+        E_ref=18e6, c_ref=12e3, phi=23.0, psi=0.0, nu=0.33,
+        gamma=18.0, gamma_sat=19.5, e_init=0.85
+    )
+    fine_sand = SoilMaterialFactory.create(
+        SoilMaterialsType.MC, name="Fine_Sand",
         E_ref=35e6, c_ref=1e3, phi=32.0, psi=2.0, nu=0.30,
         gamma=19.0, gamma_sat=21.0, e_init=0.55
     )
-    clay = SoilMaterialFactory.create(
-        SoilMaterialsType.MC, name="Clay",
-        E_ref=12e6, c_ref=15e3, phi=22.0, psi=0.0, nu=0.35,
-        gamma=17.0, gamma_sat=19.0, e_init=0.90
+    medium_sand = SoilMaterialFactory.create(
+        SoilMaterialsType.MC, name="Medium_Sand",
+        E_ref=60e6, c_ref=1e3, phi=35.0, psi=3.0, nu=0.28,
+        gamma=19.5, gamma_sat=21.5, e_init=0.50
     )
-    for m in (fill, sand, clay):
+    gravelly_sand = SoilMaterialFactory.create(
+        SoilMaterialsType.MC, name="Gravelly_Sand",
+        E_ref=90e6, c_ref=1e3, phi=38.0, psi=5.0, nu=0.26,
+        gamma=20.0, gamma_sat=22.0, e_init=0.45
+    )
+    cdg = SoilMaterialFactory.create(
+        SoilMaterialsType.MC, name="Completely_Decomposed_Rock",
+        E_ref=120e6, c_ref=25e3, phi=36.0, psi=4.0, nu=0.26,
+        gamma=20.5, gamma_sat=22.5, e_init=0.40
+    )
+    mwr = SoilMaterialFactory.create(
+        SoilMaterialsType.MC, name="Moderately_Weathered_Rock",
+        E_ref=250e6, c_ref=40e3, phi=40.0, psi=6.0, nu=0.25,
+        gamma=21.0, gamma_sat=22.8, e_init=0.35
+    )
+
+    for m in (fill, soft_clay, silty_clay, fine_sand, medium_sand, gravelly_sand, cdg, mwr):
         pit.add_material("soil_materials", m)
 
-    # 3) Boreholes & layers
-    sl_fill, sl_sand, sl_clay = SoilLayer("Fill", material=fill), SoilLayer("Sand", material=sand), SoilLayer("Clay", material=clay)
+    # 2) Canonical SoilLayer objects (referenced by BoreholeLayer below)
+    sl_fill = SoilLayer("Fill", material=fill)
+    sl_soft_clay = SoilLayer("Soft_Clay", material=soft_clay)
+    sl_silty_clay = SoilLayer("Silty_Clay", material=silty_clay)
+    sl_fine_sand = SoilLayer("Fine_Sand", material=fine_sand)
+    sl_medium_sand = SoilLayer("Medium_Sand", material=medium_sand)
+    sl_gravelly_sand = SoilLayer("Gravelly_Sand", material=gravelly_sand)
+    sl_cdg = SoilLayer("Completely_Decomposed_Rock", material=cdg)
+    sl_mwr = SoilLayer("Moderately_Weathered_Rock", material=mwr)
 
+    # 3) Boreholes & layers — 总厚度精确到 50 m（0 → -50）
+    #    BH1 与 BH2 做了轻微层厚差异以更贴近工程实际；二者底标高均为 -50.0
+
+    # BH1 分层边界（m）：0, -3, -10, -15, -21, -29, -35, -42, -50
     bh1_layers = [
-        BoreholeLayer("Fill@BH1",  0.0, -1.5, sl_fill),
-        BoreholeLayer("Sand@BH1", -1.5, -8.0, sl_sand),
-        BoreholeLayer("Clay@BH1", -8.0, -25.0, sl_clay),
+        BoreholeLayer("Fill@BH1",                      0.0,  -3.0,  sl_fill),
+        BoreholeLayer("Soft_Clay@BH1",                -3.0, -10.0,  sl_soft_clay),
+        BoreholeLayer("Silty_Clay@BH1",              -10.0, -15.0,  sl_silty_clay),
+        BoreholeLayer("Fine_Sand@BH1",               -15.0, -21.0,  sl_fine_sand),
+        BoreholeLayer("Medium_Sand@BH1",             -21.0, -29.0,  sl_medium_sand),
+        BoreholeLayer("Gravelly_Sand@BH1",           -29.0, -35.0,  sl_gravelly_sand),
+        BoreholeLayer("Completely_Decomposed_Rock@BH1",-35.0, -42.0, sl_cdg),
+        BoreholeLayer("Moderately_Weathered_Rock@BH1", -42.0, -50.0, sl_mwr),
     ]
+
+    # BH2 分层边界（m）：0, -2.5, -9.0, -14.5, -20.5, -29.5, -36.0, -43.0, -50
     bh2_layers = [
-        BoreholeLayer("Fill@BH2",  0.0, -1.0, sl_fill),
-        BoreholeLayer("Sand@BH2", -1.0, -7.0, sl_sand),
-        BoreholeLayer("Clay@BH2", -7.0, -25.0, sl_clay),
+        BoreholeLayer("Fill@BH2",                       0.0,  -2.5,  sl_fill),
+        BoreholeLayer("Soft_Clay@BH2",                 -2.5,  -9.0,  sl_soft_clay),
+        BoreholeLayer("Silty_Clay@BH2",                -9.0, -14.5,  sl_silty_clay),
+        BoreholeLayer("Fine_Sand@BH2",                -14.5, -20.5,  sl_fine_sand),
+        BoreholeLayer("Medium_Sand@BH2",              -20.5, -29.5,  sl_medium_sand),
+        BoreholeLayer("Gravelly_Sand@BH2",            -29.5, -36.0,  sl_gravelly_sand),
+        BoreholeLayer("Completely_Decomposed_Rock@BH2",-36.0, -43.0,  sl_cdg),
+        BoreholeLayer("Moderately_Weathered_Rock@BH2", -43.0, -50.0,  sl_mwr),
     ]
+
     bh1 = Borehole("BH_1", Point(-10, 0, 0), 0.0, layers=bh1_layers, water_head=-1.5)
     bh2 = Borehole("BH_2", Point( 10, 0, 0), 0.0, layers=bh2_layers, water_head=-1.0)
-    pit.borehole_set = BoreholeSet(name="BHSet", boreholes=[bh1, bh2], comment="Demo set")
+
+    pit.borehole_set = BoreholeSet(name="BHSet", boreholes=[bh1, bh2], comment="50m stack with multiple strata")
+
 
     # 4) Pit layout
     X0, Y0 = 0.0, 0.0
@@ -275,8 +327,8 @@ def assemble_pit(runner: Optional[PlaxisRunner] = None) -> FoundationPit:
     Z_TOP  = 0.0
     Z_L1   = -4.0
     Z_L2   = -8.0
-    Z_EXC_BOTTOM = -10.0
-    Z_WALL_BOTTOM = -16.0
+    Z_EXC_BOTTOM = -9.0
+    Z_WALL_BOTTOM = -24
     Z_WELL_BOTTOM = -18.0
 
     # 5) Structure materials
@@ -286,43 +338,89 @@ def assemble_pit(runner: Optional[PlaxisRunner] = None) -> FoundationPit:
     pit.add_material("beam_materials",  brace_mat)
 
     # 6) Diaphragm walls
-    xL, xR = X0 - W/2, X0 + W/2
-    yB, yT = Y0 - H/2, Y0 + H/2
-    west_wall  = RetainingWall(name="DWall_W", surface=rect_wall_x(xL, yB, yT, Z_TOP, Z_WALL_BOTTOM), plate_type=dwall_mat)
-    east_wall  = RetainingWall(name="DWall_E", surface=rect_wall_x(xR, yB, yT, Z_TOP, Z_WALL_BOTTOM), plate_type=dwall_mat)
-    south_wall = RetainingWall(name="DWall_S", surface=rect_wall_y(yB, xL, xR, Z_TOP, Z_WALL_BOTTOM), plate_type=dwall_mat)
-    north_wall = RetainingWall(name="DWall_N", surface=rect_wall_y(yT, xL, xR, Z_TOP, Z_WALL_BOTTOM), plate_type=dwall_mat)
-    for w in (west_wall, east_wall, south_wall, north_wall):
+    wall_specs = [
+        ("wall_start", "x", -115.0, -14, 14),
+
+        ("wall_b_1", "y", -14, -115, -99),
+        ("wall_b_2", "x", -99,  -14,  -12),
+        ("wall_b_3", "y", -12,  -99,  -39),
+        ("wall_b_4", "x", -39,  -12,  -16.5),
+        ("wall_b_5", "y", -16.5, -39, -13),
+        ("wall_b_6", "x", -13,  -16.5, -12),
+        ("wall_b_7", "y", -12,  -13,   98),
+        ("wall_b_8", "x",  98,  -12,  -14.5),
+        ("wall_b_9", "y", -14.5, 98,  115),
+
+        ("wall_end", "x", 115, -14.5, 14.5),
+
+        # 顶部镜像段
+        ("wall_t_1", "y", 14,   -115, -99),
+        ("wall_t_2", "x", -99,    12,   14),
+        ("wall_t_3", "y", 12,    -99,  -39),
+        ("wall_t_4", "x", -39,    12,  16.5),
+        ("wall_t_5", "y", 16.5,  -39,  -13),
+        ("wall_t_6", "x", -13,    12,  16.5),
+        ("wall_t_7", "y", 12,    -13,   98),
+        ("wall_t_8", "x",  98,    12,  14.5),
+        ("wall_t_9", "y", 14.5,   98,  115),
+    ]
+
+    def mk_surface(ori, a, b, c):
+        return rect_wall_x(a, b, c, Z_TOP, Z_WALL_BOTTOM) if ori == "x" \
+            else rect_wall_y(a, b, c, Z_TOP, Z_WALL_BOTTOM)
+
+    walls = [
+        RetainingWall(name=n, surface=mk_surface(o, a, b, c), plate_type=dwall_mat)
+        for (n, o, a, b, c) in wall_specs
+    ]
+
+    for w in walls:
         pit.add_structure("retaining_walls", w)
 
     pit.excava_depth = Z_EXC_BOTTOM
-    # 7) Horizontal braces (two levels)
+    
+    # 7) Horizontal braces
     off = 0.8
     braces_L1: List[Beam] = []
     braces_L2: List[Beam] = []
+    braces_L3: List[Beam] = []
+    buckets = [braces_L1, braces_L2, braces_L3]
 
     def add_brace(name: str, p0: Tuple[float, float, float], p1: Tuple[float, float, float], bucket: List[Beam]):
         b = Beam(name=name, line=line_2pts(p0, p1), beam_type=brace_mat)
         pit.add_structure("beams", b)
         bucket.append(b)
+    
+    anchor_pts_b = [[-110, -14], [-105, -14], [-98.5, -12], [-92.5, -12], [-86.5, -12], [-77.5, -12], [-68.5, -12], [-60.5, -12], [-52.5, -12], [-47, -12], [-38, -16.5], [-33.7, -16.5], [-27, -16.5], [-20, -16.5], [-9, -13], [-2.3, -13], [4.5, -13], [12.5, -13], [21.5, -13], [30.5, -13], [39.5, -13], [48.5, -13], [57.5, -13], [66.5, -13], [75.5, -13], [84.5, -13], [92.5, -13], [98.5, -13], [110, -14.5], [105, -14.5], [-110, 14], [-105, 14], [105, 14.5], [110, 14.5]]
+    anchor_pts_t = [[-115, -9.2], [-115, -4.39], [-98.5, 12], [-92.5, 12], [-86.5, 12], [-77.5, 12], [-68.5, 12], [-60.5, 12], [-52.5, 12], [-47, 12], [-38, 16.5], [-33.7, 16.5], [-27, 16.5], [-20, 16.5], [-9, 13], [-2.3, 13], [4.5, 13], [12.5, 13], [21.5, 13], [30.5, 13], [39.5, 13], [48.5, 13], [57.5, 13], [66.5, 13], [75.5, 13], [84.5, 13], [92.5, 13], [98.5, 13], [115, -9.2], [115, -4.39], [-115, 9.2], [-115, 4.39], [115, 4.39], [115, 9.2]]
 
-    for z, bucket in ((Z_L1, braces_L1), (Z_L2, braces_L2)):
-        add_brace(f"Brace_X_{abs(int(z))}", (xL + off, Y0, z), (xR - off, Y0, z), bucket)
-        add_brace(f"Brace_Y_{abs(int(z))}", (X0, yB + off, z), (X0, yT - off, z), bucket)
-        # optional diagonals
-        add_brace(f"Brace_WN_{abs(int(z))}", (xL + off, Y0, z), (X0, yT - off, z), bucket)
-        add_brace(f"Brace_WS_{abs(int(z))}", (xL + off, Y0, z), (X0, yB + off, z), bucket)
-        add_brace(f"Brace_EN_{abs(int(z))}", (xR - off, Y0, z), (X0, yT - off, z), bucket)
-        add_brace(f"Brace_ES_{abs(int(z))}", (xR - off, Y0, z), (X0, yB + off, z), bucket)
+    L_depths = (0, 3.1, 6.1)
+    for z in range(len(L_depths)):
+        for i in range(len(anchor_pts_b)):
+            add_brace(f"Brace_{i + 1}", (*anchor_pts_b[i], z), (*anchor_pts_t[i],z ), buckets[z])
+    
 
-    # 8) Wells (perimeter + grid, then dedupe)
-    wells: List[Well] = []
-    wells += ring_wells("W", xL, yB, W, H, z_top=Z_TOP, z_bot=Z_WELL_BOTTOM, spacing=4.0, clearance=0.8)
-    wells += grid_wells("W", xL, yB, W, H, z_top=Z_TOP, z_bot=Z_WELL_BOTTOM, dx=6.0, dy=6.0, margin=2.0)
-    wells_unique, wells_dupes, _ = dedupe_wells_by_line(wells, tol=1e-6, keep="first")
-    print(f"[DEDUPE] wells total={len(wells)}, unique={len(wells_unique)}, dupes={len(wells_dupes)}")
-    for w in wells_unique:
-        pit.add_structure("wells", w)
+
+
+    
+
+    # for z, bucket in ((Z_L1, braces_L1), (Z_L2, braces_L2)):
+    #     add_brace(f"Brace_X_{abs(int(z))}", (xL + off, Y0, z), (xR - off, Y0, z), bucket)
+    #     add_brace(f"Brace_Y_{abs(int(z))}", (X0, yB + off, z), (X0, yT - off, z), bucket)
+    #     # optional diagonals
+    #     add_brace(f"Brace_WN_{abs(int(z))}", (xL + off, Y0, z), (X0, yT - off, z), bucket)
+    #     add_brace(f"Brace_WS_{abs(int(z))}", (xL + off, Y0, z), (X0, yB + off, z), bucket)
+    #     add_brace(f"Brace_EN_{abs(int(z))}", (xR - off, Y0, z), (X0, yT - off, z), bucket)
+    #     add_brace(f"Brace_ES_{abs(int(z))}", (xR - off, Y0, z), (X0, yB + off, z), bucket)
+
+    # # 8) Wells (perimeter + grid, then dedupe)
+    # wells: List[Well] = []
+    # wells += ring_wells("W", xL, yB, W, H, z_top=Z_TOP, z_bot=Z_WELL_BOTTOM, spacing=4.0, clearance=0.8)
+    # wells += grid_wells("W", xL, yB, W, H, z_top=Z_TOP, z_bot=Z_WELL_BOTTOM, dx=6.0, dy=6.0, margin=2.0)
+    # wells_unique, wells_dupes, _ = dedupe_wells_by_line(wells, tol=1e-6, keep="first")
+    # print(f"[DEDUPE] wells total={len(wells)}, unique={len(wells_unique)}, dupes={len(wells_dupes)}")
+    # for w in wells_unique:
+    #     pit.add_structure("wells", w)
 
     # 9) Phases — use Phase API methods: set_inherits / activate_structures / set_water_table / set_well_overrides
     st_init  = PlasticStageSettings(load_type=LoadType.StageConstruction, max_steps=120, time_interval=0.5)
@@ -355,13 +453,19 @@ def assemble_pit(runner: Optional[PlaxisRunner] = None) -> FoundationPit:
         ph3.set_soil_overrides(mk_soil_overrides(remain_names, deformable=True))
 
     # activation lists (structures)
-    ph0.activate_structures(west_wall, east_wall, south_wall, north_wall)
-    ph1.activate_structures(*braces_L1)
-    ph2.activate_structures(*wells_unique)
-    ph3.activate_structures(*braces_L2)
+    ph0.activate_structures(walls)
+    ph0.activate_structures(braces_L1)
+    ph1.activate_structures(braces_L2)
+    ph3.activate_structures(braces_L3)
+    
+
+
+    # ph1.activate_structures(*braces_L1)
+    # ph2.activate_structures(*wells_unique)
+    # ph3.activate_structures(*braces_L2)
 
     # per-phase well overrides + water table
-    ph2.set_well_overrides({ w.name: {"h_min": -10.0, "q_well": 0.008} for w in wells_unique })
+    # ph2.set_well_overrides({ w.name: {"h_min": -10.0, "q_well": 0.008} for w in wells_unique })
 
     x_min, x_max, y_min, y_max = proj.x_min, proj.x_max, proj.y_min, proj.y_max
     water_pts = [
@@ -397,12 +501,14 @@ if __name__ == "__main__":
     print("[BUILD] done.")
 
     print("[BUILD] Pick up soillayer.")
-    excava_soils = builder.get_remaining_soil_names()
+    excava_soils = builder.get_all_child_soils_dict()
     print("[BUILD] Applied the soilayer status for phases.")
 
     print("[APPLY] apply phases …")
-    pit.phases[1].add_soils(excava_soils[0])
-    pit.phases[3].add_soils(excava_soils[1])
+    pit.phases[1].add_soils(excava_soils["Soil_1_2"])
+    pit.phases[3].add_soils(*[excava_soils["Soil_2_1"], excava_soils["Soil_2_5"]])
+    pit.phases[3].add_soils()
+    # pit.phases[3].add_soils(excava_soils["Soil_3_1"])
     builder.apply_pit_soil_block()
     print("[APPLY] Updated the status of soillayers")
 

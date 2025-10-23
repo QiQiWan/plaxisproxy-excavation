@@ -181,11 +181,11 @@ class Phase(PlaxisObject):
         self.well_overrides = mapping
         return self
 
-    def activate_structures(self, *objs: BaseStructure) -> "Phase":
+    def activate_structures(self, objs: Sequence[BaseStructure]) -> "Phase":
         self._activate.extend(objs)
         return self
 
-    def deactivate_structures(self, *objs: BaseStructure) -> "Phase":
+    def deactivate_structures(self, objs: Sequence[BaseStructure]) -> "Phase":
         self._deactivate.extend(objs)
         return self
 

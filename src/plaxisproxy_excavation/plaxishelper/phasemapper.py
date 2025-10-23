@@ -1273,7 +1273,7 @@ class PhaseMapper:
         flat: Dict[Any, str] = {}
         for _, items in groups.items():
             for handle, name, _, _ in items:
-                flat[handle] = name
+                flat[name] = handle
         return flat
 
     @staticmethod
