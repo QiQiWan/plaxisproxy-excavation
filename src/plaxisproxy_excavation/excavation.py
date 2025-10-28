@@ -32,9 +32,76 @@ from .materials.anchormaterial import ElasticAnchor, ElastoplasticAnchor, Elasto
 from .materials.beammaterial import ElasticBeam, ElastoplasticBeam
 from .materials.pilematerial import ElasticPile, ElastoplasticPile
 
+from typing import List, Tuple, Optional, Any
+from src.plaxisproxy_excavation.structures.retainingwall import RetainingWall
+from src.plaxisproxy_excavation.geometry import Polygon3D, Point, PointSet
+from enum import Enum
+
+
 
 # A generic TypeVar to properly type hint the from_dict class method.
 T = TypeVar('T', bound='FoundationPit')
+
+# --- StructureType Enum and helpers ---
+class StructureType(str, Enum):
+    """
+    Canonical structure bucket names used throughout the project.
+    Values are set to the existing string keys to保持完全兼容.
+    """
+    RETAINING_WALLS = "retaining_walls"
+    ANCHORS = "anchors"
+    BEAMS = "beams"
+    WELLS = "wells"
+    EMBEDDED_PILES = "embedded_piles"
+    SOIL_BLOCKS = "soil_blocks"
+
+# Allowed canonical keys for quick membership checks
+_STRUCTURE_ALLOWED = {t.value for t in StructureType}
+
+# Common synonyms → canonical key (kept small and conservative for compatibility)
+_STRUCTURE_SYNONYMS = {
+    "retainingwall": StructureType.RETAINING_WALLS.value,
+    "retainingwalls": StructureType.RETAINING_WALLS.value,
+    "walls": StructureType.RETAINING_WALLS.value,
+    "wall": StructureType.RETAINING_WALLS.value,
+    "plates": StructureType.RETAINING_WALLS.value,
+    "plate": StructureType.RETAINING_WALLS.value,
+
+    "anchor": StructureType.ANCHORS.value,
+    "nodetonodeanchor": StructureType.ANCHORS.value,
+    "nodetonodeanchors": StructureType.ANCHORS.value,
+
+    "beam": StructureType.BEAMS.value,
+
+    "well": StructureType.WELLS.value,
+
+    "embeddedpile": StructureType.EMBEDDED_PILES.value,
+    "embeddedpiles": StructureType.EMBEDDED_PILES.value,
+
+    "soil": StructureType.SOIL_BLOCKS.value,
+    "soils": StructureType.SOIL_BLOCKS.value,
+    "soilblocks": StructureType.SOIL_BLOCKS.value,
+}
+
+def _normalize_structure_type(structure_type: Any) -> str:
+    """
+    Normalize structure type input (Enum or str) to a canonical string key.
+    - Accepts StructureType or string.
+    - Returns one of StructureType.*.value when possible.
+    - Falls back to the cleaned input string if unknown (with a warning).
+    """
+    if isinstance(structure_type, StructureType):
+        return structure_type.value
+    if isinstance(structure_type, str):
+        key = structure_type.strip().lower().replace("-", "_").replace(" ", "_")
+        if key in _STRUCTURE_ALLOWED:
+            return key
+        if key in _STRUCTURE_SYNONYMS:
+            return _STRUCTURE_SYNONYMS[key]
+        # Keep compatibility but surface a gentle warning for typos.
+        print(f"Warning: Unknown structure type '{structure_type}'. Using '{key}' as-is.")
+        return key
+    raise TypeError("structure_type must be a StructureType or str")
 
 class FoundationPit(SerializableBase):
     """
@@ -79,14 +146,7 @@ class FoundationPit(SerializableBase):
         }
         
         # Structure library
-        self.structures: Dict[str, List[Any]] = {
-            "retaining_walls": [],
-            "anchors": [],
-            "beams": [],
-            "wells": [],
-            "embedded_piles": [],
-            "soil_blocks": []
-        }
+        self.structures: Dict[str, List[Any]] = {t.value: [] for t in StructureType}
 
         # Load library
         self.loads: Dict[str, List[Any]] = {
@@ -141,25 +201,24 @@ class FoundationPit(SerializableBase):
 
         self.materials[material_type].append(material_obj)
 
-    def add_structure(self, structure_type: str, structure_obj: Any):
+    def add_structure(self, structure_type: Any, structure_obj: Any):
         """
         Adds a structural component to the model, preventing duplicates.
 
         Args:
-            structure_type (str): The type of the structure (e.g., 'retaining_walls').
+            structure_type (Any): The type of the structure (e.g., 'retaining_walls' or StructureType).
             structure_obj (Any): The instance of the structure object.
-            
-        Raises:
-            ValueError: If the structure type is unsupported or a structure with the same name already exists.
         """
-        if structure_type not in self.structures:
-            raise ValueError(f"Unsupported structure type: {structure_type}")
+        key = _normalize_structure_type(structure_type)
+        if key not in self.structures:
+            # Keep forward compatibility with custom buckets while encouraging canonical keys
+            self.structures[key] = []
 
-        if self._is_duplicate(structure_obj, self.structures[structure_type]):
-            print(f"Warning: Structure '{structure_obj.name}' of type '{structure_type}' already exists. Skipping.")
+        if self._is_duplicate(structure_obj, self.structures[key]):
+            print(f"Warning: Structure '{structure_obj.name}' of type '{key}' already exists. Skipping.")
             return
 
-        self.structures[structure_type].append(structure_obj)
+        self.structures[key].append(structure_obj)
 
     def add_load(self, load_type: str, load_obj: Any):
         """
@@ -217,6 +276,177 @@ class FoundationPit(SerializableBase):
             
         self.monitors.append(point)
 
+    # ----------------- Footprint helpers: walls → closed polygon -----------------
+
+    @staticmethod
+    def _extract_surface_points(surface: Any) -> List[Any]:
+        pts = []
+        # 常见实现：outer_ring.get_points()
+        outer = getattr(surface, "outer_ring", None)
+        if outer is not None and hasattr(outer, "get_points"):
+            try:
+                pts = list(outer.get_points())
+            except Exception:
+                pts = []
+        # 备选：直接 points / point_set.points
+        if not pts:
+            raw = getattr(surface, "points", None)
+            if raw:
+                try:
+                    pts = list(raw)
+                except Exception:
+                    pts = []
+        if not pts:
+            ps = getattr(surface, "point_set", None) or getattr(surface, "_point_set", None)
+            inner = getattr(ps, "points", None) or getattr(ps, "_points", None) if ps else None
+            if inner:
+                pts = list(inner)
+        return pts or []
+
+    @staticmethod
+    def _extract_wall_top_edge_xy(surface: Any, tol: float) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
+        """
+        Extract the projection endpoints (x, y) of the "top edge" on the XY plane from Polygon3D. The value of z_top should be the maximum z value of this plane. 
+        First, take the top edges of the adjacent two points; if not found, then revert to the top heights of any two points.
+        """
+        pts = FoundationPit._extract_surface_points(surface)
+        if len(pts) < 2:
+            return None
+        zmax = max(float(p.z) for p in pts)
+        def _is_top(p): return abs(float(p.z) - zmax) <= max(tol, 1e-9)
+        # 先找相邻两点构成的顶边
+        for i in range(len(pts) - 1):
+            a, b = pts[i], pts[i + 1]
+            if _is_top(a) and _is_top(b):
+                return ( (float(a.x), float(a.y)), (float(b.x), float(b.y)) )
+        # 处理闭合首尾
+        a, b = pts[-1], pts[0]
+        if _is_top(a) and _is_top(b):
+            return ( (float(a.x), float(a.y)), (float(b.x), float(b.y)) )
+        # 回退：任取两个顶点
+        tops = [p for p in pts if _is_top(p)]
+        if len(tops) >= 2:
+            a, b = tops[0], tops[1]
+            return ( (float(a.x), float(a.y)), (float(b.x), float(b.y)) )
+        return None
+
+    @staticmethod
+    def _q(v: float, tol: float) -> int:
+        return int(round(v / tol))
+
+    @staticmethod
+    def _pkey(pt: Tuple[float, float], tol: float) -> Tuple[int, int]:
+        return (FoundationPit._q(pt[0], tol), FoundationPit._q(pt[1], tol))
+
+    @staticmethod
+    def _stitch_segments_to_loop(
+        segs: List[Tuple[Tuple[float, float], Tuple[float, float]]],
+        tol: float
+    ) -> Optional[List[Tuple[float, float]]]:
+        """
+        Connect several line segments at their endpoints to form a single closed loop. Return the vertices in sequence (without repetition of the beginning and end points).
+        """
+        if len(segs) < 3:
+            return None
+        unused = list(range(len(segs)))
+        used = set()
+        # 选一个确定性起点（字典序最小）
+        start_idx = min(unused, key=lambda i: (segs[i][0][0], segs[i][0][1], segs[i][1][0], segs[i][1][1]))
+        a, b = segs[start_idx]
+        path = [a, b]
+        used.add(start_idx)
+        curr = b
+
+        def _match_idx(pt):
+            k = FoundationPit._pkey(pt, tol)
+            for idx in unused:
+                if idx in used: 
+                    continue
+                s0, s1 = segs[idx]
+                if FoundationPit._pkey(s0, tol) == k:
+                    return idx, False, s1
+                if FoundationPit._pkey(s1, tol) == k:
+                    return idx, True, s0
+            return (-1, -1), False, (-1, -1)
+
+        while len(used) < len(segs):
+            idx, rev, nxt = _match_idx(curr)
+            if idx is None:
+                break
+            used.add(idx)
+            path.append(nxt)
+            curr = nxt
+            # 闭合判定
+            if FoundationPit._pkey(curr, tol) == FoundationPit._pkey(path[0], tol):
+                # 去掉最后一个等于起点的点
+                path = path[:-1]
+                return [path[0]] + [p for p in path[1:]]
+        # 如果自然闭合失败，但已形成 ≥3 点环，尝试首尾拼接
+        if len(path) >= 4 and FoundationPit._pkey(path[0], tol) == FoundationPit._pkey(path[-1], tol):
+            path = path[:-1]
+            return path
+        return None
+
+    @staticmethod
+    def _compute_wall_footprint_polygon3d_from_walls(
+        walls: List[Any],
+        z_value: float,
+        tol: float = 1e-6
+    ) -> Optional[Polygon3D]:
+        # 从每面墙抽取顶边段
+        segs: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
+        for w in walls or []:
+            surf = getattr(w, "surface", None)
+            if surf is None:
+                continue
+            e = FoundationPit._extract_wall_top_edge_xy(surf, tol)
+            if e is not None:
+                segs.append(e)
+        if len(segs) < 3:
+            return None
+        # 去重（端点相同即同一段）
+        seen = set()
+        uniq = []
+        for s in segs:
+            k0 = (FoundationPit._pkey(s[0], tol), FoundationPit._pkey(s[1], tol))
+            k1 = (k0[1], k0[0])
+            if k0 in seen or k1 in seen:
+                continue
+            seen.add(k0); seen.add(k1)
+            uniq.append(s)
+        loop = FoundationPit._stitch_segments_to_loop(uniq, tol)
+        if not loop or len(loop) < 3:
+            return None
+        pts3d = [Point(x, y, float(z_value)) for (x, y) in loop] + [Point(loop[0][0], loop[0][1], float(z_value))]
+        return Polygon3D.from_points(PointSet(pts3d))
+
+    def get_wall_footprint_polygon3d(self, z_value: float = 0.0, tol: float = 1e-6) -> Optional[Polygon3D]:
+        walls = []
+        if isinstance(getattr(self, "structures", None), dict):
+            walls = self.structures.get(StructureType.RETAINING_WALLS.value, []) or []
+        if not walls:
+            return None
+        return FoundationPit._compute_wall_footprint_polygon3d_from_walls(walls, z_value, tol)
+
+    def get_wall_footprint_xy(self, z_value: float = 0.0, tol: float = 1e-6) -> List[Tuple[float, float]]:
+        poly = self.get_wall_footprint_polygon3d(z_value=z_value, tol=tol)
+        if not poly:
+            return []
+        pts = []
+        if hasattr(poly, "outer_ring") and hasattr(poly.outer_ring, "get_points"):
+            pts = list(poly.outer_ring.get_points())
+        elif hasattr(poly, "get_points"):
+            pts = list(poly.get_points())
+        xy = [(float(p.x), float(p.y)) for p in pts]
+        if len(xy) >= 2 and xy[0] == xy[-1]:
+            xy = xy[:-1]
+        return xy
+
+    def get_excavation_bottom_polygon3d(self, tol: float = 1e-6) -> Optional[Polygon3D]:
+        z = float(getattr(self, "excava_depth", 0.0))
+        return self.get_wall_footprint_polygon3d(z_value=z, tol=tol)
+
+
     def to_dict(self) -> Dict[str, Any]:
         """
         Serializes the PlaxisFoundationPit object to a dictionary.
@@ -265,11 +495,11 @@ class FoundationPit(SerializableBase):
             }
         }
         structure_mapping = {
-            "retaining_walls": RetainingWall,
-            "anchors": Anchor,
-            "beams": Beam,
-            "wells": Well,
-            "embedded_piles": EmbeddedPile
+            StructureType.RETAINING_WALLS.value: RetainingWall,
+            StructureType.ANCHORS.value: Anchor,
+            StructureType.BEAMS.value: Beam,
+            StructureType.WELLS.value: Well,
+            StructureType.EMBEDDED_PILES.value: EmbeddedPile
         }
         load_mapping = {
             "point_loads": PointLoad,
@@ -314,9 +544,10 @@ class FoundationPit(SerializableBase):
 
         # Deserialize structures using the defined mapping
         for s_type, s_list in data.get("structures", {}).items():
-            if s_type in structure_mapping:
-                cls_to_use = structure_mapping[s_type]
-                instance.structures[s_type] = [cls_to_use.from_dict(item) for item in s_list]
+            key_norm = _normalize_structure_type(s_type)
+            if key_norm in structure_mapping:
+                cls_to_use = structure_mapping[key_norm]
+                instance.structures[key_norm] = [cls_to_use.from_dict(item) for item in s_list]
 
         # Deserialize loads using the defined mapping
         for l_type, l_list in data.get("loads", {}).items():

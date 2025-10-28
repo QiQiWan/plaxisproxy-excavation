@@ -2,16 +2,26 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from math import ceil
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple, Union, Sequence
 
 from .plaxisproxy_excavation.plaxishelper.plaxisrunner import PlaxisRunner
 from .plaxis_config import *
-from .plaxisproxy_excavation.excavation import FoundationPit
+from .plaxisproxy_excavation.excavation import FoundationPit, StructureType, _normalize_structure_type
 from .plaxisproxy_excavation.structures.soilblock import SoilBlock
 from .plaxisproxy_excavation.geometry import Polygon3D
 from .plaxisproxy_excavation.components.mesh import Mesh
 
+from config.plaxis_config import HOST, PORT, PASSWORD
 
+from .plaxisproxy_excavation.plaxishelper.plaxisoutput import PlaxisOutput
+from .plaxisproxy_excavation.plaxishelper.resulttypes import (
+    Plate as PlateResult,
+    Beam as BeamResult,
+    EmbeddedBeam as EmbeddedBeamResult,
+    NodeToNodeAnchor as NodeToNodeAnchorResult,
+    Well as WellResult,
+    Soil as SoilResult,
+)
 """
 Excavation Engineering Automation — Builder
 -------------------------------------------
@@ -143,6 +153,8 @@ class ExcavationBuilder:
         # Always create our own runner instance using config; keep provided `app` for signature parity.
         self.App: PlaxisRunner = PlaxisRunner(PORT, PASSWORD, HOST)
         self.excavation_object: FoundationPit = excavation_object
+        self.Output: PlaxisOutput
+        self._calc_done: bool = False  # True after a successful builder.calculate()
 
     @classmethod
     def create(cls, app: PlaxisRunner, excavation_object: FoundationPit):
@@ -156,6 +168,12 @@ class ExcavationBuilder:
         """Initialize builder: validate pit object and ensure a fresh PLAXIS project."""
         self.check_completeness()
         self.App.connect().new()
+
+    def calculate(self) -> None:
+        """Go to the stages interface, and start a calculation task."""
+        self.App.calculate()
+        # If no exception was raised, mark as calculated
+        self._calc_done = True
 
     # -------------------------------------------------------------------------
     # Validation (aligned with current FoundationPit definition)
@@ -278,7 +296,7 @@ class ExcavationBuilder:
         walls_list = []
         try:
             # 按对象结构获取当前已定义的围护墙集合
-            walls_list = pit.structures.get("retaining_walls", []) if isinstance(pit.structures, dict) else []
+            walls_list = pit.structures.get(StructureType.RETAINING_WALLS.value, []) if isinstance(pit.structures, dict) else []
         except Exception:
             walls_list = []
 
@@ -318,7 +336,7 @@ class ExcavationBuilder:
         for w in warns:
             print(f"[check_completeness] {w}")
 
-        walls = len(pit.structures.get("retaining_walls", [])) if isinstance(pit.structures, dict) else 0
+        walls = len(pit.structures.get(StructureType.RETAINING_WALLS.value, [])) if isinstance(pit.structures, dict) else 0
         print(
             f"[check_completeness] OK: "
             f"name='{getattr(pit, 'name', '<unnamed>')}', "
@@ -400,6 +418,38 @@ class ExcavationBuilder:
             upper.append(p)
         hull = lower[:-1] + upper[:-1]
         return hull
+
+    # ---------- New public helpers: wall footprint / bottom polygon ----------
+
+    def get_wall_footprint_polygon3d(self, z_value: float = 0.0, tol: float = 1e-6):
+        """
+        Return a Polygon3D at z = z_value representing the 2D footprint enclosed by
+        retaining wall surfaces. Returns None if a closed loop cannot be reconstructed.
+        """
+        pit = getattr(self, "excavation_object", None)
+        walls = []
+        if pit is not None and isinstance(getattr(pit, "structures", None), dict):
+            walls = pit.structures.get(StructureType.RETAINING_WALLS.value, []) or []
+        return self._make_bottom_polygon3d(walls, z_value, tol=tol)
+
+    def get_wall_footprint_xy(self, z_value: float = 0.0, tol: float = 1e-6):
+        """
+        Return the footprint as a list of (x, y) tuples in order (closed ring, last!=first).
+        Returns [] if not available.
+        """
+        poly3d = self.get_wall_footprint_polygon3d(z_value=z_value, tol=tol)
+        if not poly3d:
+            return []
+        try:
+            pts = poly3d.outer_ring.get_points()  # [Point]
+            xy = [(float(p.x), float(p.y)) for p in pts]
+            # 去掉首尾重复
+            if len(xy) >= 2 and xy[0] == xy[-1]:
+                xy = xy[:-1]
+            return xy
+        except Exception:
+            return []
+
 
     def _make_bottom_polygon3d(self, walls, z_value, tol=1e-6):
         """
@@ -565,7 +615,7 @@ class ExcavationBuilder:
         #         print(f"[build] Warning: create_soil_block failed: {e}")
 
         # ---------------- 5) Structures (including wells) ----------------------
-        for wall in structures.get("retaining_walls", []) or []:
+        for wall in structures.get(StructureType.RETAINING_WALLS.value, []) or []:
             try:
                 app.create_retaining_wall(wall)
             except Exception as e:
@@ -577,51 +627,64 @@ class ExcavationBuilder:
         except Exception:
             ok = False
 
+        # if ok:
+        #     try:
+        #         excava_depth = float(getattr(pit, "excava_depth", 0.0))
+        #         walls_now = pit.structures.get("retaining_walls", []) if isinstance(pit.structures, dict) else []
+
+        #         bottom_poly = self._make_bottom_polygon3d(walls_now, excava_depth)
+        #         if bottom_poly is None:
+        #             print("[build] Warning: could not derive bottom polygon from walls (need >=3 points).")
+        #         else:
+        #             app = self.App  # runner facade
+        #             app.create_surface(bottom_poly, name="ExcavationBottom", auto_close=True)
+        #             print(f"[build] Bottom surface created at z={excava_depth:.3f} using wall-enclosed polygon.")
+        #     except Exception as e:
+        #         print(f"[build] Warning: failed to create bottom surface: {e}")
+
         if ok:
             try:
                 excava_depth = float(getattr(pit, "excava_depth", 0.0))
-                walls_now = pit.structures.get("retaining_walls", []) if isinstance(pit.structures, dict) else []
-
-                bottom_poly = self._make_bottom_polygon3d(walls_now, excava_depth)
+                bottom_poly = self.get_wall_footprint_polygon3d(z_value=excava_depth, tol=1e-6)
                 if bottom_poly is None:
                     print("[build] Warning: could not derive bottom polygon from walls (need >=3 points).")
                 else:
-                    app = self.App  # runner facade
+                    app = self.App
                     app.create_surface(bottom_poly, name="ExcavationBottom", auto_close=True)
                     print(f"[build] Bottom surface created at z={excava_depth:.3f} using wall-enclosed polygon.")
             except Exception as e:
-                print(f"[build] Warning: failed to create bottom surface: {e}")
+                print(f"[build] Warning: bottom polygon creation failed: {e}")
 
         # ---------------- 5.2) Create beams -----------------------
-        for beam in structures.get("beams", []) or []:
+        for beam in structures.get(StructureType.BEAMS.value, []) or []:
             try:
                 app.create_beam(beam)
             except Exception as e:
                 print(f"[build] Warning: create_beam failed: {e}")
 
-        for anc in structures.get("anchors", []) or []:
+        for anc in structures.get(StructureType.ANCHORS.value, []) or []:
             try:
                 app.create_anchor(anc)
             except Exception as e:
                 print(f"[build] Warning: create_anchor failed: {e}")
 
-        for pile in structures.get("embedded_piles", []) or []:
+        for pile in structures.get(StructureType.EMBEDDED_PILES.value, []) or []:
             try:
                 app.create_embedded_pile(pile)
             except Exception as e:
                 print(f"[build] Warning: create_embedded_pile failed: {e}")
 
         # Wells — created once at structure stage (geometry-level only)
-        for well in structures.get("wells", []) or []:
+        for well in structures.get(StructureType.WELLS.value, []) or []:
             try:
                 app.create_well(well)
             except Exception as e:
                 print(f"[build] Warning: create_well failed: {e}")
 
-        if not structures.get("soil_blocks"):
+        if not structures.get(StructureType.SOIL_BLOCKS.value):
             self._cut_inside_soil_blocks(self.excavation_object)
 
-        for blk in structures.get("soil_blocks", []):
+        for blk in structures.get(StructureType.SOIL_BLOCKS.value, []):
             app.create_soil_block(blk)
 
         # ---------------- 6) Loads (+ optional multipliers) --------------------
@@ -675,7 +738,7 @@ class ExcavationBuilder:
                 app.goto_stages()
                 prev = app.get_initial_phase()
                 for ph in phases:
-                    for blk in pit.structures.get("soil_blocks", []):
+                    for blk in pit.structures.get(StructureType.SOIL_BLOCKS.value, []):
                         if blk.name.endswith("_in"):
                             phase_name = blk.name[:-3]  # 去掉后缀“_in”得到阶段名
                             for ph in phases:  # phases为待应用的Phase列表
@@ -785,7 +848,7 @@ class ExcavationBuilder:
         if not pit.borehole_set:
             raise ValueError("Borehole set is required to compute soil layer depths.")
 
-        walls = pit.structures.get("retaining_walls", [])
+        walls = pit.structures.get(StructureType.RETAINING_WALLS.value, [])
         if len(walls) < 4:
             raise ValueError("Need at least 4 walls to define an enclosed region.")
 
@@ -819,7 +882,7 @@ class ExcavationBuilder:
             name = f"L{i+1}_in"
             geom = pit_polygon.extrude(z1, z2)
             blk = SoilBlock(name=name, geometry=geom, material=layer.material)
-            pit.add_structure("soil_blocks", blk)
+            pit.add_structure(StructureType.SOIL_BLOCKS, blk)
     # -------------------------------------------------------------------------
     # Phase helpers
     # -------------------------------------------------------------------------
@@ -927,7 +990,7 @@ class ExcavationBuilder:
         return {"phases_updated": applied}
 
     # =========================================================================================
-    # Excavation soillayers metthods
+    # Excavation soillayers methods
     # =========================================================================================
 
     def get_excavation_soil_names(self, *, prefer_volume: bool = True) -> list[str]:
@@ -1046,3 +1109,218 @@ class ExcavationBuilder:
         except Exception:
             pass
         return app.get_all_child_soil_names()
+
+    ################################################################################
+    # Output Helper
+    ################################################################################
+    def is_output_connected(self) -> bool:
+        """
+        True if builder has a PlaxisOutput facade that can open Output on demand.
+        (Stateless: no long-lived g_o/server is kept.)
+        """
+        client = getattr(self, "Output", None)
+        return bool(client and getattr(client, "is_connected", False))
+
+
+    def close_output_viewer(self) -> None:
+        """
+        Close and clear the current Output session (if any).
+        """
+        client = getattr(self, "Output", None)
+        try:
+            if client:
+                client.close()
+        except Exception:
+            pass
+        finally:
+            self.Output = None
+
+
+    def _normalize_phase_for_view(self, phase: Optional[Union[str, int, Any]]) -> Optional[Union[str, int, Any]]:
+        """
+        Convert a project Phase object to its name; default to the last project phase if phase is None.
+        This helps Input.g_i.view(phase) open Output at a sensible phase and also keeps Output phase resolution simple.
+        """
+        if phase is None:
+            phases = self.list_project_phases()
+            if phases:
+                last = phases[-1]
+                return getattr(last, "name", last)
+            return None
+        if hasattr(phase, "name"):
+            return getattr(phase, "name")
+        return phase
+
+    def create_output_viewer(self, phase: object = None, *, reuse: bool = True):
+        """
+        Backward helper: ensure Output bound to 'phase' (or last project phase).
+        """
+        if phase is None:
+            phases = self.list_project_phases()
+            if not phases:
+                raise ValueError("No project phases available; provide a phase to bind Output.")
+            phase = phases[-1]
+        return self._ensure_output_for_phase(phase)
+
+    def reconnect_output_viewer(
+        self,
+        phase: Optional[Union[str, int, Any]] = None,
+        *,
+        fixed_port: int = 10001,
+    ) -> PlaxisOutput:
+        """
+        Force a fresh Output connection, optionally launching the viewer for a given phase.
+        """
+        self.close_output_viewer()
+        return self.create_output_viewer(phase=phase, reuse=False)
+
+    def get_output_client(
+        self,
+        view_phase: Optional[Any] = None,
+        *,
+        reuse: bool = True,
+    ) -> PlaxisOutput:
+        """
+        Returns a connected Output client bound to `view_phase`.
+        """
+        return self.create_output_viewer(phase=view_phase, reuse=reuse)
+
+
+    def list_project_phases(self) -> List[Any]:
+        """
+        Return project phases from the excavation object (names map 1:1 to Output phases).
+        """
+        pit = (
+            getattr(self, "excavation_object", None)
+            or getattr(self, "pit", None)
+            or getattr(self, "_pit", None)
+        )
+        return list(getattr(pit, "phases", []) or [])
+
+    def _ensure_phase_is_calculated(self, phase: object) -> None:
+        """
+        Ensure the given phase has been calculated before querying Output.
+        Strategy (in order):
+        1) If we've run builder.calculate() in this session -> trust flag.
+        2) Use Runner-provided probes when available:
+            - is_phase_calculated(phase)
+            - phase_has_results(handle)
+            - is_project_calculated()
+        3) If none available / uncertain -> raise with a clear message.
+        """
+        # Fast-path: we already ran calculate() in this builder session
+        if getattr(self, "_calc_done", False):
+            return
+
+        app = self.App
+
+        # 1) Direct probe: is_phase_calculated(phase)
+        probe = getattr(app, "is_phase_calculated", None)
+        if callable(probe):
+            try:
+                if bool(probe(phase)):
+                    return
+            except Exception:
+                pass
+
+        # 2) Indirect probe via handle + phase_has_results(handle)
+        try:
+            find_h = getattr(app, "find_phase_handle", None)
+            has_res = getattr(app, "phase_has_results", None)
+            if callable(find_h) and callable(has_res):
+                h = find_h(phase)  # accept Phase object or identifier
+                if h is not None and bool(has_res(h)):
+                    return
+        except Exception:
+            pass
+
+        # 3) Project-level probe
+        proj_probe = getattr(app, "is_project_calculated", None)
+        if callable(proj_probe):
+            try:
+                if bool(proj_probe()):
+                    return
+            except Exception:
+                pass
+
+        # If we reach here, we cannot establish that results exist for this phase
+        raise RuntimeError(
+            "Requested results before calculation. Please run builder.calculate() "
+            "or otherwise ensure the target phase has finished calculation."
+        )
+
+
+    def _ensure_output_for_phase(self, phase: object) -> "PlaxisOutput":
+        """
+        Ensure there is a connected Output client bound to the given phase.
+        - If Output not connected: create and bind.
+        - If Output bound to a different phase: rebind (preferred) or reconnect.
+        Returns: self.Output (connected to 'phase').
+        """
+        # 1) Make sure Input (g_i) is ready
+        g_i = getattr(self.App, "g_i", None)
+        if g_i is None:
+            # Connect Input once if needed
+            self.App.connect()
+            g_i = getattr(self.App, "g_i", None)
+            if g_i is None:
+                raise RuntimeError("Failed to connect to PLAXIS Input (g_i is None).")
+
+        # 2) If no Output or not connected → create & bind
+        if not self.is_output_connected():
+            from .plaxisproxy_excavation.plaxishelper.plaxisoutput import PlaxisOutput  # local import to avoid cycles
+            po = PlaxisOutput(host=HOST, password=PASSWORD)
+            self.Output = po.connect_via_input(g_i, phase)
+            return self.Output
+
+        # 3) If already connected, verify current bound phase vs requested one
+        try:
+            cur_id = getattr(self.Output, "_current_phase_id", None)
+            # Let PlaxisOutput resolve phase id (keeps id resolution inside Output)
+            resolve = getattr(self.Output, "_resolve_phase_id", None)
+            tgt_id = resolve(phase) if callable(resolve) else getattr(phase, "plx_id", phase)
+        except Exception:
+            # If anything goes wrong resolving, force a reconnect to be safe
+            self.close_output_viewer()
+            from .plaxisproxy_excavation.plaxishelper.plaxisoutput import PlaxisOutput
+            po = PlaxisOutput(host=HOST, password=PASSWORD)
+            self.Output = po.connect_via_input(g_i, phase)
+            return self.Output
+
+        if cur_id != tgt_id:
+            # Prefer a light rebind (Output handles closing and recreating s_o/g_o)
+            try:
+                self.Output.set_default_phase(g_i, phase)
+            except Exception:
+                # Fallback: hard reconnect
+                self.close_output_viewer()
+                from .plaxisproxy_excavation.plaxishelper.plaxisoutput import PlaxisOutput
+                po = PlaxisOutput(host=HOST, password=PASSWORD)
+                self.Output = po.connect_via_input(g_i, phase)
+
+        return self.Output
+
+
+    def get_results(
+        self,
+        *,
+        structure: object,   # structure object or its plx_id (Output resolves)
+        leaf: object,        # resulttypes enum member, or "Plate.UX" string
+        phase: object,       # Phase object or its plx_id (Output resolves)
+        smoothing: bool = False,
+    ):
+        """
+        One-call result fetch with pre-checks:
+        - Ensure the phase was calculated (or raise).
+        - Ensure Output is bound to the given phase (create/rebind if needed).
+        - Return results from PlaxisOutput.get_results(...).
+        """
+        # 1) must be calculated first
+        self._ensure_phase_is_calculated(phase)
+
+        # 2) ensure Output bound to this phase (creates/rebinds as needed)
+        po = self._ensure_output_for_phase(phase)
+
+        # 3) fetch and return
+        return po.get_results(structure, leaf, smoothing=smoothing)
+

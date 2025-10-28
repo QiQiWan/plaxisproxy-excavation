@@ -40,6 +40,7 @@ from .phasemapper import PhaseMapper
 
 # Runner (session orchestration)
 from .plaxisrunner import PlaxisRunner
+from .plaxisoutput import PlaxisOutput
 
 __all__ = [
     # Geometry / project / boreholes
@@ -67,8 +68,16 @@ __all__ = [
     "MeshMapper",
     "MonitorMapper",
     "PhaseMapper",
-    "PhaseMapReport",
-    "PhaseUpdateResult",
     # Runner
     "PlaxisRunner",
+    # Output
+    "PlaxisOutput",
+    "ResultDomain",
+    "ResultLocation",
+    "SoilResult",
+    "PlateResult",
+    "BeamResult",
+    "EmbeddedBeamResult",
+    "AnchorResult",
+    "WellResult"
 ]

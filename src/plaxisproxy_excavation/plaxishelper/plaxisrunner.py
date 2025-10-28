@@ -151,6 +151,20 @@ class PlaxisRunner:
             print(f"[Error] An unexpected error occurred while creating a new project: {e}")
             print("Please check the Plaxis application for any error messages or alerts.")
             return self
+        
+    def calculate(self) -> str:
+        """
+        Go to the stage interface, and run the calculation task.
+
+        Returns:
+            str: The result of the calculation task. 
+        """
+        self.goto_stages()
+        cal_func = getattr(self.g_i, "calculate", None)
+        if callable(cal_func):
+            return str(cal_func())
+        else:
+            raise TypeError("It should run 'gotostages()', before start calculate().")
 
     # ===================== convenience wrappers to GeometryPlaxisMapper =====================
 

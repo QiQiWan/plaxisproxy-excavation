@@ -63,7 +63,7 @@ def _log_delete(kind: str, desc: str, handle: Any, ok: bool, extra: str = "") ->
 # =============================================================================
 def _normalize_created_handle(created: Any) -> Any:
     if isinstance(created, (list, tuple)) and created:
-        return created[0]
+        return created[-1]
     return created
 
 def _try_call(g_i: Any, names: Sequence[str], *args, **kwargs) -> Any:
