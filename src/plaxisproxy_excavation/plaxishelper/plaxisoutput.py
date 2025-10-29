@@ -6,7 +6,7 @@ from enum import Enum
 try:
     from plxscripting.easy import new_server
 except:
-    from third_party.plxscripting.server import new_server
+    from plxscripting.server import new_server
 
 # ---------------------------------------------------------------------
 # PLAXIS scripting API (fallback stub so static analysis won't break)

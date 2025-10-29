@@ -1,15 +1,51 @@
 [build-system]
-requires = ["setuptools>=65"]
+requires = ["setuptools>=70", "wheel", "setuptools-scm>=8"]   # 建议用 setuptools-scm 管理版本
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "plaxisproxy-excavation"
-version = "0.1.0"
-description = "Plaxis proxy"
-requires-python = "==3.9"
+name = "plaxisproxy_excavation"
+version = "1.0.0"                      # 交给 setuptools-scm
+description = "Automation & simulation toolkit for excavation engineering (PLAXIS-driven)."
+readme = "README.md"
+requires-python = "~=3.9"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Qiwei Wab", email = "i@eatrice.cn" }
+]
+keywords = ["plaxis", "excavation", "geotech", "automation"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
 
+# 公共依赖（纯开源、可从 PyPI 获取的）
+dependencies = [
+  "shapely==2.0.7",
+  "plxscripting>=1.0.4"
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "mypy", "build", "twine"]
+cli = ["typer>=0.12"]      # 如果你的 CLI 需要
+# private = []             # 不要把私有库真名写在公共依赖里（详见第三部分）
+
+[project.urls]
+# Homepage = "https://your.site/"
+Repository = "https://github.com/QiQiWan/plaxisproxy-excavation"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+# 自动发现包（忽略 tests、examples 等）
 [tool.setuptools.packages.find]
 where = ["src"]
+exclude = ["tests*", "examples*", "scripts*"]
 
-[tool.setuptools.package-dir]
-"" = "src"
+# 将非 .py 资源打进 wheel（配合 MANIFEST.in）
+[tool.setuptools.package-data]
+"excavation_sim" = ["data/**/*", "resources/**/*"]
+
+[tool.setuptools_scm]
+version_scheme = "post-release"
+local_scheme = "node-and-date"

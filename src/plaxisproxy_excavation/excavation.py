@@ -33,8 +33,8 @@ from .materials.beammaterial import ElasticBeam, ElastoplasticBeam
 from .materials.pilematerial import ElasticPile, ElastoplasticPile
 
 from typing import List, Tuple, Optional, Any
-from src.plaxisproxy_excavation.structures.retainingwall import RetainingWall
-from src.plaxisproxy_excavation.geometry import Polygon3D, Point, PointSet
+from plaxisproxy_excavation.structures.retainingwall import RetainingWall
+from plaxisproxy_excavation.geometry import Polygon3D, Point, PointSet
 from enum import Enum
 
 

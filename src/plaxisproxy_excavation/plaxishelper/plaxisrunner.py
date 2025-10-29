@@ -1,9 +1,10 @@
 import time
 from typing import List, Dict, Any, Optional, Union, Iterable, Sequence, Tuple
+import os
 
 # Import the core Plaxis server and its required components from the local source
 # This ensures we are using the exact version provided in the codebase.
-from config.plaxis_config import HOST, PORT, PASSWORD
+from ..builder.plaxis_config import HOST, PORT, PASSWORD
 
 # Import the main data structure and the mapper class from your library
 # from ..plaxisexcavation import *  # noqa: F401,F403  (keep existing usage)
@@ -13,7 +14,7 @@ try:
     from .plaxismapper import PlaxisMapper  # type: ignore  # noqa: F401
 except Exception:
     PlaxisMapper = None  # type: ignore
-from third_party.plxscripting.server import new_server, Server, PlxProxyFactory
+from plxscripting.server import new_server, Server, PlxProxyFactory
 from ..geometry import *  # Point, PointSet, Line3D, Polygon3D, etc.
 
 # NEW: use the static geometry mapper that wraps g_i.point/line/surface
@@ -40,7 +41,7 @@ from .meshmapper import MeshMapper
 from .monitormapper import MonitorMapper
 from .phasemapper import PhaseMapper
 
-# Domain class imports for type hints / isinstance dispatch
+# Domain class imports for typ`e hints / isinstance dispatch
 from ..borehole import BoreholeSet
 from ..materials.soilmaterial import BaseSoilMaterial
 from ..materials.platematerial import ElasticPlate, ElastoplasticPlate
@@ -525,3 +526,129 @@ class PlaxisRunner:
         Convenience wrapper returning only names (list).
         """
         return list(self.get_all_child_soils(phase=phase).values())
+    
+    # Save and Load
+    _project_path: Optional[str] = None  # last known project file path (best-effort cache)
+
+    # --------- small internals ---------
+    def _ensure_connected(self) -> None:
+        """Ensure we are connected to PLAXIS Input; call self.connect() if needed."""
+        g_i = getattr(self, "g_i", None)
+        if g_i is None:
+            if hasattr(self, "connect") and callable(self.connect):
+                self.connect()
+                g_i = getattr(self, "g_i", None)
+        if g_i is None:
+            raise RuntimeError("Not connected to PLAXIS Input (g_i is None).")
+
+    def _default_ext(self) -> str:
+        """
+        Return default project extension. Change to '.p2d' if you are driving PLAXIS 2D.
+        """
+        return ".p3d"
+
+    def _normalize_path(self, path: str) -> str:
+        """
+        Expand user/relative parts and ensure the default extension is present.
+        """
+        full = os.path.abspath(os.path.expanduser(str(path)))
+        root, ext = os.path.splitext(full)
+        if not ext:  # only append when no extension at all
+            full = full + self._default_ext()
+        return full
+
+    # --------- public API: Save / Load ---------
+    def save_project(self, path: Optional[str] = None, *, overwrite: bool = False) -> str:
+        """
+        Save the current PLAXIS project.
+
+        Behavior:
+        - If `path` is None: call g_i.save() (project must already have a file name).
+        - If `path` is given: Save-As to that path (append .p3d when missing).
+        - Creates parent directories as needed.
+        - If the file exists and overwrite is False -> FileExistsError.
+
+        Returns:
+            Absolute path to the saved project file.
+        """
+        self._ensure_connected()
+        g_i: Any = self.g_i
+
+        # No path supplied -> use current project target
+        if path is None:
+            try:
+                g_i.save()
+            except Exception as e:
+                raise RuntimeError(
+                    "g_i.save() failed. The project may not have a file name yet. "
+                    "Supply a path to save_project(path=...) or use save_as(...)."
+                ) from e
+            # Try to update cached path from PLAXIS, best-effort
+            try:
+                proj = getattr(g_i, "Project", None)
+                fname = getattr(proj, "FileName", None) or getattr(proj, "Filename", None)
+                if isinstance(fname, str) and fname:
+                    self._project_path = fname
+            except Exception:
+                pass
+            return self._project_path or ""
+
+        # Save-As branch
+        full = self._normalize_path(path)
+        folder = os.path.dirname(full)
+        os.makedirs(folder, exist_ok=True)
+        if os.path.exists(full) and not overwrite:
+            raise FileExistsError(f"File already exists: {full}. Pass overwrite=True to replace.")
+        g_i.saveas(full)
+        self._project_path = full
+        return full
+
+    def save_as(self, path: str, *, overwrite: bool = True) -> str:
+        """
+        Convenience alias for Save-As operation.
+        By default, overwrite=True to match typical UI expectation for 'Save As'.
+        """
+        return self.save_project(path=path, overwrite=overwrite)
+
+    def load_project(self, path: str) -> str:
+        """
+        Load an existing PLAXIS project into the current Input session.
+
+        Behavior:
+        - Normalizes the path; if no extension given, appends the default (.p3d).
+        - Verifies existence and calls g_i.open(full_path).
+        - Updates internal `_project_path`.
+
+        Returns:
+            Absolute path that was opened.
+        """
+        self._ensure_connected()
+        # Only append default extension when the user did not provide any extension
+        raw = os.path.abspath(os.path.expanduser(str(path)))
+        if not os.path.splitext(raw)[1]:
+            raw = self._normalize_path(raw)
+        if not os.path.exists(raw):
+            raise FileNotFoundError(f"Project file not found: {raw}")
+        g_i: Any = self.g_i
+        g_i.open(raw)
+        self._project_path = raw
+        return raw
+
+    def open_project(self, path: str) -> str:
+        """Alias of load_project(path)."""
+        return self.load_project(path)
+
+    def get_project_path(self) -> Optional[str]:
+        """
+        Return the last known project file path (best-effort).
+        Attempts to query g_i.Project.FileName; falls back to the cached value.
+        """
+        try:
+            self._ensure_connected()
+            proj = getattr(self.g_i, "Project", None)
+            fname = getattr(proj, "FileName", None) or getattr(proj, "Filename", None)
+            if isinstance(fname, str) and fname:
+                self._project_path = fname
+        except Exception:
+            pass
+        return self._project_path

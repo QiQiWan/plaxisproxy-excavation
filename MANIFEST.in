@@ -1,0 +1,10 @@
+include README.md
+include LICENSE
+include CHANGELOG.md
+
+recursive-include src/plaxisproxy_excavation/data *
+recursive-include src/plaxisproxy_excavation/resources *
+
+prune tests
+prune examples
+prune scripts

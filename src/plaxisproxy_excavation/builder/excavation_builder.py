@@ -4,17 +4,17 @@ from enum import Enum
 from math import ceil
 from typing import List, Dict, Any, Optional, Tuple, Union, Sequence
 
-from .plaxisproxy_excavation.plaxishelper.plaxisrunner import PlaxisRunner
+from ..plaxishelper.plaxisrunner import PlaxisRunner
 from .plaxis_config import *
-from .plaxisproxy_excavation.excavation import FoundationPit, StructureType, _normalize_structure_type
-from .plaxisproxy_excavation.structures.soilblock import SoilBlock
-from .plaxisproxy_excavation.geometry import Polygon3D
-from .plaxisproxy_excavation.components.mesh import Mesh
+from ..excavation import FoundationPit, StructureType, _normalize_structure_type
+from ..structures.soilblock import SoilBlock
+from ..geometry import Polygon3D
+from ..components.mesh import Mesh
 
-from config.plaxis_config import HOST, PORT, PASSWORD
+from plaxis_config import HOST, PORT, PASSWORD
 
-from .plaxisproxy_excavation.plaxishelper.plaxisoutput import PlaxisOutput
-from .plaxisproxy_excavation.plaxishelper.resulttypes import (
+from ..plaxishelper.plaxisoutput import PlaxisOutput
+from ..plaxishelper.resulttypes import (
     Plate as PlateResult,
     Beam as BeamResult,
     EmbeddedBeam as EmbeddedBeamResult,
@@ -710,7 +710,7 @@ class ExcavationBuilder:
                 if getattr(app, "g_i", None) is None:
                     raise RuntimeError("Not connected (g_i is None).")
                 try:
-                    from .plaxisproxy_excavation.plaxishelper.monitormapper import MonitorMapper  # type: ignore
+                    from ..plaxishelper.monitormapper import MonitorMapper  # type: ignore
                 except Exception:
                     from plaxisproxy_excavation.plaxishelper.monitormapper import MonitorMapper  # type: ignore
                 MonitorMapper.create_monitors(app.g_i, monitors)  # type: ignore
@@ -1268,7 +1268,7 @@ class ExcavationBuilder:
 
         # 2) If no Output or not connected → create & bind
         if not self.is_output_connected():
-            from .plaxisproxy_excavation.plaxishelper.plaxisoutput import PlaxisOutput  # local import to avoid cycles
+            from ..plaxishelper.plaxisoutput import PlaxisOutput  # local import to avoid cycles
             po = PlaxisOutput(host=HOST, password=PASSWORD)
             self.Output = po.connect_via_input(g_i, phase)
             return self.Output
@@ -1282,7 +1282,7 @@ class ExcavationBuilder:
         except Exception:
             # If anything goes wrong resolving, force a reconnect to be safe
             self.close_output_viewer()
-            from .plaxisproxy_excavation.plaxishelper.plaxisoutput import PlaxisOutput
+            from ..plaxishelper.plaxisoutput import PlaxisOutput
             po = PlaxisOutput(host=HOST, password=PASSWORD)
             self.Output = po.connect_via_input(g_i, phase)
             return self.Output
@@ -1294,7 +1294,7 @@ class ExcavationBuilder:
             except Exception:
                 # Fallback: hard reconnect
                 self.close_output_viewer()
-                from .plaxisproxy_excavation.plaxishelper.plaxisoutput import PlaxisOutput
+                from ..plaxishelper.plaxisoutput import PlaxisOutput
                 po = PlaxisOutput(host=HOST, password=PASSWORD)
                 self.Output = po.connect_via_input(g_i, phase)
 
@@ -1324,3 +1324,76 @@ class ExcavationBuilder:
         # 3) fetch and return
         return po.get_results(structure, leaf, smoothing=smoothing)
 
+    ###########################################################################
+    # Save and Load
+    ###########################################################################
+
+    def save_project(self, path: Optional[str] = None, *, overwrite: bool = False) -> str:
+        """
+        Save the current PLAXIS project via Runner.
+        - If `path` is None, requires the project to already have a file name in PLAXIS.
+        - If `path` is provided, performs a Save-As to that path.
+        Returns the absolute path of the saved project.
+        """
+        return self.App.save_project(path=path, overwrite=overwrite)
+
+    def save_as(self, path: str, *, overwrite: bool = True) -> str:
+        """
+        Convenience alias for Save-As. Overwrite defaults to True.
+        Returns the absolute path of the saved project.
+        """
+        return self.App.save_as(path, overwrite=overwrite)
+
+    def load_project(self, path: str) -> str:
+        """
+        Load an existing PLAXIS project via Runner.
+        - Closes the current Output viewer (if any) to avoid stale connections.
+        - Calls Runner.load_project(path).
+        - Resets internal calculation flag (a newly loaded project may not be calculated).
+        Returns the absolute path that was opened.
+        """
+        # Make sure we do not keep an Output session bound to the previous project
+        try:
+            self.close_output_viewer()
+        except Exception:
+            pass
+        opened = self.App.load_project(path)
+        # New project → results state unknown; require recalculation before queries
+        try:
+            self._calc_done = False
+        except Exception:
+            pass
+        return opened
+
+    def open_project(self, path: str) -> str:
+        """
+        Alias of load_project(path).
+        """
+        return self.load_project(path)
+
+    def get_project_path(self) -> Optional[str]:
+        """
+        Return the last known project file path (best-effort).
+        Delegates to Runner.get_project_path().
+        """
+        return self.App.get_project_path()
+
+    # -------- Optional convenience: save using ProjectInformation path ----------
+
+    def save_to_project_info_path(self, *, overwrite: bool = True) -> str:
+        """
+        Save-As using FoundationPit's ProjectInformation (dir + file_name) if available.
+        - If dir is missing, defaults to current working directory.
+        - If file_name is missing, falls back to 'project'.
+        - Runner will append the proper extension when missing (e.g., .p3d).
+        Returns the absolute path of the saved project.
+        """
+        pit = getattr(self, "excavation_object", None)
+        proj = getattr(pit, "project_information", None) if pit is not None else None
+        if proj is None:
+            raise ValueError("ProjectInformation is not available on the excavation_object.")
+        dir_ = getattr(proj, "dir", None) or "."
+        fname = getattr(proj, "file_name", None) or "project"
+        import os
+        full = os.path.join(dir_, fname)
+        return self.App.save_as(full, overwrite=overwrite)
