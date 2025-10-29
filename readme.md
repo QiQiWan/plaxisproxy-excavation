@@ -115,9 +115,17 @@ Plaxis 官方提供的 `plxscripting` 库虽然能实现远程建模与控制计
 
 ### 📦 Python 包依赖
 
+安装本框架之前需要先安装依赖：
+
 ```bash
 pip install shapely==2.0.7
 pip install plxscripting==1.0.4
+```
+
+直接运行以下命令安装本框架：
+
+```bash
+pip install plaxisproxy-excavation
 ```
 
 ### ⚙️ 配置 Plaxis 远程服务

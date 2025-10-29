@@ -86,9 +86,17 @@ It wraps Plaxis’ native scripting interface (`plxscripting`) with an **object-
 
 ### Python packages
 
+Before installing this framework, you need to install the dependencies first:
+
 ```bash
 pip install shapely==2.0.7
 pip install plxscripting==1.0.4
+```
+
+Run the following command directly to install this framework:
+
+```bash
+pip install plaxisproxy-excavation
 ```
 
 ### Plaxis remote configuration
@@ -250,3 +258,9 @@ This end-to-end demo assembles a pit with **retaining walls, three brace levels,
 
 * Recommended: **Apache-2.0** (or your project’s existing choice).
 * Thanks to the Plaxis team for `plxscripting`, and to contributors/users for feedback that shaped these abstractions.
+
+## Communication & Discussion
+
+![WeChat Official Account QR Code](doc/imgs/EatRicer_qrcode.jpg)
+
+![Add me on WeChat to discuss and optimize together](doc/imgs/WXCode.jpg)
