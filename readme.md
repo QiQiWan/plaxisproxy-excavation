@@ -420,6 +420,7 @@ if __name__ == "__main__":
 
 ## 交流与讨论
 
-![微信公众号二维码](doc/imgs/EatRicer_qrcode.jpg)
-
-![添加我的微信一起讨论与优化](doc/imgs/WXCode.jpg)
+<p align="center">
+  <img src="doc/imgs/EatRicer_qrcode.jpg" alt="微信公众号二维码" width="30%" />
+  <img src="doc/imgs/WXCode.jpg" alt="添加我的微信一起讨论与优化" width="30%" />
+</p>

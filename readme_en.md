@@ -261,6 +261,7 @@ This end-to-end demo assembles a pit with **retaining walls, three brace levels,
 
 ## Communication & Discussion
 
-![WeChat Official Account QR Code](doc/imgs/EatRicer_qrcode.jpg)
-
-![Add me on WeChat to discuss and optimize together](doc/imgs/WXCode.jpg)
+<p align="center">
+  <img src="doc/imgs/EatRicer_qrcode.jpg" alt="WeChat Official Account QR Code" width="30%" />
+  <img src="doc/imgs/WXCode.jpg" alt="Add me on WeChat to discuss and optimize together" width="30%" />
+</p>
