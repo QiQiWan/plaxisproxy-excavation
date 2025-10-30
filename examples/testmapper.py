@@ -745,7 +745,132 @@ def export_walls_horizontal_displacement_excel_2(builder: ExcavationBuilder, exc
     return excel_path
 
 
+def export_walls_horizontal_displacement_excel(builder: ExcavationBuilder, excel_path: str) -> str:
+    """
+    For each retaining wall, export ALL point-wise results (X,Y,Z,Ux,Uy[,Uz])
+    across ALL phases to a dedicated Excel sheet (one wall per sheet).
+
+    Loop order: PHASES (outer) -> WALLS (inner)
+    so that Output view binding is reused within each phase.
+    """
+    import re
+    import numpy as np
+    import pandas as pd
+    from plaxisproxy_excavation.excavation import StructureType
+    from plaxisproxy_excavation.plaxishelper.resulttypes import Plate  # 枚举库
+
+    # 1) 项目阶段
+    project_phases = builder.list_project_phases()
+    if not project_phases:
+        raise RuntimeError("No project phases found. Ensure phases are defined and calculated.")
+
+    # 2) 围护墙对象列表
+    pit = builder.excavation_object
+    walls = (getattr(pit, "structures", {}) or {}).get(StructureType.RETAINING_WALLS.value, [])
+    if not walls:
+        raise RuntimeError("No retaining walls found in the pit structures.")
+
+    # 3) 需要提取的结果项（按需容错 Uz 可能不存在）
+    leaves = {}
+    for key in ("X", "Y", "Z", "Ux", "Uy", "Uz"):
+        member = getattr(Plate, key, None)
+        if member is not None:
+            leaves[key] = member
+
+    def _to_array(v) -> np.ndarray:
+        """统一数值化为 float 数组；标量→单元素数组；其它→空数组。"""
+        if isinstance(v, list):
+            return np.asarray(v, dtype=float).ravel()
+        if isinstance(v, (int, float, np.floating)):
+            return np.asarray([float(v)], dtype=float)
+        return np.asarray([], dtype=float)
+
+    def _pad(arr: np.ndarray, n: int) -> np.ndarray:
+        """长度补齐到 n，用 NaN 填充。"""
+        out = np.full(n, np.nan, dtype=float)
+        m = min(len(arr), n)
+        if m:
+            out[:m] = arr[:m]
+        return out
+
+    def _safe_sheet_name(name: str, used: set) -> str:
+        """Excel sheet 名清洗与去重（≤31字，禁: \ / ? * [ ] :）。"""
+        s = re.sub(r'[:\\/?*\[\]]', '_', str(name)).strip() or "Sheet"
+        s = s[:31]
+        base = s
+        i = 1
+        while s in used:
+            suf = f"_{i}"
+            s = (base[: (31 - len(suf))] + suf) if len(base) + len(suf) > 31 else (base + suf)
+            i += 1
+        used.add(s)
+        return s
+
+    # 为“每面墙一个 sheet”做累积容器
+    wall_rows = {getattr(w, "name", "Wall"): [] for w in walls}
+
+    # 4) 外层相位循环（减少 view 重建）
+    for ph in project_phases:
+        ph_name = getattr(ph, "name", str(ph))
+
+        # （可选优化：这行可省略，builder.get_results 首次调用会自动绑定；
+        #  留着能更显式地在每个 phase 开始时完成一次绑定）
+        # builder.create_output_viewer(phase=ph, reuse=True)
+
+        # 内层墙循环
+        for wall in walls:
+            wall_name = getattr(wall, "name", "Wall")
+
+            # 逐列取值（builder 内部：确保已计算 + 自动绑定阶段 + 节点→应力点兜底）
+            data_cols = {}
+            for k, leaf in leaves.items():
+                try:
+                    raw = builder.get_results(structure=wall, leaf=leaf, phase=ph, smoothing=False)
+                    data_cols[k] = _to_array(raw)
+                except Exception:
+                    data_cols[k] = np.asarray([], dtype=float)
+
+            max_len = max((len(a) for a in data_cols.values()), default=0)
+
+            if max_len == 0:
+                # 该相位该墙没有可用数据，保留占位行方便排查
+                wall_rows[wall_name].append({
+                    "Phase": ph_name,
+                    "Index": np.nan,
+                    **{k: np.nan for k in ("X", "Y", "Z", "Ux", "Uy", "Uz") if k in leaves}
+                })
+                continue
+
+            padded = {k: _pad(a, max_len) for k, a in data_cols.items()}
+
+            # 逐点记录
+            for i in range(max_len):
+                rec = {"Phase": ph_name, "Index": i}
+                for k in ("X", "Y", "Z", "Ux", "Uy", "Uz"):
+                    if k in padded:
+                        rec[k] = float(padded[k][i])
+                wall_rows[wall_name].append(rec)
+
+    # 5) 写 Excel：每面墙一个 sheet
+    used_sheet_names: set = set()
+    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        for wall in walls:
+            wall_name = getattr(wall, "name", "Wall")
+            rows = wall_rows.get(wall_name, [])
+            df = pd.DataFrame.from_records(rows)
+
+            # 列顺序统一（存在的才保留）
+            cols = ["Phase", "Index"] + [k for k in ("X", "Y", "Z", "Ux", "Uy", "Uz") if k in leaves]
+            if not df.empty:
+                df = df.loc[:, [c for c in cols if c in df.columns]]
+
+            sheet = _safe_sheet_name(wall_name, used_sheet_names)
+            df.to_excel(writer, index=False, sheet_name=sheet)
+
+    return excel_path
+
+
 print("[TEST] Exporting horizontal wall displacement (all phases) …")
 excel_path = "./walls_horizontal_displacements.xlsx"
-saved = export_walls_horizontal_displacement_excel_2(builder, excel_path)
+saved = export_walls_horizontal_displacement_excel(builder, excel_path)
 print(f"[TEST] Excel saved: {saved}")
