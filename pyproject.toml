@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plaxisproxy_excavation"
-version = "1.0.0"                      # 交给 setuptools-scm
+version = "1.0.1"                      # 交给 setuptools-scm
 description = "Automation & simulation toolkit for excavation engineering (PLAXIS-driven)."
 readme = "README.md"
 requires-python = "~=3.9"

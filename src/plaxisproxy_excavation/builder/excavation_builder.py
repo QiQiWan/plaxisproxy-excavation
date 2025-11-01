@@ -542,7 +542,7 @@ class ExcavationBuilder:
     # Build (initial design only)
     # -------------------------------------------------------------------------
 
-    def build(self) -> Dict[str, Any]:
+    def build(self, mesh: bool = True) -> Dict[str, Any]:
         """Build the base PLAXIS model from the FoundationPit object.
 
         IMPORTANT:
@@ -718,7 +718,7 @@ class ExcavationBuilder:
                 print(f"[build] Warning: monitor mapping skipped: {e}")
 
         # ---------------- 8) Mesh (optional) -----------------------------------
-        meshed = False
+        meshed = not mesh
         mesh_cfg = getattr(pit, "mesh", None)
         if mesh_cfg is None:
             mesh_cfg = Mesh()

@@ -417,130 +417,194 @@ class BoreholeSet(_PlxBase):
         self._global_soil_layers[lname] = sl
         return sl
 
-    def normalize_all_boreholes(
-        self,
-        *,
-        eps: float = EPS,
-        in_place: bool = True,
-    ) -> Dict[str, Any]:
+    def normalize_all_boreholes(self, *, eps: float = EPS, in_place: bool = True) -> Dict[str, Any]:
         """
-        Normalize layer ordering across all boreholes and insert **zero-thickness**
-        layers for missing ones using the *adjacent-neighbor* rule:
+        Normalize across boreholes WITHOUT using layer names.
+        Global order is derived from per-borehole SoilLayer object sequences (top→bottom)
+        plus cross-hole adjacency (topological sort). If the same SoilLayer reappears
+        after being interrupted by others within one borehole, it becomes a NEW VARIANT
+        (#2/#3/...). Missing variants can be inserted as zero-thickness at consistent
+        pinch-out interfaces.
 
-          • only-above → z = above.bottom
-          • only-below → z = below.top
-          • both exist:
-                if |ab - bt| <= eps → z = boundary
-                else:
-                    z = 0.5*(ab + bt)
-                    above.bottom = z
-                    below.top    = z
-
-        Also enforces intra-borehole continuity:
-        new_layers[i].top_z == new_layers[i-1].bottom_z (snapped).
-
-        Returns
-        -------
-        {
-          "ordered_names": [layer_name_top_to_bottom, ...],
-          "boreholes": {
-             "<bh.name>": { "<layer_name>": (top_z, bottom_z), ... },
-             ...
-          }
-        }
+        I/O contract: in-place rewrite of `bh.layers`. Return a summary dict with the
+        same shape as the original implementation.
         """
-        ordered_names = self._collect_ordered_layer_names()
-        if not ordered_names:
-            return {"ordered_names": [], "n_boreholes": len(self.boreholes), "boreholes": {}}
+        # ---- Internal policies (do not change external interface) ----
+        SPLIT_REAPPEARING = True          # split non-consecutive reappearance into variants
+        INSERT_ZERO_THICKNESS = True      # ensure each BH is a subsequence of global order
+        PINCHOUT_POLICY = "top_of_next"   # or "bottom_of_prev"
 
-        # Prepare canonical SoilLayer objects for all names
-        for nm in ordered_names:
-            _ = self._get_or_make_global_soil_layer(nm)
+        # ---------- helpers (object-based; NO name-based logic) ----------
+        def base_id_of(bl: BoreholeLayer) -> int:
+            sl = getattr(bl, "soil_layer", None)
+            return id(sl) if sl is not None else id(bl)  # fallback to BL object id
 
-        info: Dict[str, Any] = {"ordered_names": ordered_names, "boreholes": {}}
+        # 1) Per-borehole sequences of variants: key = (base_id, occurrence_index)
+        per_bh_sequences: Dict[str, List[Tuple[Tuple[int, int], BoreholeLayer]]] = {}
+        global_max_occ: Dict[int, int] = {}
 
         for bh in self.boreholes:
-            present = bh.layers_by_name()  # lname -> BoreholeLayer
+            counts: Dict[int, int] = {}
+            seq: List[Tuple[Tuple[int, int], BoreholeLayer]] = []
+            last_base: Optional[int] = None
+            for bl in bh.layers:
+                bid = base_id_of(bl)
+                if SPLIT_REAPPEARING:
+                    if last_base is None or bid != last_base:
+                        counts[bid] = counts.get(bid, 0) + 1
+                else:
+                    counts[bid] = counts.get(bid, 1)
+                occ = counts[bid]
+                key = (bid, occ)
+                seq.append((key, bl))
+                last_base = bid
+                if occ > global_max_occ.get(bid, 0):
+                    global_max_occ[bid] = occ
+            per_bh_sequences[bh.name] = seq
+
+        # 2) Build partial order + topological sort
+        from collections import defaultdict, deque
+        edges: Dict[Tuple[int, int], Set[Tuple[int, int]]] = defaultdict(set)
+        indeg: Dict[Tuple[int, int], int] = defaultdict(int)
+        nodes: Set[Tuple[int, int]] = set()
+
+        for _, seq in per_bh_sequences.items():
+            prev_key: Optional[Tuple[int, int]] = None
+            for key, _ in seq:
+                nodes.add(key)
+                if prev_key is not None and prev_key != key:
+                    if key not in edges[prev_key]:
+                        edges[prev_key].add(key)
+                        indeg[key] += 1
+                        nodes.add(prev_key)
+                prev_key = key
+
+        # ensure all variants exist as nodes
+        for bid, max_occ in global_max_occ.items():
+            for occ in range(1, max_occ + 1):
+                nodes.add((bid, occ))
+
+        q = deque([n for n in nodes if indeg.get(n, 0) == 0])
+        global_order: List[Tuple[int, int]] = []
+        while q:
+            u = q.popleft()
+            global_order.append(u)
+            for v in edges.get(u, ()):
+                indeg[v] -= 1
+                if indeg[v] == 0:
+                    q.append(v)
+
+        if len(global_order) != len(nodes):
+            # deterministic fallback (cycle): order by first-seen base then occurrence
+            first_seen: Dict[int, int] = {}
+            idx = 0
+            for _, seq in per_bh_sequences.items():
+                for (bid, _), __ in seq:
+                    if bid not in first_seen:
+                        first_seen[bid] = idx
+                        idx += 1
+            global_order = sorted(nodes, key=lambda k: (first_seen.get(k[0], 10**9), k[1]))
+
+        # 3) Create canonical SoilLayer per variant (clone base + "#occ" suffix for occ>=2)
+        def clone_soil_layer(base: SoilLayer, occ: int) -> SoilLayer:
+            suffix = f"#{occ}" if occ > 1 else ""
+            nm = getattr(base, "name", f"Layer_{id(base)}") + suffix
+            return SoilLayer(nm, material=getattr(base, "material", None))
+
+        variant_layer_obj: Dict[Tuple[int, int], SoilLayer] = {}
+        for key in global_order:
+            bid, occ = key
+            base: Optional[SoilLayer] = None
+            # exact variant base
+            for _, seq in per_bh_sequences.items():
+                for (kb, ko), bl in seq:
+                    if (kb, ko) == key:
+                        base = getattr(bl, "soil_layer", None)
+                        break
+                if base is not None:
+                    break
+            # sibling base if exact not found
+            if base is None:
+                for _, seq in per_bh_sequences.items():
+                    for (kb, _), bl in seq:
+                        if kb == bid:
+                            base = getattr(bl, "soil_layer", None)
+                            if base is not None:
+                                break
+                    if base is not None:
+                        break
+            # fabricate neutral if still None
+            variant_layer_obj[key] = clone_soil_layer(base, occ) if base else SoilLayer(f"Layer_{bid}#{occ}", material=None)
+
+        # 4) Rewrite each borehole to align with global order
+        def top_of_next_present(i: int, present_map: Dict[Tuple[int, int], BoreholeLayer]) -> Optional[float]:
+            for j in range(i, len(global_order)):
+                k = global_order[j]
+                bl = present_map.get(k)
+                if bl is not None:
+                    return float(bl.top_z)
+            return None
+
+        def bottom_of_prev_present(i: int, present_map: Dict[Tuple[int, int], BoreholeLayer]) -> Optional[float]:
+            for j in range(i - 1, -1, -1):
+                k = global_order[j]
+                bl = present_map.get(k)
+                if bl is not None:
+                    return float(bl.bottom_z)
+            return None
+
+        summary: Dict[str, Any] = {"ordered_names": [variant_layer_obj[k].name for k in global_order], "boreholes": {}}
+
+        for bh in self.boreholes:
+            # map variants present in this BH
+            counts_local: Dict[int, int] = {}
+            present: Dict[Tuple[int, int], BoreholeLayer] = {}
+            last_base: Optional[int] = None
+            for bl in bh.layers:
+                bid = base_id_of(bl)
+                if SPLIT_REAPPEARING:
+                    if last_base is None or bid != last_base:
+                        counts_local[bid] = counts_local.get(bid, 0) + 1
+                else:
+                    counts_local[bid] = counts_local.get(bid, 1)
+                occ = counts_local[bid]
+                present[(bid, occ)] = bl
+                last_base = bid
+
             new_layers: List[BoreholeLayer] = []
-
-            for idx, lname in enumerate(ordered_names):
-                cur = present.get(lname)
-                if cur is None:
-                    # Missing layer → insert zero-thickness one,
-                    # placed against nearest neighbor(s)
-                    above_z: Optional[float] = None
-                    below_z: Optional[float] = None
-
-                    # find above: last existing layer before idx
-                    for j in range(idx - 1, -1, -1):
-                        nm = ordered_names[j]
-                        if nm in present:
-                            above_z = float(present[nm].bottom_z)
-                            break
-                    # find below: first existing layer after idx
-                    for j in range(idx + 1, len(ordered_names)):
-                        nm = ordered_names[j]
-                        if nm in present:
-                            below_z = float(present[nm].top_z)
-                            break
-
-                    # fallback when no neighbor found → use local ground level
-                    if above_z is None and below_z is None:
-                        z = float(bh.ground_level)
-                    elif above_z is not None and below_z is None:
-                        z = float(above_z)
-                    elif above_z is None and below_z is not None:
-                        z = float(below_z)
-                    else:
-                        # both exist
-                        assert above_z is not None and below_z is not None
-                        if abs(above_z - below_z) <= eps:
-                            z = above_z  # common boundary
-                        else:
-                            # resolve gap/overlap by splitting the difference
-                            z = 0.5 * (above_z + below_z)
-                            # adjust neighbors if they exist in present
-                            if idx - 1 >= 0:
-                                nm_above = ordered_names[idx - 1]
-                                if nm_above in present:
-                                    present[nm_above].bottom_z = float(z)
-                            if idx + 1 < len(ordered_names):
-                                nm_below = ordered_names[idx + 1]
-                                if nm_below in present:
-                                    present[nm_below].top_z = float(z)
-
-                    sl = self._get_or_make_global_soil_layer(lname)
-                    cur = BoreholeLayer(name=f"{lname}@{bh.name}", top_z=float(z), bottom_z=float(z), soil_layer=sl)
-
-                # snap continuity with previous if needed
-                if new_layers:
-                    prev = new_layers[-1]
-                    if abs(float(prev.bottom_z) - float(cur.top_z)) > eps:
-                        # prefer snapping the current top to previous bottom
-                        cur.top_z = float(prev.bottom_z)
-                    # guard against accidental inversion
-                    if float(cur.top_z) < float(cur.bottom_z):
-                        cur.bottom_z = float(cur.top_z)
-
-                new_layers.append(cur)
-
-            # Final pass: strict continuity & non-negative thickness
-            for k in range(1, len(new_layers)):
-                prev = new_layers[k - 1]
-                cur = new_layers[k]
-                cur.top_z = float(prev.bottom_z)
-                if float(cur.top_z) < float(cur.bottom_z):
-                    cur.bottom_z = float(cur.top_z)
+            for i, key in enumerate(global_order):
+                if key in present:
+                    old = present[key]
+                    sl = variant_layer_obj[key]
+                    # keep original BL name & geometry; only swap soil_layer
+                    new_layers.append(BoreholeLayer(getattr(old, "name", sl.name), float(old.top_z), float(old.bottom_z), sl))
+                else:
+                    if not INSERT_ZERO_THICKNESS:
+                        continue
+                    # pin zero-thickness at a consistent interface
+                    if PINCHOUT_POLICY == "top_of_next":
+                        z = top_of_next_present(i, present)
+                        if z is None:
+                            z = bottom_of_prev_present(i, present) or 0.0
+                    else:  # "bottom_of_prev"
+                        z = bottom_of_prev_present(i, present)
+                        if z is None:
+                            z = top_of_next_present(i, present) or 0.0
+                    sl = variant_layer_obj[key]
+                    nm = f"{sl.name}@{bh.name}_zero"
+                    new_layers.append(BoreholeLayer(nm, float(z), float(z), sl))
 
             if in_place:
                 bh.layers = new_layers
 
-            # summary per borehole
-            info["boreholes"][bh.name] = {
-                ly.soil_layer.name: (float(ly.top_z), float(ly.bottom_z)) for ly in (bh.layers if in_place else new_layers)
+            # fill summary per original shape
+            summary["boreholes"][bh.name] = {
+                (ly.soil_layer.name if getattr(ly, "soil_layer", None) else ly.name): (float(ly.top_z), float(ly.bottom_z))
+                for ly in (bh.layers if in_place else new_layers)
             }
 
-        return info
+        return summary
+
 
     # ------------------------------- queries ---------------------------------
 
