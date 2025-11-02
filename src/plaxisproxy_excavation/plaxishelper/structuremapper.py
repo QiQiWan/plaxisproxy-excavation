@@ -13,7 +13,7 @@ from ..materials.anchormaterial import (
 from ..structures.anchor import Anchor
 from ..structures.beam import Beam
 from ..structures.embeddedpile import EmbeddedPile
-from ..structures.retainingwall import RetainingWall
+from ..structures.retainingwall import RetainingWall, PositiveInterface, NegativeInterface, PlateInterfaceBase
 from ..structures.well import Well, WellType
 from ..structures.load import (
     PointLoad, LineLoad, SurfaceLoad,
@@ -301,6 +301,40 @@ def _assign_material(plx_obj: Any, mat_obj: Any) -> None:
     _set_many_props(plx_obj, {"Material": h})
 
 # =============================================================================
+# Interface helpers
+# =============================================================================
+
+def _set_interface_props(
+        g_i: Any,
+        *,
+        parent_plate_h: Any,
+        interface_h: Optional[Any],
+        side_label: str,              # "PositiveInterface" / "NegativeInterface"
+        cfg: PlateInterfaceBase,
+    ) -> None:
+        # 组装参数（与你截图字段一致）
+        kv = {
+            "MaterialMode": getattr(cfg.material_mode, "value", cfg.material_mode),
+            "ApplyStrengthReduction": bool(cfg.apply_strength_reduction),
+            "ActiveInFlow": bool(cfg.active_in_flow),
+            "VirtualThicknessFactor": float(cfg.virtual_thickness_factor),
+            # **(cfg.extra_props or {}),s
+        }
+
+        # 1) 优先对“界面句柄”设置
+        if interface_h is not None:
+            try:
+                _set_many_props(interface_h, kv)
+                return
+            except Exception:
+                pass  # 版本差异时退化
+
+        # 2) 兜底：对“板.界面.属性”设置（与你截图命令一致）
+        nested = {f"{side_label}.{k}": v for k, v in kv.items()}
+        _set_many_props(parent_plate_h, nested)
+
+
+# =============================================================================
 # Anchor
 # =============================================================================
 class AnchorMapper:
@@ -482,7 +516,16 @@ class EmbeddedPileMapper:
 # =============================================================================
 class RetainingWallMapper:
     @staticmethod
-    def create(g_i: Any, obj: RetainingWall) -> Any:
+    def create(g_i: Any, obj: RetainingWall,
+               *,
+               create_pos_interface: Optional[bool] = None,
+               create_neg_interface: Optional[bool] = None,
+               default_r_inter: Optional[float] = 0.67,
+               default_active_in_flow: bool = False,
+               default_virtual_thickness_factor_pos: float = 0.10,
+               default_virtual_thickness_factor_neg: float = 0.11,
+               default_apply_strength_reduction: bool = True
+    ) -> Any:
         surf_h = getattr(obj.surface, "plx_id", None) or _ensure_surface(g_i, obj.surface)
         created = _try_call(g_i, ("plate", "createplate"), surf_h)
         created = _normalize_created_handle(created)
@@ -497,6 +540,45 @@ class RetainingWallMapper:
 
         # ✅ 正确：plx_id 就是刚创建的句柄
         obj.plx_id = created
+
+        # 创建界面
+        pos_cfg = getattr(obj, "pos_interface", None)
+        neg_cfg = getattr(obj, "neg_interface", None)
+
+        if pos_cfg is None and create_pos_interface:
+            pos_cfg = PositiveInterface(
+                name=f"{obj.name}_PosInterface",
+                active_in_flow=default_active_in_flow,
+                virtual_thickness_factor=default_virtual_thickness_factor_pos,
+                apply_strength_reduction=default_apply_strength_reduction,
+                r_inter=default_r_inter,
+            )
+        if neg_cfg is None and create_neg_interface:
+            neg_cfg = NegativeInterface(
+                name=f"{obj.name}_NegInterface",
+                active_in_flow=default_active_in_flow,
+                virtual_thickness_factor=default_virtual_thickness_factor_neg,
+                apply_strength_reduction=default_apply_strength_reduction,
+                r_inter=default_r_inter,
+            )
+
+        # 逐侧创建 + 设置属性；收集 r_inter 候选
+        r_candidates = []
+        if pos_cfg:
+            InterfaceMapper.create_positive(g_i, created, pos_cfg)
+            if pos_cfg.r_inter is not None:
+                r_candidates.append(pos_cfg.r_inter)
+
+        if neg_cfg:
+            InterfaceMapper.create_negative(g_i, created, neg_cfg)
+            if neg_cfg.r_inter is not None:
+                r_candidates.append(neg_cfg.r_inter)
+
+        # 板级 R_inter（多数版本统一在板级；两侧都给时取更保守的较小值）
+        r_use = min(r_candidates) if r_candidates else (default_r_inter if (pos_cfg or neg_cfg) else None)
+        if r_use is not None:
+            _set_many_props(created, {"Rinter": r_use})  # 若你版本键名不同，改为 {"R_inter": r_use} 或加键名映射
+
         # ✅ 回写最终存档名（WALL1 -> WALL_1）
         _sync_final_name(obj, created)
 
@@ -512,6 +594,26 @@ class RetainingWallMapper:
             obj.plx_id = None
         _log_delete("RetainingWall", f"name={getattr(obj, 'name', 'raw')}", h, ok=ok)
         return ok
+
+class InterfaceMapper:
+    @staticmethod
+    def create_positive(g_i: Any, parent_plate_h: Any, obj: PositiveInterface) -> Optional[Any]:
+        created = _try_call(g_i, ("posinterface", "positiveinterface", "CreatePositiveInterface"), parent_plate_h.Parent)
+        ih = _normalize_created_handle(created)
+        obj.plx_id = ih                    # ✅ 为界面对象写回 plx_id
+        obj.parent_plate_id = parent_plate_h
+        _set_interface_props(g_i, parent_plate_h=parent_plate_h, interface_h=ih, side_label="PositiveInterface", cfg=obj)
+        return ih
+
+    @staticmethod
+    def create_negative(g_i: Any, parent_plate_h: Any, obj: NegativeInterface) -> Optional[Any]:
+        created = _try_call(g_i, ("neginterface", "negativeinterface", "CreateNegativeInterface"), parent_plate_h.Parent)
+        ih = _normalize_created_handle(created)
+        obj.plx_id = ih
+        obj.parent_plate_id = parent_plate_h
+        _set_interface_props(g_i, parent_plate_h=parent_plate_h, interface_h=ih, side_label="NegativeInterface", cfg=obj)
+        return ih
+
 
 # =============================================================================
 # Well
