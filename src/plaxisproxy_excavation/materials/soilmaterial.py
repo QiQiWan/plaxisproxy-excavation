@@ -17,15 +17,15 @@ class SoilMaterialsType(Enum):
 
 
 class MCGWType(Enum):
-    Standard = auto()
-    Hypres   = auto()
-    USDA     = auto()
-    Staring  = auto()
+    Standard = "Standard"
+    Hypres   = "Hypres"
+    USDA     = "USDA"
+    Staring  = "Staring"
 
 
 class MCGwSWCC(Enum):
-    Van        = auto()
-    Approx_Van = auto()
+    Van        = "Van Genuchten"
+    Approx_Van = "Approx. Van Genuchten"
 
 
 class RayleighInputMethod(Enum):
@@ -758,7 +758,7 @@ class SoilMaterialFactory:
             m = SoilMaterialFactory._num(kwargs, "m", required=False, gt=0.0, default=0.50, name="m")
             P_ref = SoilMaterialFactory._num(kwargs, "P_ref", "Pref", "p_ref", "pRef",
                                              required=False, gt=0.0, default=100.0, name="P_ref")
-            G0 = SoilMaterialFactory._num(kwargs, "G0", "G_0",
+            G0 = SoilMaterialFactory._num(kwargs, "G0", "G_0", "G0_ref",
                                           required=False, gt=0.0,
                                           default=(E_base / (2.0 * (1.0 + (nu if nu is not None else 0.30)))) if E_base else 1.0,
                                           name="G0")
@@ -784,7 +784,7 @@ class SoilMaterialFactory:
                 E_ur=E_ur if E_ur is not None else (3.0 * (E_base if E_base else 1.0)),
                 m=m if m is not None else 0.50,
                 P_ref=P_ref if P_ref is not None else 100.0,
-                G0=G0 if G0 is not None else (E_base / (2.0 * (1.0 + (nu if nu is not None else 0.30))) if E_base else 1.0),
+                G0=G0 if G0 is not None else (E_ur / (2.0 * (1.0 + (nu if nu is not None else 0.30))) if E_ur else 1.0),
                 gamma_07=gamma_07 if gamma_07 is not None else 1e-4,
                 c=c if c is not None else 0.0,
                 phi=phi if phi is not None else 30.0,

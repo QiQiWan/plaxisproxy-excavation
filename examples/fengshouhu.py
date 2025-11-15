@@ -1,12 +1,16 @@
-# testmapper.py — Builder + Runner-forwarded soil mapping demo (Phase API aligned)
 from math import ceil
 from typing import List, Tuple, Iterable, Any, Dict, Optional
 
-from plaxis_config import HOST, PORT, PASSWORD
+try:
+    from plaxis_config import HOST, PORT, PASSWORD
+except:
+    HOST = "localhost"
+    PORT = 10000
+    PASSWORD = "yS9f$TMP?$uQ@rW3"
 
 # Runner / Builder / Container
 from plaxisproxy_excavation.plaxishelper.plaxisrunner import PlaxisRunner
-from plaxisproxy_excavation.builder.excavation_builder import ExcavationBuilder
+from plaxisproxy_excavation.builder import ExcavationBuilder
 from plaxisproxy_excavation.excavation import FoundationPit, StructureType  # <-- NEW: StructureType
 
 # Core components
@@ -17,7 +21,7 @@ from plaxisproxy_excavation.components.watertable import WaterLevel, WaterLevelT
 
 # Boreholes & materials
 from plaxisproxy_excavation.borehole import SoilLayer, BoreholeLayer, Borehole, BoreholeSet
-from plaxisproxy_excavation.materials.soilmaterial import SoilMaterialFactory, SoilMaterialsType
+from plaxisproxy_excavation.materials.soilmaterial import SoilMaterialFactory, SoilMaterialsType, MCGWType, MCGwSWCC
 
 # Geometry
 from plaxisproxy_excavation.geometry import Point, PointSet, Line3D, Polygon3D
@@ -136,6 +140,24 @@ def wells_grid_in_polygon(prefix, poly_xy, z_top, z_bot, q_well, dx, dy, margin)
                 h_min=z_bot,
             ))
     return wells
+
+def get_well_positions(file_name: str, z_top, z_bot, q_well) -> List[Well]:
+    import pandas as pd
+    wells = []
+    data = pd.read_excel(file_name)
+    posi_col_name = ["Index", "X (m)", "Y (m)"]
+    selected_data = data[posi_col_name]
+    for index, row in selected_data.iterrows():
+        x, y = row[1] - 115, row[2]- 16.5
+        wells.append(Well(
+            name=f"G_{index}_{x}_{y}",
+            line=line_2pts((x, y, z_top), (x, y, z_bot)),
+            well_type=WellType.Extraction,
+            q_well=q_well,
+            h_min=z_bot,
+        ))
+    return wells
+    
 
 def layout_wells_with_limit(
     prefix: str,
@@ -269,6 +291,49 @@ def mk_soil_overrides(names: Iterable[str],
     return overrides
 
 
+# ----------------------------- Set wells ------------------------------
+def make_random_flows(
+    wells: Iterable[Any],
+    base: float = 120.0,
+    jitter: float = 0.15,
+    *,
+    seed: Optional[int] = None,
+    min_value: Optional[float] = None,
+    max_value: Optional[float] = None,
+    round_to: Optional[float] = None,
+) -> Dict[Any, float]:
+    """
+    Build {well_object: flow} with small random variation around `base`.
+    - wells: iterable of existing Well objects
+    - base: target flow (e.g., m^3/day)
+    - jitter: fraction in [0, 1]; each flow = base * (1 ± jitter), uniform
+    - seed: optional RNG seed for reproducibility
+    - min_value / max_value: optional clipping of generated flows
+    - round_to: optional rounding step (e.g., 1.0 → nearest 1 m^3/day)
+
+    Returns a dict keyed by the Well objects you passed in.
+    """
+    import random
+    if seed is not None:
+        random.seed(seed)
+
+    flows: Dict[Any, float] = {}
+    for w in wells:
+        # uniform factor in [1 - jitter, 1 + jitter]
+        f = 1.0 + (2.0 * random.random() - 1.0) * max(0.0, float(jitter))
+        q = float(base) * f
+
+        if min_value is not None and q < min_value:
+            q = float(min_value)
+        if max_value is not None and q > max_value:
+            q = float(max_value)
+        if round_to and round_to > 0:
+            q = round(q / round_to) * round_to
+
+        flows[w] = q
+
+    return flows
+
 # ----------------------------- assemble pit -----------------------------
 
 def assemble_pit(runner: Optional[PlaxisRunner] = None) -> FoundationPit:
@@ -288,8 +353,8 @@ def assemble_pit(runner: Optional[PlaxisRunner] = None) -> FoundationPit:
         stress_unit=Units.Stress.KPA,
         time_unit=Units.Time.DAY,
         gamma_water=9.81,
-        x_min=-345, x_max=345,   # 50 in X
-        y_min=-50, y_max=50,     # 80 in Y
+        x_min=-345, x_max=345, 
+        y_min=-50, y_max=50,  
     )
 
     pit = FoundationPit(project_information=proj)
@@ -306,162 +371,682 @@ def assemble_pit(runner: Optional[PlaxisRunner] = None) -> FoundationPit:
         except Exception as ex:
             print(f"[MAPPER] soil split discovery failed: {ex}")
 
-    # 2) Soil materials
-    fill = SoilMaterialFactory.create(
-        SoilMaterialsType.MC, name="Fill",
-        E_ref=15e6, c_ref=5e3, phi=25.0, psi=0.0, nu=0.30,
-        gamma=18.0, gamma_sat=20.0, e_init=0.60
-    )
-    soft_clay = SoilMaterialFactory.create(
-        SoilMaterialsType.MC, name="Soft_Clay",
-        E_ref=10e6, c_ref=18e3, phi=20.0, psi=0.0, nu=0.35,
-        gamma=17.5, gamma_sat=19.0, e_init=0.95
-    )
-    silty_clay = SoilMaterialFactory.create(
-        SoilMaterialsType.MC, name="Silty_Clay",
-        E_ref=18e6, c_ref=12e3, phi=23.0, psi=0.0, nu=0.33,
-        gamma=18.0, gamma_sat=19.5, e_init=0.85
-    )
-    fine_sand = SoilMaterialFactory.create(
-        SoilMaterialsType.MC, name="Fine_Sand",
-        E_ref=35e6, c_ref=1e3, phi=32.0, psi=2.0, nu=0.30,
-        gamma=19.0, gamma_sat=21.0, e_init=0.55
-    )
-    medium_sand = SoilMaterialFactory.create(
-        SoilMaterialsType.MC, name="Medium_Sand",
-        E_ref=60e6, c_ref=1e3, phi=35.0, psi=3.0, nu=0.28,
-        gamma=19.5, gamma_sat=21.5, e_init=0.50
-    )
-    gravelly_sand = SoilMaterialFactory.create(
-        SoilMaterialsType.MC, name="Gravelly_Sand",
-        E_ref=90e6, c_ref=1e3, phi=38.0, psi=5.0, nu=0.26,
-        gamma=20.0, gamma_sat=22.0, e_init=0.45
-    )
-    cdg = SoilMaterialFactory.create(
-        SoilMaterialsType.MC, name="Completely_Decomposed_Rock",
-        E_ref=120e6, c_ref=25e3, phi=36.0, psi=4.0, nu=0.26,
-        gamma=20.5, gamma_sat=22.5, e_init=0.40
-    )
-    mwr = SoilMaterialFactory.create(
-        SoilMaterialsType.MC, name="Moderately_Weathered_Rock",
-        E_ref=250e6, c_ref=40e3, phi=40.0, psi=6.0, nu=0.25,
-        gamma=21.0, gamma_sat=22.8, e_init=0.35
+    # # 2) Soil materials
+
+    # 统一说明：
+    # - 所有刚度/强度均为 kPa（kN/m²）
+    # - G0_ref 已按土类推荐值给定（≥ Eur/[2(1+ν)]）
+    # - gamma07 命名与 PLAXIS 一致；若你的工厂类用其它命名，请映射到 PLAXIS 的 gamma07
+
+    #region Soils definitions
+    # layer_001: 11_杂填土
+    layer_001 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="11_杂填土",
+        gamma=18.5,
+        nu=0.30,
+        E=1.875e3,        # 1875 kPa
+        E_oed=1.500e3,    # 1500 kPa
+        E_ur=5.625e3,     # 5625 kPa
+        G0_ref=3.245e3,   # ≈ 1.5 * Eur/[2(1+ν)]
+        gamma07=5e-4,
+        m=2.0,
+        P_ref=100.0,
+        c=8.0,            # kPa
+        phi=10.0,
+        psi=0.0,
     )
 
-    for m in (fill, soft_clay, silty_clay, fine_sand, medium_sand, gravelly_sand, cdg, mwr):
+    # layer_002: 12_素填土
+    layer_002 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="12_素填土",
+        gamma=18.0,
+        nu=0.30,
+        E=3.125e3,
+        E_oed=2.500e3,
+        E_ur=9.375e3,
+        G0_ref=5.409e3,
+        gamma07=5e-4,
+        m=2.0,
+        P_ref=100.0,
+        c=10.0,
+        phi=12.0,
+        psi=0.0,
+    )
+
+    # layer_003: 22_砂质粉土
+    layer_003 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="22_砂质粉土",
+        gamma=19.0,
+        nu=0.25,
+        E=8.750e3,
+        E_oed=7.000e3,
+        E_ur=2.625e4,
+        G0_ref=3.150e4,
+        gamma07=1e-4,
+        m=2.0,
+        P_ref=100.0,
+        c=6.0,
+        phi=26.0,
+        psi=0.0,
+    )
+
+    # layer_004: 32_砂质粉土
+    layer_004 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="32_砂质粉土",
+        gamma=19.2,
+        nu=0.25,
+        E=4.375e3,
+        E_oed=3.500e3,
+        E_ur=1.3125e4,
+        G0_ref=1.575e4,
+        gamma07=1e-4,
+        m=2.0,
+        P_ref=100.0,
+        c=5.0,
+        phi=26.0,
+        psi=0.0,
+    )
+
+    # layer_005: 35_粉砂夹粉土
+    layer_005 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="35_粉砂夹粉土",
+        gamma=19.3,
+        nu=0.25,
+        E=1.500e4,
+        E_oed=1.200e4,
+        E_ur=4.500e4,
+        G0_ref=5.400e4,
+        gamma07=1e-4,
+        m=5.0,
+        P_ref=100.0,
+        c=5.0,
+        phi=29.0,
+        psi=0.0,
+    )
+
+    # layer_006: 37_砂质粉土夹淤泥质粉质黏土
+    layer_006 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="37_砂质粉土夹淤泥质粉质黏土",
+        gamma=18.8,
+        nu=0.25,
+        E=8.125e3,
+        E_oed=6.500e3,
+        E_ur=2.4375e4,
+        G0_ref=2.925e4,
+        gamma07=1e-4,
+        m=2.0,
+        P_ref=100.0,
+        c=6.0,
+        phi=24.0,
+        psi=0.0,
+    )
+
+    # layer_007: 62_淤泥质粉质黏土
+    layer_007 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="62_淤泥质粉质黏土",
+        gamma=17.0,
+        nu=0.30,          # 由 0.35 调整为 0.30
+        E=5.000e3,
+        E_oed=4.000e3,
+        E_ur=1.500e4,
+        G0_ref=8.654e3,
+        gamma07=5e-4,
+        m=1.6,
+        P_ref=100.0,
+        c=20.0,
+        phi=11.0,
+        psi=0.0,
+    )
+
+    # layer_008: 62t_淤泥质粉质黏土夹粉土
+    layer_008 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="62t_淤泥质粉质黏土夹粉土",
+        gamma=17.7,
+        nu=0.30,
+        E=3.750e3,
+        E_oed=3.000e3,
+        E_ur=1.125e4,
+        G0_ref=6.490e3,
+        gamma07=5e-4,
+        m=1.8,
+        P_ref=100.0,
+        c=10.0,
+        phi=14.0,
+        psi=0.0,
+    )
+
+    # layer_009: 63_粉砂夹粉土
+    layer_009 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="63_粉砂夹粉土",
+        gamma=19.1,
+        nu=0.25,
+        E=1.250e4,
+        E_oed=1.000e4,
+        E_ur=3.750e4,
+        G0_ref=4.500e4,
+        gamma07=1e-4,
+        m=5.5,
+        P_ref=100.0,
+        c=5.0,
+        phi=28.0,
+        psi=0.0,
+    )
+
+    # layer_010: 81_黏土
+    layer_010 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="81_黏土",
+        gamma=17.5,
+        nu=0.30,
+        E=3.125e3,
+        E_oed=2.500e3,
+        E_ur=8.750e3,
+        G0_ref=5.048e3,
+        gamma07=5e-4,
+        m=1.4,
+        P_ref=100.0,
+        c=18.0,
+        phi=12.0,
+        psi=0.0,
+    )
+
+    # layer_011: 102_粉质黏土
+    layer_011 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="102_粉质黏土",
+        gamma=18.5,
+        nu=0.30,          # 由 0.35 调整为 0.30
+        E=6.250e3,
+        E_oed=5.000e3,
+        E_ur=2.0625e4,
+        G0_ref=1.1899e4,
+        gamma07=5e-4,
+        m=3.0,
+        P_ref=100.0,
+        c=20.0,
+        phi=15.0,
+        psi=0.0,
+    )
+
+    # layer_012: 111_粉质黏土
+    layer_012 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="111_粉质黏土",
+        gamma=19.3,
+        nu=0.30,          # 由 0.35 调整为 0.30
+        E=1.375e4,
+        E_oed=1.100e4,
+        E_ur=4.125e4,
+        G0_ref=2.3798e4,
+        gamma07=5e-4,
+        m=5.5,
+        P_ref=100.0,
+        c=21.0,
+        phi=15.4,
+        psi=0.0,
+    )
+
+    # layer_013: 121_细砂
+    layer_013 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="121_细砂",
+        gamma=19.6,
+        nu=0.25,
+        E=2.1875e4,
+        E_oed=1.750e4,
+        E_ur=6.5625e4,
+        G0_ref=7.875e4,
+        gamma07=1e-4,
+        m=6.0,
+        P_ref=100.0,
+        c=4.0,
+        phi=32.0,
+        psi=2.0,
+    )
+
+    # layer_014: 132_粉质黏土
+    layer_014 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="132_粉质黏土",
+        gamma=19.4,
+        nu=0.30,          # 由 0.35 调整为 0.30
+        E=1.0625e4,
+        E_oed=8.500e3,
+        E_ur=3.1875e4,
+        G0_ref=1.8389e4,
+        gamma07=5e-4,
+        m=3.2,
+        P_ref=100.0,
+        c=21.0,
+        phi=15.3,
+        psi=0.0,
+    )
+
+    # layer_015: 144_圆砾（数值很大，请确认是否合理）
+    layer_015 = SoilMaterialFactory.create(
+        SoilMaterialsType.HSS,
+        name="144_圆砾",
+        gamma=20.2,
+        gamma_sat=25,
+        nu=0.25,
+        E=5.625e6,        # 5.625e9 Pa → 5.625e6 kPa
+        E_oed=4.500e6,
+        E_ur=1.6875e7,
+        G0_ref=2.025e7,   # 3 × Eur/[2(1+ν)] = 2.025e7 kPa
+        gamma07=1e-4,
+        m=15.0,
+        P_ref=100.0,
+        c=3.0,
+        phi=38.0,
+        psi=8.0,
+    )
+
+
+    # region Update underground water  (permeability now in m/day)
+
+    # layer_001: 11_杂填土
+    layer_001.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.432, ky=0.432, kz=0.432,      # m/day (from 5e-06 m/s)
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_002: 12_素填土
+    layer_002.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.1728, ky=0.1728, kz=0.1728,   # from 2e-06 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_003: 22_砂质粉土
+    layer_003.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.41472, ky=0.3456, kz=0.3456,  # from 4.8e-06, 4.0e-06, 4.0e-06 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_004: 32_砂质粉土
+    layer_004.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.44928, ky=0.3456, kz=0.3456,  # from 5.2e-06, 4.0e-06, 4.0e-06 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_005: 35_粉砂夹粉土
+    layer_005.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.46656, ky=0.3888, kz=0.3888,  # from 5.4e-06, 4.5e-06, 4.5e-06 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_006: 37_砂质粉土夹淤泥质粉质黏土
+    layer_006.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.3456, ky=0.1296, kz=0.1296,   # from 4.0e-06, 1.5e-06, 1.5e-06 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_007: 62_淤泥质粉质黏土
+    layer_007.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.00432, ky=4.32e-4, kz=4.32e-4,  # from 5e-08, 5e-09, 5e-09 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_008: 62t_淤泥质粉质黏土夹粉土
+    layer_008.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.006912, ky=2.592e-4, kz=2.592e-4,  # from 8e-08, 3e-09, 3e-09 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_009: 63_粉砂夹粉土
+    layer_009.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.48384, ky=0.3888, kz=0.3888,  # from 5.6e-06, 4.5e-06, 4.5e-06 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_010: 81_黏土
+    layer_010.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=2.592e-4, ky=2.592e-4, kz=2.592e-4,  # from 3e-09 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_011: 102_粉质黏土
+    layer_011.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.00432, ky=0.00432, kz=0.00432,  # from 5e-08 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_012: 111_粉质黏土
+    layer_012.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.00432, ky=0.00432, kz=0.00432,  # from 5e-08 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_013: 121_细砂
+    layer_013.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.864, ky=0.432, kz=0.432,        # from 1e-05, 5e-06, 5e-06 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_014: 132_粉质黏土
+    layer_014.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=0.00432, ky=0.00432, kz=0.00432,  # from 5e-08 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    # layer_015: 144_圆砾
+    layer_015.set_under_ground_water(
+        type=MCGWType.Standard, SWCC_method=MCGwSWCC.Van,
+        soil_posi=None, soil_fine=None, Gw_defaults=None,
+        infiltration=None, default_method=None,
+        kx=8.64e3, ky=69.12, kz=69.12,       # from 1.0e-01, 8.0e-04, 8.0e-04 m/s
+        Gw_Psiunsat=0.0,
+    )
+
+    #endregion
+
+    # -*- coding: utf-8 -*-
+    # Use ALL newly created soil materials (layer_001 ~ layer_015) in the model.
+    # English comments only.
+    for m in (
+        layer_001, layer_002, layer_003, layer_004, layer_005,
+        layer_006, layer_007, layer_008, layer_009, layer_010,
+        layer_011, layer_012, layer_013, layer_014, layer_015
+    ):
         pit.add_material("soil_materials", m)
 
-    # 2) Canonical SoilLayer objects
-    sl_fill = SoilLayer("Fill", material=fill)
-    sl_soft_clay = SoilLayer("Soft_Clay", material=soft_clay)
-    sl_silty_clay = SoilLayer("Silty_Clay", material=silty_clay)
-    sl_fine_sand = SoilLayer("Fine_Sand", material=fine_sand)
-    sl_medium_sand = SoilLayer("Medium_Sand", material=medium_sand)
-    sl_gravelly_sand = SoilLayer("Gravelly_Sand", material=gravelly_sand)
-    sl_cdg = SoilLayer("Completely_Decomposed_Rock", material=cdg)
-    sl_mwr = SoilLayer("Moderately_Weathered_Rock", material=mwr)
+    sl_001 = SoilLayer("11_杂填土",           material=layer_001)
+    sl_002 = SoilLayer("12_素填土",           material=layer_002)
+    sl_003 = SoilLayer("22_砂质粉土",         material=layer_003)
+    sl_004 = SoilLayer("32_砂质粉土",         material=layer_004)
+    sl_005 = SoilLayer("35_粉砂夹粉土",       material=layer_005)
+    sl_006 = SoilLayer("37_砂质粉土夹淤泥质粉质黏土", material=layer_006)
+    sl_007 = SoilLayer("62_淤泥质粉质黏土",   material=layer_007)
+    sl_008 = SoilLayer("62t_淤泥质粉质黏土夹粉土", material=layer_008)
+    sl_009 = SoilLayer("63_粉砂夹粉土",       material=layer_009)
+    sl_010 = SoilLayer("81_黏土",             material=layer_010)
+    sl_011 = SoilLayer("102_粉质黏土",         material=layer_011)
+    sl_012 = SoilLayer("111_粉质黏土",         material=layer_012)
+    sl_013 = SoilLayer("121_细砂",             material=layer_013)
+    sl_014 = SoilLayer("132_粉质黏土",         material=layer_014)
+    sl_015 = SoilLayer("144_圆砾",             material=layer_015)
 
-    # 3) Boreholes & layers — 0 → -50 m
+    #    ALL 15 soil layers are used across the site. (CDG/MWR remain as rock basement.)
     GW_HEAD_NEAR_SURF = -3.5
+    # Canonical horizons to reduce cross-overs
+    H0    =  0.0     # ground
+    H1    = -3.0     # FILL -> UCLAY
+    H2    = -10.0    # UCLAY -> LCLAY
+    H3    = -15.0    # LCLAY -> SAND (upper)
+    HSPL  = -20.5    # split inside SAND (upper -> lower)
+    HGRAV = -29.5    # SAND (lower) -> GRAVEL
+    HBOT  = -50.0    # model bottom
 
-    bh1_layers = [
-        BoreholeLayer("Fill@BH1",                        0.0,  -3.0,  sl_fill),
-        BoreholeLayer("Soft_Clay@BH1",                  -3.0, -10.0,  sl_soft_clay),
-        BoreholeLayer("Silty_Clay@BH1",                -10.0, -15.0,  sl_silty_clay),
-        BoreholeLayer("Fine_Sand@BH1",                 -15.0, -21.0,  sl_fine_sand),
-        BoreholeLayer("Medium_Sand@BH1",               -21.0, -29.0,  sl_medium_sand),
-        BoreholeLayer("Gravelly_Sand@BH1",             -29.0, -35.0,  sl_gravelly_sand),
-        BoreholeLayer("Completely_Decomposed_Rock@BH1",-35.0, -42.0,  sl_cdg),
-        BoreholeLayer("Moderately_Weathered_Rock@BH1", -42.0, -50.0,  sl_mwr),
-    ]
-    bh2_layers = [
-        BoreholeLayer("Fill@BH2",                         0.0,  -2.5,  sl_fill),
-        BoreholeLayer("Soft_Clay@BH2",                   -2.5,  -9.0,  sl_soft_clay),
-        BoreholeLayer("Silty_Clay@BH2",                  -9.0, -14.5,  sl_silty_clay),
-        BoreholeLayer("Fine_Sand@BH2",                  -14.5, -20.5,  sl_fine_sand),
-        BoreholeLayer("Medium_Sand@BH2",                -20.5, -29.5,  sl_medium_sand),
-        BoreholeLayer("Gravelly_Sand@BH2",              -29.5, -36.0,  sl_gravelly_sand),
-        BoreholeLayer("Completely_Decomposed_Rock@BH2", -36.0, -43.0,  sl_cdg),
-        BoreholeLayer("Moderately_Weathered_Rock@BH2",  -43.0, -50.0,  sl_mwr),
-    ]
-    bh7_layers = [
-        BoreholeLayer("Fill@BH7",                         0.0,  -2.8, sl_fill),
-        BoreholeLayer("Soft_Clay@BH7",                   -2.8,  -9.5, sl_soft_clay),
-        BoreholeLayer("Silty_Clay@BH7",                  -9.5, -15.2, sl_silty_clay),
-        BoreholeLayer("Fine_Sand@BH7",                  -15.2, -21.5, sl_fine_sand),
-        BoreholeLayer("Medium_Sand@BH7",                -21.5, -30.0, sl_medium_sand),
-        BoreholeLayer("Gravelly_Sand@BH7",              -30.0, -36.0, sl_gravelly_sand),
-        BoreholeLayer("Completely_Decomposed_Rock@BH7", -36.0, -43.0, sl_cdg),
-        BoreholeLayer("Moderately_Weathered_Rock@BH7",  -43.0, -50.0, sl_mwr),
-    ]
-    bh8_layers = [
-        BoreholeLayer("Fill@BH8",                         0.0,  -3.2, sl_fill),
-        BoreholeLayer("Soft_Clay@BH8",                   -3.2, -10.5, sl_soft_clay),
-        BoreholeLayer("Silty_Clay@BH8",                 -10.5, -15.0, sl_silty_clay),
-        BoreholeLayer("Fine_Sand@BH8",                  -15.0, -22.0, sl_fine_sand),
-        BoreholeLayer("Medium_Sand@BH8",                -22.0, -29.0, sl_medium_sand),
-        BoreholeLayer("Gravelly_Sand@BH8",              -29.0, -34.5, sl_gravelly_sand),
-        BoreholeLayer("Completely_Decomposed_Rock@BH8", -34.5, -41.5, sl_cdg),
-        BoreholeLayer("Moderately_Weathered_Rock@BH8",  -41.5, -50.0, sl_mwr),
-    ]
-    bh9_layers = [
-        BoreholeLayer("Fill@BH9",                         0.0,  -2.7, sl_fill),
-        BoreholeLayer("Soft_Clay@BH9",                   -2.7,  -9.2, sl_soft_clay),
-        BoreholeLayer("Silty_Clay@BH9",                  -9.2, -14.0, sl_silty_clay),
-        BoreholeLayer("Fine_Sand@BH9",                  -14.0, -20.0, sl_fine_sand),
-        BoreholeLayer("Medium_Sand@BH9",                -20.0, -28.5, sl_medium_sand),
-        BoreholeLayer("Gravelly_Sand@BH9",              -28.5, -35.5, sl_gravelly_sand),
-        BoreholeLayer("Completely_Decomposed_Rock@BH9", -35.5, -44.0, sl_cdg),
-        BoreholeLayer("Moderately_Weathered_Rock@BH9",  -44.0, -50.0, sl_mwr),
-    ]
-    bh10_layers = [
-        BoreholeLayer("Fill@BH10",                         0.0,  -3.0, sl_fill),
-        BoreholeLayer("Soft_Clay@BH10",                   -3.0,  -9.8, sl_soft_clay),
-        BoreholeLayer("Silty_Clay@BH10",                  -9.8, -14.8, sl_silty_clay),
-        BoreholeLayer("Fine_Sand@BH10",                  -14.8, -21.0, sl_fine_sand),
-        BoreholeLayer("Medium_Sand@BH10",                -21.0, -29.2, sl_medium_sand),
-        BoreholeLayer("Gravelly_Sand@BH10",              -29.2, -35.2, sl_gravelly_sand),
-        BoreholeLayer("Completely_Decomposed_Rock@BH10", -35.2, -42.2, sl_cdg),
-        BoreholeLayer("Moderately_Weathered_Rock@BH10",  -42.2, -50.0, sl_mwr),
-    ]
-    bh11_layers = [
-        BoreholeLayer("Fill@BH11",                         0.0,  -2.9, sl_fill),
-        BoreholeLayer("Soft_Clay@BH11",                   -2.9,  -9.4, sl_soft_clay),
-        BoreholeLayer("Silty_Clay@BH11",                  -9.4, -14.6, sl_silty_clay),
-        BoreholeLayer("Fine_Sand@BH11",                  -14.6, -20.8, sl_fine_sand),
-        BoreholeLayer("Medium_Sand@BH11",                -20.8, -29.8, sl_medium_sand),
-        BoreholeLayer("Gravelly_Sand@BH11",              -29.8, -36.5, sl_gravelly_sand),
-        BoreholeLayer("Completely_Decomposed_Rock@BH11", -36.5, -43.5, sl_cdg),
-        BoreholeLayer("Moderately_Weathered_Rock@BH11",  -43.5, -50.0, sl_mwr),
-    ]
-    bh12_layers = [
-        BoreholeLayer("Fill@BH12",                         0.0,  -3.1, sl_fill),
-        BoreholeLayer("Soft_Clay@BH12",                   -3.1, -10.2, sl_soft_clay),
-        BoreholeLayer("Silty_Clay@BH12",                 -10.2, -15.4, sl_silty_clay),
-        BoreholeLayer("Fine_Sand@BH12",                  -15.4, -22.4, sl_fine_sand),
-        BoreholeLayer("Medium_Sand@BH12",                -22.4, -30.2, sl_medium_sand),
-        BoreholeLayer("Gravelly_Sand@BH12",              -30.2, -36.8, sl_gravelly_sand),
-        BoreholeLayer("Completely_Decomposed_Rock@BH12", -36.8, -44.2, sl_cdg),
-        BoreholeLayer("Moderately_Weathered_Rock@BH12",  -44.2, -50.0, sl_mwr),
-    ]
+    # Short aliases to your SoilLayer objects
+    SL11, SL12 = sl_001, sl_002
+    SL22, SL32, SL35, SL37, SL63, SL121 = sl_003, sl_004, sl_005, sl_006, sl_009, sl_013
+    SL62, SL62t, SL81 = sl_007, sl_008, sl_010
+    SL102, SL111, SL132 = sl_011, sl_012, sl_014
+    SL144 = sl_015
 
-    bh1 = Borehole("BH_1", Point(-10,   0, 0), 0.0, layers=bh1_layers, water_head=GW_HEAD_NEAR_SURF)
-    bh2 = Borehole("BH_2", Point( 10,   0, 0), 0.0, layers=bh2_layers, water_head=GW_HEAD_NEAR_SURF)
-    bh3 = Borehole("BH_3", Point(-12,  -6, 0), 0.0, layers=bh1_layers, water_head=GW_HEAD_NEAR_SURF)
-    bh4 = Borehole("BH_4", Point( 12,   6, 0), 0.0, layers=bh2_layers, water_head=GW_HEAD_NEAR_SURF)
-    bh5 = Borehole("BH_5", Point(-12,   6, 0), 0.0, layers=bh2_layers, water_head=GW_HEAD_NEAR_SURF)
-    bh6 = Borehole("BH_6", Point( 12,  -6, 0), 0.0, layers=bh1_layers, water_head=GW_HEAD_NEAR_SURF)
-    bh7  = Borehole("BH_7",  Point(  0.0,  -8.0, 0.0), 0.0, layers=bh7_layers,  water_head=GW_HEAD_NEAR_SURF)
-    bh8  = Borehole("BH_8",  Point(  0.0,   8.0, 0.0), 0.0, layers=bh8_layers,  water_head=GW_HEAD_NEAR_SURF)
-    bh9  = Borehole("BH_9",  Point( -8.0,   0.0, 0.0), 0.0, layers=bh9_layers,  water_head=GW_HEAD_NEAR_SURF)
-    bh10 = Borehole("BH_10", Point(  8.0,   0.0, 0.0), 0.0, layers=bh10_layers, water_head=GW_HEAD_NEAR_SURF)
-    bh11 = Borehole("BH_11", Point( -6.0,   6.0, 0.0), 0.0, layers=bh11_layers, water_head=GW_HEAD_NEAR_SURF)
-    bh12 = Borehole("BH_12", Point(  6.0,  -6.0, 0.0), 0.0, layers=bh12_layers, water_head=GW_HEAD_NEAR_SURF)
+    # Coordinates: 4 rows (y = 30, 10, -10, -30), 6 cols (x = -260, -156, -52, 52, 156, 260)
+    # Row 1 (y = 30)
+    BH1  = Borehole("BH1",  Point(-260.0,  30.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH1_FILL(11)",      H0,   H1,   SL11),
+        BoreholeLayer("BH1_UCLAY(62)",     H1,   H2,   SL62),
+        BoreholeLayer("BH1_LCLAY(102)",    H2,   H3,   SL102),
+        BoreholeLayer("BH1_SAND_UP(121)",  H3,   HSPL, SL121),
+        BoreholeLayer("BH1_SAND_LOW(22)",  HSPL, HGRAV,SL22),
+        BoreholeLayer("BH1_GRAVEL(144)",   HGRAV,HBOT, SL144),
+    ])
+    BH2  = Borehole("BH2",  Point(-156.0,  30.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH2_FILL(12)",      H0,   H1,   SL12),
+        BoreholeLayer("BH2_UCLAY(62t)",    H1,   H2,   SL62t),
+        BoreholeLayer("BH2_LCLAY(111)",    H2,   H3,   SL111),
+        BoreholeLayer("BH2_SAND_UP(121)",  H3,   HSPL, SL121),
+        BoreholeLayer("BH2_SAND_LOW(32)",  HSPL, HGRAV,SL32),
+        BoreholeLayer("BH2_GRAVEL(144)",   HGRAV,HBOT, SL144),
+    ])
+    BH3  = Borehole("BH3",  Point( -52.0,  30.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH3_FILL(11)",      H0,   H1,   SL11),
+        BoreholeLayer("BH3_UCLAY(81)",     H1,   H2,   SL81),
+        BoreholeLayer("BH3_LCLAY(132)",    H2,   H3,   SL132),
+        BoreholeLayer("BH3_SAND_UP(121)",  H3,   HSPL, SL121),
+        BoreholeLayer("BH3_SAND_LOW(22)",  HSPL, HGRAV,SL22),
+        BoreholeLayer("BH3_GRAVEL(144)",   HGRAV,HBOT, SL144),
+    ])
+    BH4  = Borehole("BH4",  Point(  52.0,  30.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH4_FILL(12)",      H0,   H1,   SL12),
+        BoreholeLayer("BH4_UCLAY(62)",     H1,   H2,   SL62),
+        BoreholeLayer("BH4_LCLAY(102)",    H2,   H3,   SL102),
+        BoreholeLayer("BH4_SAND_UP(121)",  H3,   HSPL, SL121),
+        BoreholeLayer("BH4_SAND_LOW(32)",  HSPL, HGRAV,SL32),
+        BoreholeLayer("BH4_GRAVEL(144)",   HGRAV,HBOT, SL144),
+    ])
+    BH5  = Borehole("BH5",  Point( 156.0,  30.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH5_FILL(11)",      H0,   H1,   SL11),
+        BoreholeLayer("BH5_UCLAY(62t)",    H1,   H2,   SL62t),
+        BoreholeLayer("BH5_LCLAY(111)",    H2,   H3,   SL111),
+        BoreholeLayer("BH5_SAND_UP(121)",  H3,   HSPL, SL121),
+        BoreholeLayer("BH5_SAND_LOW(22)",  HSPL, HGRAV,SL22),
+        BoreholeLayer("BH5_GRAVEL(144)",   HGRAV,HBOT, SL144),
+    ])
+    BH6  = Borehole("BH6",  Point( 260.0,  30.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH6_FILL(12)",      H0,   H1,   SL12),
+        BoreholeLayer("BH6_UCLAY(81)",     H1,   H2,   SL81),
+        BoreholeLayer("BH6_LCLAY(132)",    H2,   H3,   SL132),
+        BoreholeLayer("BH6_SAND_UP(121)",  H3,   HSPL, SL121),
+        BoreholeLayer("BH6_SAND_LOW(32)",  HSPL, HGRAV,SL32),
+        BoreholeLayer("BH6_GRAVEL(144)",   HGRAV,HBOT, SL144),
+    ])
+
+    # Row 2 (y = 10)
+    BH7  = Borehole("BH7",  Point(-260.0,  10.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH7_FILL(11)",      H0,   H1,   SL11),
+        BoreholeLayer("BH7_UCLAY(62)",     H1,   H2,   SL62),
+        BoreholeLayer("BH7_LCLAY(102)",    H2,   H3,   SL102),
+        BoreholeLayer("BH7_SAND_UP(121)",  H3,   HSPL, SL121),
+        BoreholeLayer("BH7_SAND_LOW(22)",  HSPL, HGRAV,SL22),
+        BoreholeLayer("BH7_GRAVEL(144)",   HGRAV,HBOT, SL144),
+    ])
+    BH8  = Borehole("BH8",  Point(-156.0,  10.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH8_FILL(12)",      H0,   H1,   SL12),
+        BoreholeLayer("BH8_UCLAY(62t)",    H1,   H2,   SL62t),
+        BoreholeLayer("BH8_LCLAY(111)",    H2,   H3,   SL111),
+        BoreholeLayer("BH8_SAND_UP(121)",  H3,   HSPL, SL121),
+        BoreholeLayer("BH8_SAND_LOW(32)",  HSPL, HGRAV,SL32),
+        BoreholeLayer("BH8_GRAVEL(144)",   HGRAV,HBOT, SL144),
+    ])
+    BH9  = Borehole("BH9",  Point( -52.0,  10.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH9_FILL(11)",      H0,   H1,   SL11),
+        BoreholeLayer("BH9_UCLAY(81)",     H1,   H2,   SL81),
+        BoreholeLayer("BH9_LCLAY(132)",    H2,   H3,   SL132),
+        BoreholeLayer("BH9_SAND_UP(121)",  H3,   HSPL, SL121),
+        BoreholeLayer("BH9_SAND_LOW(22)",  HSPL, HGRAV,SL22),
+        BoreholeLayer("BH9_GRAVEL(144)",   HGRAV,HBOT, SL144),
+    ])
+    BH10 = Borehole("BH10", Point(  52.0,  10.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH10_FILL(12)",     H0,   H1,   SL12),
+        BoreholeLayer("BH10_UCLAY(62)",    H1,   H2,   SL62),
+        BoreholeLayer("BH10_LCLAY(102)",   H2,   H3,   SL102),
+        BoreholeLayer("BH10_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH10_SAND_LOW(32)", HSPL, HGRAV,SL32),
+        BoreholeLayer("BH10_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+    BH11 = Borehole("BH11", Point( 156.0,  10.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH11_FILL(11)",     H0,   H1,   SL11),
+        BoreholeLayer("BH11_UCLAY(62t)",   H1,   H2,   SL62t),
+        BoreholeLayer("BH11_LCLAY(111)",   H2,   H3,   SL111),
+        BoreholeLayer("BH11_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH11_SAND_LOW(22)", HSPL, HGRAV,SL22),
+        BoreholeLayer("BH11_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+    BH12 = Borehole("BH12", Point( 260.0,  10.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH12_FILL(12)",     H0,   H1,   SL12),
+        BoreholeLayer("BH12_UCLAY(81)",    H1,   H2,   SL81),
+        BoreholeLayer("BH12_LCLAY(132)",   H2,   H3,   SL132),
+        BoreholeLayer("BH12_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH12_SAND_LOW(32)", HSPL, HGRAV,SL32),
+        BoreholeLayer("BH12_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+
+    # Row 3 (y = -10)
+    BH13 = Borehole("BH13", Point(-260.0, -10.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH13_FILL(11)",     H0,   H1,   SL11),
+        BoreholeLayer("BH13_UCLAY(62)",    H1,   H2,   SL62),
+        BoreholeLayer("BH13_LCLAY(102)",   H2,   H3,   SL102),
+        BoreholeLayer("BH13_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH13_SAND_LOW(22)", HSPL, HGRAV,SL22),
+        BoreholeLayer("BH13_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+    BH14 = Borehole("BH14", Point(-156.0, -10.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH14_FILL(12)",     H0,   H1,   SL12),
+        BoreholeLayer("BH14_UCLAY(62t)",   H1,   H2,   SL62t),
+        BoreholeLayer("BH14_LCLAY(111)",   H2,   H3,   SL111),
+        BoreholeLayer("BH14_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH14_SAND_LOW(32)", HSPL, HGRAV,SL32),
+        BoreholeLayer("BH14_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+    BH15 = Borehole("BH15", Point( -52.0, -10.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH15_FILL(11)",     H0,   H1,   SL11),
+        BoreholeLayer("BH15_UCLAY(81)",    H1,   H2,   SL81),
+        BoreholeLayer("BH15_LCLAY(132)",   H2,   H3,   SL132),
+        BoreholeLayer("BH15_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH15_SAND_LOW(22)", HSPL, HGRAV,SL22),
+        BoreholeLayer("BH15_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+    BH16 = Borehole("BH16", Point(  52.0, -10.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH16_FILL(12)",     H0,   H1,   SL12),
+        BoreholeLayer("BH16_UCLAY(62)",    H1,   H2,   SL62),
+        BoreholeLayer("BH16_LCLAY(102)",   H2,   H3,   SL102),
+        BoreholeLayer("BH16_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH16_SAND_LOW(32)", HSPL, HGRAV,SL32),
+        BoreholeLayer("BH16_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+    BH17 = Borehole("BH17", Point( 156.0, -10.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH17_FILL(11)",     H0,   H1,   SL11),
+        BoreholeLayer("BH17_UCLAY(62t)",   H1,   H2,   SL62t),
+        BoreholeLayer("BH17_LCLAY(111)",   H2,   H3,   SL111),
+        BoreholeLayer("BH17_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH17_SAND_LOW(22)", HSPL, HGRAV,SL22),
+        BoreholeLayer("BH17_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+    BH18 = Borehole("BH18", Point( 260.0, -10.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH18_FILL(12)",     H0,   H1,   SL12),
+        BoreholeLayer("BH18_UCLAY(81)",    H1,   H2,   SL81),
+        BoreholeLayer("BH18_LCLAY(132)",   H2,   H3,   SL132),
+        BoreholeLayer("BH18_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH18_SAND_LOW(32)", HSPL, HGRAV,SL32),
+        BoreholeLayer("BH18_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+
+    # Row 4 (y = -30)
+    BH19 = Borehole("BH19", Point(-260.0, -30.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH19_FILL(11)",     H0,   H1,   SL11),
+        BoreholeLayer("BH19_UCLAY(62)",    H1,   H2,   SL62),
+        BoreholeLayer("BH19_LCLAY(102)",   H2,   H3,   SL102),
+        BoreholeLayer("BH19_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH19_SAND_LOW(22)", HSPL, HGRAV,SL22),
+        BoreholeLayer("BH19_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+    BH20 = Borehole("BH20", Point(-156.0, -30.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH20_FILL(12)",     H0,   H1,   SL12),
+        BoreholeLayer("BH20_UCLAY(62t)",   H1,   H2,   SL62t),
+        BoreholeLayer("BH20_LCLAY(111)",   H2,   H3,   SL111),
+        BoreholeLayer("BH20_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH20_SAND_LOW(32)", HSPL, HGRAV,SL32),
+        BoreholeLayer("BH20_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+    BH21 = Borehole("BH21", Point( -52.0, -30.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH21_FILL(11)",     H0,   H1,   SL11),
+        BoreholeLayer("BH21_UCLAY(81)",    H1,   H2,   SL81),
+        BoreholeLayer("BH21_LCLAY(132)",   H2,   H3,   SL132),
+        BoreholeLayer("BH21_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH21_SAND_LOW(22)", HSPL, HGRAV,SL22),
+        BoreholeLayer("BH21_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+    BH22 = Borehole("BH22", Point(  52.0, -30.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH22_FILL(12)",     H0,   H1,   SL12),
+        BoreholeLayer("BH22_UCLAY(62)",    H1,   H2,   SL62),
+        BoreholeLayer("BH22_LCLAY(102)",   H2,   H3,   SL102),
+        BoreholeLayer("BH22_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH22_SAND_LOW(32)", HSPL, HGRAV,SL32),
+        BoreholeLayer("BH22_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+    BH23 = Borehole("BH23", Point( 156.0, -30.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH23_FILL(11)",     H0,   H1,   SL11),
+        BoreholeLayer("BH23_UCLAY(62t)",   H1,   H2,   SL62t),
+        BoreholeLayer("BH23_LCLAY(111)",   H2,   H3,   SL111),
+        BoreholeLayer("BH23_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH23_SAND_LOW(22)", HSPL, HGRAV,SL22),
+        BoreholeLayer("BH23_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+    BH24 = Borehole("BH24", Point( 260.0, -30.0, 0.0), water_head=GW_HEAD_NEAR_SURF, layers=[
+        BoreholeLayer("BH24_FILL(12)",     H0,   H1,   SL12),
+        BoreholeLayer("BH24_UCLAY(81)",    H1,   H2,   SL81),
+        BoreholeLayer("BH24_LCLAY(132)",   H2,   H3,   SL132),
+        BoreholeLayer("BH24_SAND_UP(121)", H3,   HSPL, SL121),
+        BoreholeLayer("BH24_SAND_LOW(32)", HSPL, HGRAV,SL32),
+        BoreholeLayer("BH24_GRAVEL(144)",  HGRAV,HBOT, SL144),
+    ])
+
+    # Collect into a set (explicit list)
+    boreholes = [
+        BH1, BH2, BH3, BH4, BH5, BH6,
+        BH7, BH8, BH9, BH10, BH11, BH12,
+        BH13, BH14, BH15, BH16, BH17, BH18,
+        BH19, BH20, BH21, BH22, BH23, BH24,
+    ]
 
     pit.borehole_set = BoreholeSet(
         name="BHSet",
-        boreholes=[bh1, bh2, bh3, bh4, bh5, bh6, bh7, bh8, bh9, bh10, bh11, bh12],
-        comment="50 m stack; GW head ≈ -3.5 m; added BH_7~BH_12 with nuanced layer boundaries"
+        boreholes=boreholes,
+        comment="All 15 soil layers are used across the boreholes; CDG & MWR as basement."
     )
 
     # 4) Pit layout & key elevations
@@ -542,87 +1127,112 @@ def assemble_pit(runner: Optional[PlaxisRunner] = None) -> FoundationPit:
                 buckets[level]
             )
 
+
     # 8) Wells（坑内环井 + 内部网格井）
     xL, xR = X0 - W * 0.5, X0 + W * 0.5
     yB, yT = Y0 - H * 0.5, Y0 + H * 0.5
 
     MAX_WELLS     = 50
     Z_WELL_BOTTOM = Z_EXC_BOTTOM - 1.5   # 井控：坑底以下 ~1.5 m
-    Q_WELL        = 0.008                # m3/s
+    Q_WELL        = 691.2               # m3/day
     EDGE_SPACING  = 6.0
     GRID_DX = GRID_DY = 6.0
     CLEARANCE     = 1.0
     MARGIN        = 2.0
 
     # 用开挖矩形作为 footprint（如果你想严格用“围护墙轮廓”，可在 build() 后用 builder.get_wall_footprint_xy()）
-    poly_xy = [(xL, yB), (xR, yB), (xR, yT), (xL, yT)]
+    # poly_xy = [(xL, yB), (xR, yB), (xR, yT), (xL, yT)]
 
-    wells_unique, stats = layout_wells_with_limit(
-        prefix="W",
-        poly_xy=poly_xy,
-        z_top=0.0,
-        z_bot=Z_WELL_BOTTOM,
-        q_well=Q_WELL,
-        edge_spacing=EDGE_SPACING,
-        grid_dx=GRID_DX,
-        grid_dy=GRID_DY,
-        clearance=CLEARANCE,
-        margin=MARGIN,
-        max_wells=MAX_WELLS,
-        dedupe_tol=1e-6,
-    )
-    print(f"[WELLS] edge_spacing_used={stats['edge_spacing_used']:.2f}, "
-          f"edge={stats['edge_count']}, grid={stats['grid_count']}, "
-          f"unique_total={stats['unique']}, dupes={stats['dupes']}")
+    # wells_unique, stats = layout_wells_with_limit(
+    #     prefix="W",
+    #     poly_xy=poly_xy,
+    #     z_top=0.0,
+    #     z_bot=Z_WELL_BOTTOM,
+    #     q_well=Q_WELL,
+    #     edge_spacing=EDGE_SPACING,
+    #     grid_dx=GRID_DX,
+    #     grid_dy=GRID_DY,
+    #     clearance=CLEARANCE,
+    #     margin=MARGIN,
+    #     max_wells=MAX_WELLS,
+    #     dedupe_tol=1e-6,
+    # )
+    # print(f"[WELLS] edge_spacing_used={stats['edge_spacing_used']:.2f}, "
+    #       f"edge={stats['edge_count']}, grid={stats['grid_count']}, "
+    #       f"unique_total={stats['unique']}, dupes={stats['dupes']}")
+    
+    wells_unique = get_well_positions("Wellpoint_Layout_Planner.xlsx", 0, Z_WELL_BOTTOM, Q_WELL)
+
     for w in wells_unique:
         pit.add_structure(StructureType.WELLS.value, w)  # <-- enum value
 
-    # 9) Phases
-    st_init  = PlasticStageSettings(load_type=LoadType.StageConstruction, max_steps=120, time_interval=0.5)
-    st_exc1  = PlasticStageSettings(load_type=LoadType.StageConstruction, max_steps=140, time_interval=1.0)
-    st_dewat = PlasticStageSettings(load_type=LoadType.StageConstruction, max_steps=120, time_interval=0.5)
-    st_exc2  = PlasticStageSettings(load_type=LoadType.StageConstruction, max_steps=140, time_interval=1.0)
 
-    ph0 = Phase(name="P0_Initial",     settings=st_init)
-    ph1 = Phase(name="P2_Dewatering",  settings=st_dewat)
-    ph2 = Phase(name="P1_Excavate_L1", settings=st_exc1)
-    ph3 = Phase(name="P3_Excavate_L2", settings=st_exc2)
+    well_phase2 = make_random_flows(wells_unique)
+    well_phase3 = make_random_flows(wells_unique)
+    well_phase4 = make_random_flows(wells_unique)
+    well_phase5 = make_random_flows(wells_unique)
+    well_phase6 = make_random_flows(wells_unique)
+    well_phase7 = make_random_flows(wells_unique)
+    well_phase8 = make_random_flows(wells_unique)
+
+    # 9) Phases
+    st_init  = PlasticStageSettings(load_type=LoadType.StageConstruction, time_interval=3)
+    st_exc  = PlasticStageSettings(load_type=LoadType.StageConstruction, time_interval=5)
+    st_dewat = PlasticStageSettings(load_type=LoadType.StageConstruction, time_interval=3)
+
+    ph0 = Phase(name="P0_Initial",          settings=st_init)
+    ph1 = Phase(name="P1_Dewatering",       settings=st_dewat)
+    ph2 = Phase(name="P2_Excavate_L1",      settings=st_exc)
+    ph3 = Phase(name="P3_Add_braces_L1",    settings=st_init)
+    ph4 = Phase(name="P4_Excavate_L2",      settings=st_exc)
+    ph5 = Phase(name="P5_Add_braces_L2",    settings=st_init)
+    ph6 = Phase(name="P6_Excavate_L3",      settings=st_exc)
+    ph7 = Phase(name="P7_Add_braces_L3",    settings=st_init)
+    ph8 = Phase(name="P8_Excavate_L4",      settings=st_exc)
 
     ph1.set_inherits(ph0)
     ph2.set_inherits(ph1)
     ph3.set_inherits(ph2)
+    ph4.set_inherits(ph3)
+    ph5.set_inherits(ph4)
+    ph6.set_inherits(ph5)
+    ph7.set_inherits(ph6)
+    ph8.set_inherits(ph7)
 
-    # Soil overrides before phases are added
-    if excav_names:
-        ph1.set_soil_overrides(mk_soil_overrides(excav_names, active=False))
-    if remain_names:
-        ph2.set_soil_overrides(mk_soil_overrides(remain_names, deformable=False))
-        ph3.set_soil_overrides(mk_soil_overrides(remain_names, deformable=True))
 
     # activation lists (structures)
     ph0.activate_structures(walls)
-    ph0.activate_structures(braces_L1)
-    ph1.activate_structures(braces_L2)
-    ph3.activate_structures(braces_L3)
+    ph1.activate_structures(wells_unique)
+    ph3.activate_structures(braces_L1)
+    ph5.activate_structures(braces_L2)
+    ph7.activate_structures(braces_L3)
+
+    # update wells' status
+    ph2.set_wells_dict(well_phase2)
+    ph3.set_wells_dict(well_phase3)
+    ph4.set_wells_dict(well_phase4)
+    ph5.set_wells_dict(well_phase5)
+    ph6.set_wells_dict(well_phase6)
+    ph7.set_wells_dict(well_phase7)
+    ph8.set_wells_dict(well_phase8)
 
     # Per-phase water table example
-    x_min, x_max, y_min, y_max = proj.x_min, proj.x_max, proj.y_min, proj.y_max
-    water_pts = [
-        WaterLevel(x_min, y_min, -6.0), WaterLevel(x_max, y_min, -6.0),
-        WaterLevel(x_max, y_max, -6.0), WaterLevel(x_min, y_max, -6.0),
-        WaterLevel(0.0,    0.0,  -6.0),
-    ]
-    ph2.set_water_table(WaterLevelTable(water_pts))
+    # x_min, x_max, y_min, y_max = proj.x_min, proj.x_max, proj.y_min, proj.y_max
+    # water_pts = [
+    #     WaterLevel(x_min, y_min, -6.0), WaterLevel(x_max, y_min, -6.0),
+    #     WaterLevel(x_max, y_max, -6.0), WaterLevel(x_min, y_max, -6.0),
+    #     WaterLevel(0.0,    0.0,  -6.0),
+    # ]
+    # ph2.set_water_table(WaterLevelTable(water_pts))
 
-    for p in (ph0, ph1, ph2, ph3):
+    for p in (ph0, ph1, ph2, ph3, ph4, ph5, ph6, ph7, ph8):
         pit.add_phase(p)
 
     return pit
 
-
 # --------------------------------- main ---------------------------------
 
-runner = PlaxisRunner(HOST, PORT, PASSWORD)
+runner = PlaxisRunner(PORT, PASSWORD, HOST)
 pit = assemble_pit(runner=runner)
 builder = ExcavationBuilder(runner, pit)
 
@@ -633,7 +1243,7 @@ except Exception:
     pass
 
 print("[BUILD] start …")
-builder.build()
+builder.build(mesh=True)
 print("[BUILD] done.")
 
 print("[BUILD] Pick up soillayer.")
@@ -641,8 +1251,10 @@ excava_soils = builder.get_all_child_soils_dict()
 print("[BUILD] Applied the soillayer status for phases.")
 
 print("[APPLY] apply phases …")
-pit.phases[1].add_soils(excava_soils["Soil_1_1"])
-pit.phases[3].add_soils(*[excava_soils["Soil_1_1"], excava_soils["Soil_2_1"]])
+pit.phases[2].add_soils(*[excava_soils["Soil_1_2"], excava_soils["Soil_1_1"]])
+pit.phases[4].add_soils(*[excava_soils["Soil_2_2"], excava_soils["Soil_2_3"]])
+pit.phases[6].add_soils(*[excava_soils["Soil_4_2"], excava_soils["Soil_3_3"]])
+pit.phases[8].add_soils(*[excava_soils["Soil_5_4"], excava_soils["Soil_5_3"]])
 builder.apply_pit_soil_block()
 print("[APPLY] Updated the status of soillayers")
 
@@ -868,7 +1480,6 @@ def export_walls_horizontal_displacement_excel(builder: ExcavationBuilder, excel
             df.to_excel(writer, index=False, sheet_name=sheet)
 
     return excel_path
-
 
 print("[TEST] Exporting horizontal wall displacement (all phases) …")
 excel_path = "./walls_horizontal_displacements.xlsx"

@@ -5,13 +5,10 @@ from math import ceil
 from typing import List, Dict, Any, Optional, Tuple, Union, Sequence
 
 from ..plaxishelper.plaxisrunner import PlaxisRunner
-from .plaxis_config import *
 from ..excavation import FoundationPit, StructureType, _normalize_structure_type
 from ..structures.soilblock import SoilBlock
 from ..geometry import Polygon3D
-from ..components.mesh import Mesh
-
-from plaxis_config import HOST, PORT, PASSWORD
+from ..components import Mesh, Phase
 
 from ..plaxishelper.plaxisoutput import PlaxisOutput
 from ..plaxishelper.resulttypes import (
@@ -22,6 +19,7 @@ from ..plaxishelper.resulttypes import (
     Well as WellResult,
     Soil as SoilResult,
 )
+
 """
 Excavation Engineering Automation — Builder
 -------------------------------------------
@@ -149,11 +147,14 @@ class ExcavationBuilder:
     - Provide helpers to apply phases and update well parameters later.
     """
 
-    def __init__(self, app: PlaxisRunner, excavation_object: FoundationPit) -> None:
+    def __init__(self, app: PlaxisRunner, excavation_object: FoundationPit, HOST="localhost", PORT=10000, PASSWORD="yS9f$TMP?$uQ@rW3") -> None:
         # Always create our own runner instance using config; keep provided `app` for signature parity.
+        self.PORT = PORT 
+        self.PASSWORD = PASSWORD
+        self.HOST = HOST
         self.App: PlaxisRunner = PlaxisRunner(PORT, PASSWORD, HOST)
         self.excavation_object: FoundationPit = excavation_object
-        self.Output: PlaxisOutput
+        self.Output: Optional[PlaxisOutput] = None
         self._calc_done: bool = False  # True after a successful builder.calculate()
 
     @classmethod
@@ -608,11 +609,11 @@ class ExcavationBuilder:
 
         # ---------------- 4) Geometries / soil blocks (optional) ---------------
         structures = getattr(pit, "structures", {}) or {}
-        # for blk in structures.get("soil_blocks", []) or []:
-        #     try:
-        #         app.create_soil_block(blk)
-        #     except Exception as e:
-        #         print(f"[build] Warning: create_soil_block failed: {e}")
+        for blk in structures.get("soil_blocks", []) or []:
+            try:
+                app.create_soil_block(blk)
+            except Exception as e:
+                print(f"[build] Warning: create_soil_block failed: {e}")
 
         # ---------------- 5) Structures (including wells) ----------------------
         for wall in structures.get(StructureType.RETAINING_WALLS.value, []) or []:
@@ -816,16 +817,16 @@ class ExcavationBuilder:
 
                 # If missing or dict-like, try resolve by SoilLayer name or material.name
                 if m is None or isinstance(m, dict):
-                    target = idx.get(getattr(m, "name", None)) if m else None
+                    target = idx.get(getattr(m, "name", "")) if m else None
                     if target is None:
-                        target = idx.get(getattr(sl, "name", None))
+                        target = idx.get(getattr(sl, "name", ""))
                     if target is not None:
                         sl.material = target
                         fixed += 1
                     continue
 
                 # If it's an instance but not the library one (different identity), fix by name
-                m_name = getattr(m, "name", None)
+                m_name = getattr(m, "name", "")
                 lib_m = idx.get(m_name)
                 if lib_m is not None and (m is not lib_m):
                     sl.material = lib_m
@@ -887,7 +888,7 @@ class ExcavationBuilder:
     # Phase helpers
     # -------------------------------------------------------------------------
 
-    def apply_phases(self, phases: Optional[List[Any]] = None, *, warn_on_missing: bool = False) -> Dict[str, Any]:
+    def apply_phases(self, phases: List[Phase] = [], *, warn_on_missing: bool = False) -> Dict[str, Any]:
         """
         Create and APPLY staged-construction phases.
 
@@ -939,7 +940,7 @@ class ExcavationBuilder:
 
             # 2) apply the phase (options, water table, well overrides, activations, etc.)
             try:
-                app.apply_phase(handle, ph, warn_on_missing=warn_on_missing)
+                app.apply_phase(ph, warn_on_missing=warn_on_missing)
                 applied += 1
                 prev_handle = handle  # advance the inheritance chain
             except Exception as e:
@@ -949,45 +950,6 @@ class ExcavationBuilder:
 
         return {"created": created, "applied": applied, "errors": errors, "handles": handles}
 
-    def apply_well_overrides_only(self, plan: Dict[Any, Dict[str, Dict[str, Any]]], *, warn_on_missing: bool = False) -> Dict[str, Any]:
-        """Update well parameters for existing phases ONLY (no phase creation).
-
-        plan format:
-          {
-            <phase_handle_or_name>: {
-                "Well-1": {"q_well": 900.0, "h_min": 1.5},
-                "Well-2": {"q_well": 700.0, "well_type": "Extraction"}
-            },
-            ...
-          }
-
-        - If the key is a phase handle, it will be used directly.
-        - If the key is a string, we'll try to resolve an existing phase by that name via `PlaxisRunner.find_phase_handle`.
-        - No new phase will be created here.
-        """
-        app = self.App
-        if not getattr(app, "is_connected", False) or getattr(app, "g_i", None) is None or getattr(app, "input_server", None) is None:
-            app.connect().new()
-
-        applied = 0
-        for phase_key, overrides in (plan or {}).items():
-            handle = phase_key
-            # resolve by name if a string key is provided
-            if isinstance(phase_key, str):
-                handle = app.find_phase_handle(phase_key)
-
-            if handle is None:
-                if warn_on_missing:
-                    print(f"[apply_well_overrides_only] Phase '{phase_key}' not found; skipped.")
-                continue
-
-            try:
-                app.apply_well_overrides(handle, overrides, warn_on_missing=warn_on_missing)
-                applied += 1
-            except Exception as e:
-                print(f"[apply_well_overrides_only] Warning: overrides on phase '{phase_key}' failed: {e}")
-
-        return {"phases_updated": applied}
 
     # =========================================================================================
     # Excavation soillayers methods
@@ -1051,9 +1013,11 @@ class ExcavationBuilder:
     def apply_pit_soil_block(self):
         """
         Apply deactivation of registered soil blocks for **all phases** in the
-        current excavation sequence.
+        current excavation sequence. And transfer the excavated soil layers to the next phase.
         """
         for phase in self.excavation_object.phases:
+            if phase.inherits is not None:
+                phase.add_soils(*phase.inherits.soil_blocks)
             self.apply_soil_blocks(phase)
 
     def get_all_child_soils(self) -> list[SoilBlock]:
@@ -1167,7 +1131,7 @@ class ExcavationBuilder:
         phase: Optional[Union[str, int, Any]] = None,
         *,
         fixed_port: int = 10001,
-    ) -> PlaxisOutput:
+    ) -> Optional[PlaxisOutput]:
         """
         Force a fresh Output connection, optionally launching the viewer for a given phase.
         """
@@ -1179,7 +1143,7 @@ class ExcavationBuilder:
         view_phase: Optional[Any] = None,
         *,
         reuse: bool = True,
-    ) -> PlaxisOutput:
+    ) -> Optional[PlaxisOutput]:
         """
         Returns a connected Output client bound to `view_phase`.
         """
@@ -1250,7 +1214,7 @@ class ExcavationBuilder:
         )
 
 
-    def _ensure_output_for_phase(self, phase: object) -> "PlaxisOutput":
+    def _ensure_output_for_phase(self, phase: object) -> Optional[PlaxisOutput]:
         """
         Ensure there is a connected Output client bound to the given phase.
         - If Output not connected: create and bind.
@@ -1269,7 +1233,7 @@ class ExcavationBuilder:
         # 2) If no Output or not connected → create & bind
         if not self.is_output_connected():
             from ..plaxishelper.plaxisoutput import PlaxisOutput  # local import to avoid cycles
-            po = PlaxisOutput(host=HOST, password=PASSWORD)
+            po = PlaxisOutput(host=self.HOST, password=self.PASSWORD)
             self.Output = po.connect_via_input(g_i, phase)
             return self.Output
 
@@ -1283,19 +1247,21 @@ class ExcavationBuilder:
             # If anything goes wrong resolving, force a reconnect to be safe
             self.close_output_viewer()
             from ..plaxishelper.plaxisoutput import PlaxisOutput
-            po = PlaxisOutput(host=HOST, password=PASSWORD)
+            po = PlaxisOutput(host=self.HOST, password=self.PASSWORD)
             self.Output = po.connect_via_input(g_i, phase)
             return self.Output
 
         if cur_id != tgt_id:
             # Prefer a light rebind (Output handles closing and recreating s_o/g_o)
             try:
-                self.Output.set_default_phase(g_i, phase)
+                set_default_phase = getattr(self.Output, "set_default_phase", None)
+                if callable(set_default_phase):
+                    set_default_phase(g_i, phase)
             except Exception:
                 # Fallback: hard reconnect
                 self.close_output_viewer()
                 from ..plaxishelper.plaxisoutput import PlaxisOutput
-                po = PlaxisOutput(host=HOST, password=PASSWORD)
+                po = PlaxisOutput(host=self.HOST, password=self.PASSWORD)
                 self.Output = po.connect_via_input(g_i, phase)
 
         return self.Output
@@ -1322,7 +1288,9 @@ class ExcavationBuilder:
         po = self._ensure_output_for_phase(phase)
 
         # 3) fetch and return
-        return po.get_results(structure, leaf, smoothing=smoothing)
+        if isinstance(po, "PlaxisOutput"):
+            return po.get_results(structure, leaf, smoothing=smoothing)
+        return None
 
     ###########################################################################
     # Save and Load

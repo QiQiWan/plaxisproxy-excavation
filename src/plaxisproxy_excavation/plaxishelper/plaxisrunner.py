@@ -1,10 +1,7 @@
-import time
 from typing import List, Dict, Any, Optional, Union, Iterable, Sequence, Tuple
 import os
+import time
 
-# Import the core Plaxis server and its required components from the local source
-# This ensures we are using the exact version provided in the codebase.
-from ..builder.plaxis_config import HOST, PORT, PASSWORD
 
 # Import the main data structure and the mapper class from your library
 # from ..plaxisexcavation import *  # noqa: F401,F403  (keep existing usage)
@@ -15,7 +12,7 @@ try:
 except Exception:
     PlaxisMapper = None  # type: ignore
 from plxscripting.server import new_server, Server, PlxProxyFactory
-from ..geometry import *  # Point, PointSet, Line3D, Polygon3D, etc.
+from ..geometry import *
 
 # NEW: use the static geometry mapper that wraps g_i.point/line/surface
 from .geometrymapper import GeometryMapper
@@ -77,7 +74,7 @@ class PlaxisRunner:
     utility class GeometryPlaxisMapper to improve separation of concerns.
     """
 
-    def __init__(self, input_port: int = PORT, password: str = PASSWORD, host: str = HOST):
+    def __init__(self, input_port: int, password: str, host: str):
         """
         Initializes the runner with connection details for the Plaxis server.
 
@@ -107,7 +104,7 @@ class PlaxisRunner:
         try:
             print(f"Attempting to connect to Plaxis Input at {self.host}:{self.input_port}...")
             # Note: new_server returns (server, g_i)
-            self.input_server, self.g_i = new_server(HOST, PORT, password=PASSWORD)
+            self.input_server, self.g_i = new_server(self.host, self.input_port, password=self.password)
             print("Successfully connected to Plaxis Input.")
             time.sleep(1)
             self.is_connected = True
@@ -118,7 +115,7 @@ class PlaxisRunner:
             print(f"[Error] Connection was refused. Please confirm:")
             print("1. The Plaxis software has been launched.")
             print("2. The remote script service has been enabled.")
-            print(f"3. The port number ({PORT}) and password settings are correct.")
+            print(f"3. The port number ({self.input_port}) and password settings are correct.")
             print("-----------------------------------------------------------------------")
             print("Please check for any errors and then re-execute the 'connect()' function.")
             return self
@@ -374,14 +371,13 @@ class PlaxisRunner:
     def apply_well_overrides(
         self,
         phase_handle: Any,
-        overrides: Dict[str, Dict[str, Any]],
         *,
         warn_on_missing: bool = False
     ):
         """Update well parameters for a given phase using a plain dict of overrides."""
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
-        return PhaseMapper.apply_well_overrides(self.g_i, phase_handle, overrides, warn_on_missing=warn_on_missing)
+        return PhaseMapper.apply_well_overrides(self.g_i, phase_handle, warn_on_missing=warn_on_missing)
 
     # ===================== Mesh =====================
     def mesh(self, mesh: Mesh) -> str:
@@ -423,13 +419,13 @@ class PlaxisRunner:
         return PhaseMapper.create(self.g_i, phase=phase, inherits=base, 
                                   return_handle=return_handle, apply_structure=apply_structure)
 
-    def apply_phase(self, phase_handle: Any, phase: Phase, *, warn_on_missing: bool = False) -> Any:
+    def apply_phase(self, phase: Phase, *, warn_on_missing: bool = False) -> Any:
         """
         Apply phase options, structure (de)activations, water table, wells overrides, etc.
         """
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
-        return PhaseMapper.apply_phase(self.g_i, phase_handle, phase, warn_on_missing=warn_on_missing)
+        return PhaseMapper.apply_phase(self.g_i, phase, warn_on_missing=warn_on_missing)
 
     def find_phase_handle(self, name: str) -> Optional[Any]:
         """Best-effort lookup of a phase handle by name."""

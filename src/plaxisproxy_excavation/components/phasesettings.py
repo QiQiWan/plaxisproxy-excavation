@@ -23,8 +23,7 @@ Key design for "Automatic"/optional fields
 - For time-step fields (first/min/max_time_step) and other optional knobs we use
   a **sentinel**: `0.0` or `0` means “not specified / Automatic”.
 - `to_settings_dict()` 将把 sentinel 转换成 `None`（从而让 PhaseMapper 跳过该键），
-  或者直接不导出该键。这保证对 Plaxis 的 “Automatic” 行为兼容，同时满足你对
-  “全部参数固定类型”的要求。
+  或者直接不导出该键。这保证对 Plaxis 的 “Automatic” 行为兼容。
 """
 
 from __future__ import annotations

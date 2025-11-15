@@ -3,7 +3,6 @@
 # carry the same mechanical parameters + per-component multipliers.
 # Static Point/Line/Surface loads provide `create_dyn()` helpers
 # that clone current magnitudes into a dynamic counterpart.
-# (All comments in English as requested.)
 # =========================================
 from __future__ import annotations
 

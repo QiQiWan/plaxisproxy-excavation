@@ -30,6 +30,7 @@ Copy-paste and adapt the property keys to your specific PLAXIS binding if needed
 from dataclasses import dataclass
 from typing import Any, Dict, List, Type, Union, Optional, Iterable, Tuple
 from math import tan, radians, isfinite
+from enum import Enum
 
 # =============================================================================
 # Domain imports (adapt to your project structure)
@@ -269,29 +270,24 @@ class SoilMaterialMapper:
             return
         filtered: Dict[str, Any] = {k: v for k, v in props.items() if v is not None}
 
-        if hasattr(plx_obj, "setproperties"):
-            kv: List[Any] = []
-            for k, v in filtered.items():
-                kv.extend([k, v])
-            try:
-                if kv:
-                    plx_obj.setproperties(*kv)
-                    return
-            except Exception:
-                # fall back to setattr loop
-                pass
-
         for k, v in filtered.items():
+            if isinstance(v, Enum):
+                v = v.value
             try:
                 setattr(plx_obj, k, v)
             except Exception:
+                if hasattr(plx_obj, "setproperties"):
+                    try:
+                        plx_obj.setproperty(k, v)
+                        continue
+                    except Exception:
+                        pass
                 if hasattr(plx_obj, "setproperty"):
                     try:
                         plx_obj.setproperty(k, v)
                         continue
                     except Exception:
                         pass
-                # swallow to be tolerant; upstream can validate if needed
 
     # --------------------------- helpers ------------------------------------
     @staticmethod
@@ -469,40 +465,40 @@ class SoilMaterialMapper:
         # 3) Under-ground water
         if getattr(mat, "_set_ug_water", False):
             props = {
-                "GW_Type":       getattr(mat, "_Gw_type", None),
-                "SWCC_Method":   getattr(mat, "_SWCC_method", None),
-                "SoilPosi":      getattr(mat, "_soil_posi", None),
-                "SoilFine":      getattr(mat, "_soil_fine", None),
-                "GW_Defaults":   getattr(mat, "_Gw_defaults", None),
-                "Infiltration":  getattr(mat, "_infiltration", None),
-                "DefaultMethod": getattr(mat, "_default_method", None),
-                "kx":            getattr(mat, "_kx", None),
-                "ky":            getattr(mat, "_ky", None),
-                "kz":            getattr(mat, "_kz", None),
-                "GW_PsiUnsat":   getattr(mat, "_Gw_Psiunsat", None),
+                "GroundwaterClassificationType":    getattr(mat, "_Gw_type", None),
+                "SWCCFittingMethod":                getattr(mat, "_SWCC_method", None),
+                "SoilPosi":                         getattr(mat, "_soil_posi", None),
+                "SoilFine":                         getattr(mat, "_soil_fine", None),
+                "GwUseDefaults":                    getattr(mat, "_Gw_defaults", None),
+                "Infiltration":                     getattr(mat, "_infiltration", None),
+                "DefaultMethod":                    getattr(mat, "_default_method", None),
+                "PermHorizontalPrimary":            getattr(mat, "_kx", None),
+                "PermHorizontalSecondary":          getattr(mat, "_ky", None),
+                "PermVertical":                     getattr(mat, "_kz", None),
+                "GwPsiUnsat":                       getattr(mat, "_Gw_Psiunsat", None),
             }
             SoilMaterialMapper._set_many_props(plx_mat, props)
 
         # 4) Additional interface
         if getattr(mat, "_set_additional_interface", False):
             props = {
-                "InterfaceStiffnessDef": getattr(mat, "_stiffness_define", None),
-                "InterfaceStrengthDef":  getattr(mat, "_strengthen_define", None),
-                "Kref_n":                getattr(mat, "_k_n", None),
-                "Kref_s":                getattr(mat, "_k_s", None),
-                "GapClosure":            getattr(mat, "_gap_closure", None),
-                "CrossPermeability":     getattr(mat, "_cross_permeability", None),
-                "DrainageCond1":         getattr(mat, "_drainage_conduct1", None),
-                "DrainageCond2":         getattr(mat, "_drainage_conduct2", None),
+                "InterfaceStiffnessDetermination":  getattr(mat, "_stiffness_define", None),
+                "InterfaceStrengthDef":             getattr(mat, "_strengthen_define", None),
+                "knInter":                          getattr(mat, "_k_n", None),
+                "ksInter":                          getattr(mat, "_k_s", None),
+                "GapClosure":                       getattr(mat, "_gap_closure", None),
+                "CrossPermeability":                getattr(mat, "_cross_permeability", None),
+                "DrainageConductivity1":            getattr(mat, "_drainage_conduct1", None),
+                "DrainageConductivity2":            getattr(mat, "_drainage_conduct2", None),
             }
             SoilMaterialMapper._set_many_props(plx_mat, props)
 
         # 5) Additional initial K0
         if getattr(mat, "_set_additional_initial", False):
             props = {
-                "K0_Definition": getattr(mat, "_K_0_define", None),
-                "K0x":           getattr(mat, "_K_0_x", None),
-                "K0y":           getattr(mat, "_K_0_y", None),
+                "K0Determination": getattr(mat, "_K_0_define", None),
+                "K0Primary":           getattr(mat, "_K_0_x", None),
+                "K0Secondary":           getattr(mat, "_K_0_y", None),
             }
             SoilMaterialMapper._set_many_props(plx_mat, props)
 

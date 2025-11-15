@@ -1,9 +1,7 @@
-# phasemapper.py  — Phase-first API (reduced handle usage, no ModelHandle)
-
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
-from ..components.phase import Phase
+from ..components import *
 from ..structures.basestructure import BaseStructure
 from ..components.phasesettings import *
 from .watertablemapper import WaterTableMapper
@@ -56,7 +54,7 @@ FAMILY_REGISTRY: list[dict] = [
     },
 ]
 
-# 针对域对象类名的快速映射（仅兜底；优先使用句柄的 TypeName）
+# Fast mapping for domain object class names
 CLASS_TAGS = {
     "RetainingWall": "plate",
     "Beam": "beam",
@@ -202,6 +200,313 @@ def _flatten_options_dict(d: Dict[str, Any]) -> Dict[str, Any]:
     _rec("", d or {})
     return flat
 
+# --- helper: map the phase settings ---
+# Map normalized user keys -> exact PLAXIS property path "Phase|Deform|Flow|Dynamics|GroundwaterFlow|Deformations.<Prop>"
+# Normalization rule: lower-case, remove spaces/dashes/underscores.
+def _norm(s: Any) -> str:
+    """Lowercase and strip spaces/underscores/dashes for robust key matching."""
+    return str(s).strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+
+def normalize_key(key: str) -> str:
+    return _norm(key)
+
+def resolve_path(raw_key: str, alias_map: Dict[str, str]) -> str | None:
+    """
+    Accept either a friendly key ('ignore_undrained') or a dotted path
+    ('Deform.IgnoreUndrainedBehaviour'). Returns the canonical PLAXIS path.
+    """
+    if "." in raw_key:
+        # Align US/UK spelling just in case
+        return raw_key.replace("Behavior", "Behaviour")
+    return alias_map.get(normalize_key(raw_key))
+
+def coerce_value(path: str, val: Any, enums: Dict[str, Dict[str, str]]) -> Any:
+    """
+    Convert user inputs into PLAXIS-friendly values:
+    - booleans: accept 'true/false', 'on/off', 'yes/no', '1/0'
+    - enums: normalized via enums[path]
+    """
+    if isinstance(val, str):
+        lv = _norm(val)
+        if lv in {"true", "yes", "on", "1"}:
+            return True
+        if lv in {"false", "no", "off", "0"}:
+            return False
+
+    table = enums.get(path)
+    if table:
+        key = _norm(val)
+        if key in table:
+            return table[key]
+        return val  # already in correct literal
+    return val
+
+def split_target(path: str) -> Tuple[str | None, str]:
+    """
+    'Deform.MaxUnloadingSteps' -> ('Deform', 'MaxUnloadingSteps')
+    'TimeInterval' -> (None, 'TimeInterval')
+    """
+    parts = path.split(".")
+    return (None, parts[0]) if len(parts) == 1 else (parts[0], parts[1])
+
+# ---------- Canonical key maps (normalized_key -> 'Phase or Sub.Property') ----------
+PHASE_MAP = {
+    "timeinterval": "TimeInterval",
+    "maxstepsstored": "MaxStepsStored",
+    "maxcores": "MaxCores",
+    "shouldcalculate": "ShouldCalculate",
+    "deformcalctype": "DeformCalcType",
+    "poreprescalctype": "PorePresCalcType",
+    "estimatedendtime": "EstimatedEndTime",
+}
+
+DEFORM_MAP = {
+    "usedefaultiterationparams": "Deform.UseDefaultIterationParams",
+    "overrelaxation": "Deform.OverRelaxation",
+    "arclengthcontrol": "Deform.ArcLengthControl",
+    "uselinesearch": "Deform.UseLineSearch",
+    "maxiterations": "Deform.MaxIterations",
+    "desiredmaxiterations": "Deform.DesiredMaxIterations",
+    "desiredminiterations": "Deform.DesiredMinIterations",
+    "maxunloadingsteps": "Deform.MaxUnloadingSteps",
+    "toleratederror": "Deform.ToleratedError",
+    "usegradualerror": "Deform.UseGradualError",
+    "timestepdetermtype": "Deform.TimeStepDetermType",
+    "timesteptype": "Deform.TimeStepDetermType",  # alias
+    "firsttimestep": "Deform.FirstTimeStep",
+    "mintimestep": "Deform.MinTimeStep",
+    "maxtimestep": "Deform.MaxTimeStep",
+    "maxsteps": "Deform.MaxSteps",
+    "maxloadfractionperstep": "Deform.MaxLoadFractionPerStep",
+    "ignoreundrained": "Deform.IgnoreUndrainedBehaviour",
+    "ignoreundrainedbehaviour": "Deform.IgnoreUndrainedBehaviour",
+    "ignoreundrainedbehavior": "Deform.IgnoreUndrainedBehaviour",
+    "ignoresuction": "Deform.IgnoreSuction",
+    "useupdatedmesh": "Deform.UseUpdatedMesh",
+    "useupdatedwaterpressures": "Deform.UseUpdatedWaterPressures",
+    "usecavitationcutoff": "Deform.UseCavitationCutOff",
+    "cavitationstress": "Deform.CavitationStress",
+    "summweight": "Deform.SumMweight",
+    "resetdisplacementstozero": "Deform.ResetDisplacementsToZero",
+    "resetsmallstrain": "Deform.ResetSmallStrain",
+    "resettime": "Deform.ResetTime",
+    "resetstatevariables": "Deform.ResetStateVariables",
+    "newmarkalpha": "Deform.NewmarkAlpha",
+    "newmarkdelta": "Deform.NewmarkDelta",
+    "loadingtype": "Deform.LoadingType",
+}
+
+FLOW_MAP = {
+    "usedefaultiterationparams": "Flow.UseDefaultIterationParams",
+    "overrelaxation": "Flow.OverRelaxation",
+    "maxiterations": "Flow.MaxIterations",
+    "desiredmaxiterations": "Flow.DesiredMaxIterations",
+    "desiredminiterations": "Flow.DesiredMinIterations",
+    "toleratederror": "Flow.ToleratedError",
+    "firsttimestep": "Flow.FirstTimeStep",
+    "mintimestep": "Flow.MinTimeStep",
+    "maxtimestep": "Flow.MaxTimeStep",
+    "maxsteps": "Flow.MaxSteps",
+    "thermalcalctype": "Flow.ThermalCalcType",
+}
+
+DYNAMICS_MAP = {
+    "boundaryxmin": "Dynamics.BoundaryXMin",
+    "boundaryxmax": "Dynamics.BoundaryXMax",
+    "boundaryymin": "Dynamics.BoundaryYMin",
+    "boundaryymax": "Dynamics.BoundaryYMax",
+    "boundaryzmin": "Dynamics.BoundaryZMin",
+    "boundaryzmax": "Dynamics.BoundaryZMax",
+    "normalrelaxcoeffc1": "Dynamics.NormalRelaxCoeffC1",
+    "tangentialrelaxcoeffc2": "Dynamics.TangentialRelaxCoeffC2",
+}
+
+GROUNDWATERFLOW_MAP = {
+    "boundaryxmin": "GroundwaterFlow.BoundaryXMin",
+    "boundaryxmax": "GroundwaterFlow.BoundaryXMax",
+    "boundaryymin": "GroundwaterFlow.BoundaryYMin",
+    "boundaryymax": "GroundwaterFlow.BoundaryYMax",
+    "boundaryzmin": "GroundwaterFlow.BoundaryZMin",
+    "boundaryzmax": "GroundwaterFlow.BoundaryZMax",
+}
+
+DEFORMATIONS_BC_MAP = {
+    "boundaryxmin": "Deformations.BoundaryXMin",
+    "boundaryxmax": "Deformations.BoundaryXMax",
+    "boundaryymin": "Deformations.BoundaryYMin",
+    "boundaryymax": "Deformations.BoundaryYMax",
+    "boundaryzmin": "Deformations.BoundaryZMin",
+    "boundaryzmax": "Deformations.BoundaryZMax",
+}
+
+FLAT_ALIAS: Dict[str, str] = {
+    **PHASE_MAP, **DEFORM_MAP, **FLOW_MAP, **DYNAMICS_MAP, **GROUNDWATERFLOW_MAP, **DEFORMATIONS_BC_MAP
+}
+
+# ---------- Enum normalization tables ----------
+ENUMS: Dict[str, Dict[str, str]] = {
+    "DeformCalcType": {
+        _norm("K0 procedure"): "K0 procedure",
+        _norm("Gravity loading"): "Gravity loading",
+        _norm("Flow only"): "Flow only",
+        _norm("Plastic"): "Plastic",
+        _norm("Consolidation"): "Consolidation",
+        _norm("Safety"): "Safety",
+        _norm("Dynamic"): "Dynamic",
+        _norm("Fully coupled flow-deformation"): "Fully coupled flow-deformation",
+    },
+    "PorePresCalcType": {
+        _norm("Phreatic"): "Phreatic",
+        _norm("Use pressures from previous phase"): "Use pressures from previous phase",
+        _norm("Steady state groundwater flow"): "Steady state groundwater flow",
+        _norm("Transient groundwater flow"): "Transient groundwater flow",
+    },
+    "Deform.ArcLengthControl": {
+        _norm("On"): "On", _norm("Off"): "Off", _norm("Auto"): "Auto",
+    },
+    "Deform.TimeStepDetermType": {
+        _norm("Automatic"): "Automatic", _norm("Manual"): "Manual",
+    },
+    "Deform.LoadingType": {
+        _norm("Staged construction"): "Staged construction",
+        _norm("Minimum excess pore pressure"): "Minimum excess pore pressure",
+        _norm("Degree of consolidation"): "Degree of consolidation",
+        _norm("Target SumMsf"): "Target SumMsf",
+        _norm("Incremental multipliers"): "Incremental multipliers",
+    },
+    "Flow.ThermalCalcType": {
+        _norm("Steady state thermal flow"): "Steady state thermal flow",
+        _norm("Transient thermal flow"): "Transient thermal flow",
+    },
+    "Dynamics.BoundaryXMin": { _norm("Viscous"): "Viscous", _norm("Free field"): "Free field", _norm("None"): "None" },
+    "Dynamics.BoundaryXMax": { _norm("Viscous"): "Viscous", _norm("Free field"): "Free field", _norm("None"): "None" },
+    "Dynamics.BoundaryYMin": { _norm("Viscous"): "Viscous", _norm("Free field"): "Free field", _norm("None"): "None" },
+    "Dynamics.BoundaryYMax": { _norm("Viscous"): "Viscous", _norm("Free field"): "Free field", _norm("None"): "None" },
+    "Dynamics.BoundaryZMin": { _norm("Viscous"): "Viscous", _norm("Compliant base"): "Compliant base", _norm("None"): "None" },
+    "Dynamics.BoundaryZMax": { _norm("Viscous"): "Viscous", _norm("None"): "None" },
+    "GroundwaterFlow.BoundaryXMin": { _norm("Open"): "Open", _norm("Closed"): "Closed" },
+    "GroundwaterFlow.BoundaryXMax": { _norm("Open"): "Open", _norm("Closed"): "Closed" },
+    "GroundwaterFlow.BoundaryYMin": { _norm("Open"): "Open", _norm("Closed"): "Closed" },
+    "GroundwaterFlow.BoundaryYMax": { _norm("Open"): "Open", _norm("Closed"): "Closed" },
+    "GroundwaterFlow.BoundaryZMin": { _norm("Open"): "Open", _norm("Closed"): "Closed" },
+    "GroundwaterFlow.BoundaryZMax": { _norm("Open"): "Open", _norm("Closed"): "Closed" },
+    "Deformations.BoundaryXMin": {
+        _norm("Free"): "Free", _norm("Normally fixed"): "Normally fixed",
+        _norm("Horizontally fixed"): "Horizontally fixed", _norm("Vertically fixed"): "Vertically fixed",
+        _norm("Fully fixed"): "Fully fixed",
+    },
+    "Deformations.BoundaryXMax": {
+        _norm("Free"): "Free", _norm("Normally fixed"): "Normally fixed",
+        _norm("Horizontally fixed"): "Horizontally fixed", _norm("Vertically fixed"): "Vertically fixed",
+        _norm("Fully fixed"): "Fully fixed",
+    },
+    "Deformations.BoundaryYMin": {
+        _norm("Free"): "Free", _norm("Normally fixed"): "Normally fixed",
+        _norm("Horizontally fixed"): "Horizontally fixed", _norm("Vertically fixed"): "Vertically fixed",
+        _norm("Fully fixed"): "Fully fixed",
+    },
+    "Deformations.BoundaryYMax": {
+        _norm("Free"): "Free", _norm("Normally fixed"): "Normally fixed",
+        _norm("Horizontally fixed"): "Horizontally fixed", _norm("Vertically fixed"): "Vertically fixed",
+        _norm("Fully fixed"): "Fully fixed",
+    },
+    "Deformations.BoundaryZMin": {
+        _norm("Free"): "Free", _norm("Normally fixed"): "Normally fixed",
+        _norm("Horizontally fixed"): "Horizontally fixed", _norm("Vertically fixed"): "Vertically fixed",
+        _norm("Fully fixed"): "Fully fixed",
+    },
+    "Deformations.BoundaryZMax": {
+        _norm("Free"): "Free", _norm("Normally fixed"): "Normally fixed",
+        _norm("Horizontally fixed"): "Horizontally fixed", _norm("Vertically fixed"): "Vertically fixed",
+        _norm("Fully fixed"): "Fully fixed",
+    },
+}
+
+def _coerce_enum_value(enum_key: str, raw: Any) -> Any:
+    """
+    Map user-provided values to PLAXIS canonical enum strings according to ENUMS[enum_key].
+    - Accepts case/space/underscore/dash-insensitive strings (via _norm).
+    - If the table contains On/Off and user passes True/False (or 'true'/'false'/'on'/'off'), map accordingly.
+    - If value is a list/tuple, map element-wise.
+    """
+    # element-wise for sequences
+    if isinstance(raw, (list, tuple)):
+        return type(raw)(_coerce_enum_value(enum_key, v) for v in raw)
+
+    table = ENUMS.get(enum_key)
+    if not table:
+        return raw
+
+    # boolean → On/Off if table supports it
+    if isinstance(raw, bool):
+        if _norm("On") in table and _norm("Off") in table:
+            return table[_norm("On")] if raw else table[_norm("Off")]
+        return raw
+
+    # string normalization
+    if isinstance(raw, str):
+        key = _norm(raw)
+        # allow typical boolean-like strings
+        if key in {"true", "yes", "on", "1"} and _norm("On") in table:
+            return table[_norm("On")]
+        if key in {"false", "no", "off", "0"} and _norm("Off") in table:
+            return table[_norm("Off")]
+        # direct lookup
+        if key in table:
+            return table[key]
+        # if already canonical (exact match), keep as-is
+        return raw
+
+    # numeric or others pass through
+    return raw
+
+
+def _coerce_for_property(label: str, prop: str, value: Any) -> Any:
+    """
+    Try enum coercion with two keys:
+      1) '<Label>.<Prop>' (e.g., 'Deform.TimeStepDetermType')
+      2) '<Prop>'         (e.g., 'DeformCalcType', 'PorePresCalcType')
+    Falls back to original value if no enum table matches.
+    """
+    # prefer dotted path when label is a known subobject; ignore 'Phase'
+    dotted = f"{label}.{prop}" if label and label.lower() != "phase" else prop
+
+    # 1) dotted match
+    coerced = _coerce_enum_value(dotted, value)
+    if coerced is not value:
+        return coerced
+
+    # 2) plain property match
+    coerced = _coerce_enum_value(prop, value)
+    return coerced
+
+def _batch_set(g_i: Any, obj: Any, bag: Dict[str, Any], label: str, warn: bool = False):
+    """Apply properties on a PLAXIS proxy object.
+    For each key, coerce its value via ENUMS (using '<Label>.<Prop>' or '<Prop>') before setting.
+    Fast path: setattr()/setproperties per key; fallback: g_i.set(handle, value).
+    """
+    if not bag or obj is None:
+        return
+
+    # Try fast path (per-key to isolate offenders early)
+    for k, v in bag.items():
+        cv = _coerce_for_property(label, k, v)
+        try:
+            # Prefer setproperties if available (more robust on PLAXIS proxies)
+            if hasattr(obj, "setproperties"):
+                obj.setproperties(**{k: cv})  # type: ignore[attr-defined]
+            else:
+                setattr(obj, k, cv)
+        except Exception:
+            # Fallback to g_i.set on the underlying attribute handle
+            try:
+                h = getattr(obj, k)
+                g_i.set(h, cv)
+            except Exception as ee:
+                if warn:
+                    pref = f"{label}." if label and label.lower() != "phase" else ""
+                    print(f"[phase-apply] skipped {pref}{k}: {ee}")
+
 
 class PhaseMapper:
     """
@@ -337,9 +642,9 @@ class PhaseMapper:
         """语法糖：封装 InitialPhase 并附带激活/冻结清单。"""
         ph = PhaseMapper.wrap_initial_as_phase(g_i, name=name, comment=comment, **kwargs)
         if activate:
-            ph.activate_structures(*activate)
+            ph.activate_structures(activate)
         if deactivate:
-            ph.deactivate_structures(*deactivate)
+            ph.deactivate_structures(deactivate)
         return ph
 
     # Compatibility helper
@@ -469,9 +774,11 @@ class PhaseMapper:
         PhaseMapper.goto_stages(g_i)
         base = inherits if inherits is not None else getattr(phase, "inherits", None)
         h = PhaseMapper._ensure_phase_handle(g_i, phase, base=base)
+        PhaseMapper.apply_options(g_i, phase)
         if apply_structure:
-            if (getattr(phase, "activate", None) or getattr(phase, "deactivate", None)):
+            if (getattr(phase, "activate", None) or getattr(phase, "deactivate", None)) or getattr(phase, "wells_dict", None):
                 try:
+                    print(f"[INFO] {phase.name} is applying the structures. ~")
                     PhaseMapper.apply_structures(g_i, phase, warn_on_missing=True)
                 except Exception as e:
                     # Do not interrupt the process; errors will be reported again in the subsequent apply_phase.
@@ -488,7 +795,7 @@ class PhaseMapper:
 
         return h if return_handle else phase
 
-    # ---- options/settings
+
 
     @staticmethod
     def _set_phase_attr(phase_handle: PhaseHandle, key: str, value: Any) -> bool:
@@ -519,54 +826,90 @@ class PhaseMapper:
         return False
 
     @staticmethod
-    def apply_options(*args, warn_on_missing: bool = False, **_ignored) -> None:
+    def apply_options(g_i: Any, phase: Phase, warn_on_missing: bool = False, **_ignored) -> None:
         """
-        Dual-mode (compatible with both calling methods):
-        1) New API (Phase-first): apply_options(g_i, phase: Phase)
-        2) Old API (handle + options): apply_options(phase_handle, options_dict) 
-        Function: Write the options to the target stage (via handle or phase.plx_id),
-        Supporting dotted keys and 'Σ' alias.
+        Static entry point: read settings from the phase object and push them
+        into PLAXIS using setproperties(). Supported sources on the phase:
+        - phase.settings      (dict or object with to_dict())
+        - phase.stage_settings
+        - phase.options
+        - phase.stageOptions
+        Keys can be friendly names (e.g., 'ignore_undrained') or canonical dotted
+        paths (e.g., 'Deform.IgnoreUndrainedBehaviour').
         """
-        # --------------- 判别形态 ---------------
-        if len(args) == 2:
-            a0, a1 = args
-            # Case-B: 旧 API -> (phase_handle, options_dict)
-            if isinstance(a1, dict):
-                phase_handle = a0
-                options = _flatten_options_dict(a1)
-                for key, val in options.items():
-                    if not PhaseMapper._set_phase_attr(phase_handle, key, val) and warn_on_missing:
-                        print(f"[PhaseMapper.apply_options] Unknown/unsupported option '{key}' (ignored).")
-                return
+        # 1) Pull settings directly from the phase
+        settings_obj = None
+        for attr in ("settings", "stage_settings", "options", "stageOptions"):
+            if hasattr(phase, attr):
+                settings_obj = getattr(phase, attr)
+                break
 
-            # Case-A: 新 API -> (g_i, phase: Phase)
-            g_i, phase = a0, a1
-            # 确保有句柄
-            ph_handle = PhaseMapper._ensure_phase_handle(g_i, phase)
-            # 从 Phase 取 options
-            options: Dict[str, Any] = {}
-            if hasattr(phase, "settings_payload") and callable(getattr(phase, "settings_payload")):
-                try:
-                    options = phase.settings_payload() or {}
-                except Exception:
-                    options = {}
-            elif hasattr(phase, "settings"):
-                s = getattr(phase, "settings")
-                if hasattr(s, "to_dict"):
-                    try:
-                        options = s.to_dict() or {}
-                    except Exception:
-                        options = {}
-                elif isinstance(s, dict):
-                    options = s
-            options = _flatten_options_dict(options)
-            for key, val in options.items():
-                if not PhaseMapper._set_phase_attr(ph_handle, key, val) and warn_on_missing:
-                    print(f"[PhaseMapper.apply_options] Unknown/unsupported option '{key}' (ignored).")
+        if settings_obj is None:
             return
 
-        # 其它形态均视为用法错误
-        raise TypeError("apply_options expects either (g_i, Phase) or (phase_handle, options_dict).")
+        # Convert to dict if needed
+        if not isinstance(settings_obj, dict):
+            if hasattr(settings_obj, "to_dict"):
+                settings: Dict[str, Any] = settings_obj.to_dict()
+            elif hasattr(settings_obj, "to_phase_dict"):
+                settings = settings_obj.to_phase_dict()
+            else:
+                # Last resort: use object __dict__
+                settings = dict(getattr(settings_obj, "__dict__", {}))
+        else:
+            settings = settings_obj
+
+        if not settings:
+            return
+
+        # 2) Collect properties per target
+        top_props: Dict[str, Any] = {}
+        deform_props: Dict[str, Any] = {}
+        flow_props: Dict[str, Any] = {}
+        dynamics_props: Dict[str, Any] = {}
+        gwflow_props: Dict[str, Any] = {}
+        deforms_bc_props: Dict[str, Any] = {}
+
+        skipped: list[tuple[str, str]] = []
+
+        # 3) Translate & coerce
+        for raw_key, val in settings.items():
+            path = resolve_path(raw_key, FLAT_ALIAS)
+            if not path:
+                skipped.append((raw_key, "unmapped"))
+                continue
+
+            coerced = coerce_value(path, val, ENUMS)
+            sub, prop = split_target(path)
+
+            if sub is None:
+                top_props[prop] = coerced
+            elif sub == "Deform":
+                deform_props[prop] = coerced
+            elif sub == "Flow":
+                flow_props[prop] = coerced
+            elif sub == "Dynamics":
+                dynamics_props[prop] = coerced
+            elif sub == "GroundwaterFlow":
+                gwflow_props[prop] = coerced
+            elif sub == "Deformations":
+                deforms_bc_props[prop] = coerced
+            else:
+                skipped.append((raw_key, f"unknown sub-object {sub}"))
+
+        ph_plx = phase.plx_id
+        # 4) Apply via setproperties()
+        _batch_set(g_i, ph_plx, top_props, "Phase", warn_on_missing)
+        _batch_set(g_i, getattr(ph_plx, "Deform", None), deform_props, "Deform", warn_on_missing)
+        _batch_set(g_i, getattr(ph_plx, "Flow", None), flow_props, "Flow", warn_on_missing)
+        _batch_set(g_i, getattr(ph_plx, "Dynamics", None), dynamics_props, "Dynamics", warn_on_missing)
+        _batch_set(g_i, getattr(ph_plx, "GroundwaterFlow", None), gwflow_props, "GroundwaterFlow", warn_on_missing)
+        _batch_set(g_i, getattr(ph_plx, "Deformations", None), deforms_bc_props, "Deformations", warn_on_missing)
+
+        # 5) Optional diagnostics
+        if warn_on_missing and skipped:
+            for raw_key, reason in skipped:
+                print(f"[phase-apply] skipped key '{raw_key}': {reason}")
 
     # ---- structures activation/deactivation
     @staticmethod
@@ -637,6 +980,7 @@ class PhaseMapper:
                         deactivate: Iterable[Any] = (),
                         *, warn_on_missing: bool = False) -> None:
         """
+        Apply the active-deactive status of structures for a phase, and update the wells' parameters.
         Dual-mode：
         1) New: apply_structures(g_i, phase: Phase, ...)
         - If activate/deactivate is not explicitly passed in, it will read phase.activate/phase.deactivate
@@ -652,11 +996,15 @@ class PhaseMapper:
             src_deactivate = list(deactivate or [])
 
         # 1) 解析为基对象句柄（含按名兜底）
-        act = [PhaseMapper._ensure_object_handle(g_i, o, warn_on_missing=warn_on_missing) for o in src_activate]
-        deact = [PhaseMapper._ensure_object_handle(g_i, o, warn_on_missing=warn_on_missing) for o in src_deactivate]
-        act = [h for h in act if h is not None]
-        deact = [h for h in deact if h is not None]
-
+        act, deact = [], []
+        for o in src_activate:
+            handles = PhaseMapper._ensure_object_handle(g_i, o, warn_on_missing=warn_on_missing)
+            act.extend(handles)
+        
+        for o in src_deactivate:
+            handles = PhaseMapper._ensure_object_handle(g_i, o, warn_on_missing=warn_on_missing)
+            deact.extend(handles)
+            
         # 2) 🔹分块展开（关键：把 PLATE → 所有 PLATE_n 一起切换）
         act = PhaseMapper._expand_segments_for_handles(g_i, act)
         deact = PhaseMapper._expand_segments_for_handles(g_i, deact)
@@ -686,6 +1034,17 @@ class PhaseMapper:
             if not ok and warn_on_missing:
                 name = _ident_str(getattr(h, "Identification", None)) or _ident_str(getattr(h, "Name", None))
                 print(f"[PhaseMapper.apply_structures] deactivate failed for {name or h}.")
+
+        # 5) 更新井的流量参数
+        if isinstance(phase_or_handle, Phase):
+            if phase_or_handle.wells_dict:
+                well_handles = [well.plx_id for well in phase_or_handle.wells_dict.keys()]
+                values = list(phase_or_handle.wells_dict.values())
+                well_handles = PhaseMapper._expand_segments_for_handles(g_i, well_handles)
+                for wh, value in zip(well_handles, values):
+                        g_i.set(getattr(wh, "Q", None), ph_handle, value)
+                        print(f"[PhaseMapper.apply_structures] Update the Q={value} of well {str(wh.Name)} for {phase_or_handle.name}.")
+            
 
     # =========================================================================
     # helper tools: Pick up objects by name from the stage phase
@@ -774,6 +1133,12 @@ class PhaseMapper:
         return out
 
     @staticmethod
+    def _expand_handle_name(handle: Any) -> str:
+        if handle:
+            return str(handle.Name)
+        return "There is no handle"
+
+    @staticmethod
     def _expand_segments_for_handle(g_i: Any, handle: Any) -> list[Any]:
         if handle is None:
             return []
@@ -786,11 +1151,12 @@ class PhaseMapper:
         ident = _ident_str(getattr(handle, "Identification", None)) or _ident_str(getattr(handle, "Name", None))
         if ident:
             fam_pats = _family_regexes_for_name(ident)
+            handle_name = PhaseMapper._expand_handle_name(handle)
             # 在常见容器里按族扩展（不限定容器也行；为了性能你可以配合 type_tag 限定）
             for col in PhaseMapper._iter_candidate_collections(g_i, type_tag=_guess_type_tag(handle)):
                 for obj in _try_iter(col):
                     oid = _ident_str(getattr(obj, "Identification", None)) or _ident_str(getattr(obj, "Name", None))
-                    if oid and any(p.match(_canon(oid)) for p in fam_pats):
+                    if oid and any(p.match(_canon(oid)) for p in fam_pats) and handle_name in oid:
                         segs.append(obj)
 
         # 去重
@@ -811,7 +1177,7 @@ class PhaseMapper:
         uniq, seen = [], set()
         for h in out:
             k = id(h)
-            if k not in seen:
+            if k not in seen and "Feature" in str(h.TypeName):
                 seen.add(k)
                 uniq.append(h)
         return uniq
@@ -917,32 +1283,53 @@ class PhaseMapper:
         )
 
     @staticmethod
-    def _ensure_object_handle(g_i: Any, obj: Any, *, warn_on_missing: bool = False) -> Optional[Any]:
+    def _ensure_object_handle(g_i: Any, obj: Any, *, warn_on_missing: bool = False) -> List[Any]:
         if obj is None:
+            return []
+
+        
+        # 1) 已有句柄直接用（若是属性句柄，建议在 structuremapper.create 时就重绑为容器对象）
+        # 1.1) If the object is a retaining wall, the interfaces of a retaining wall should be processed
+        handles = []
+        from ..structures import RetainingWall
+        def pickup_interface(interface_obj):
+            if interface_obj:
+                name = str(getattr(interface_obj.plx_id, "Name", ""))
+                interface_handle = getattr(g_i, name, None)
+                if interface_handle:
+                    return interface_handle
             return None
 
-        # 1) 已有句柄直接用（若是属性句柄，建议在 structuremapper.create 时就重绑为容器对象）
+        if isinstance(obj, RetainingWall):
+            interfaces = obj.interfaces
+            for i in interfaces:
+                ih = pickup_interface(i)
+                if ih:
+                    handles.append(ih)
+        
+
         h = getattr(obj, "plx_id", None)
-        if h is not None:
-            return h
+        if h:
+            handles.append(h)
+            return handles
 
         # 2) 按名字 + 族 查找
         type_tag = _guess_type_tag(obj)  # 会从 plx_id.TypeName 或类名 Anchor 推断 'n2n_anchor'
         name = getattr(obj, "name", None)
         if isinstance(name, str) and name:
             h = PhaseMapper._find_model_object_by_name(g_i, name, type_tag=type_tag)
-            if h is not None:
+            if h:
                 try: setattr(obj, "plx_id", h)
                 except Exception: pass
-                return h
+                return [h]
 
         # 3) 退化：obj 本身像句柄
         if PhaseMapper._looks_like_handle(obj):
-            return obj
-
+            return [obj]
+        
         if warn_on_missing:
             print(f"[PhaseMapper] cannot resolve handle for object: {getattr(obj,'name',obj)}")
-        return None
+        return []
 
 
     @staticmethod
@@ -974,11 +1361,11 @@ class PhaseMapper:
         for obj in (activate or []):
             h = PhaseMapper._ensure_object_handle(g_i, obj, warn_on_missing=warn_on_missing)
             if h is not None:
-                act_handles.append(h)
+                act_handles.extend(h)
         for obj in (deactivate or []):
             h = PhaseMapper._ensure_object_handle(g_i, obj, warn_on_missing=warn_on_missing)
             if h is not None:
-                deact_handles.append(h)
+                deact_handles.extend(h)
 
         def _unique(seq: list[Any]) -> list[Any]:
             seen, out = set(), []

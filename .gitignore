@@ -6,6 +6,8 @@ __pycache__/
 # custom
 runtest.sh
 *.xlsx
+src/*.py
+src/*.ipynb
 
 # Distribution / packaging
 .Python

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Optional, Dict, Union
+from typing import Any, Optional, Dict, Union, List
 from ..geometry import Polygon3D
 from .basestructure import BaseStructure
 from ..materials.platematerial import ElasticPlate
@@ -51,6 +51,11 @@ class RetainingWall(BaseStructure):
     @property
     def neg_interface(self) -> Optional[NegativeInterface]:
         return self._iface_neg
+    
+    @property
+    def interfaces(self) -> List[Optional[PlateInterfaceBase]]:
+        return [self.pos_interface, self.neg_interface]
+
 
     def __repr__(self) -> str:
         p = self._plate_type if isinstance(self._plate_type, str) else getattr(self._plate_type, "name", type(self._plate_type).__name__)
