@@ -34,9 +34,9 @@ from ..components.watertable import WaterLevel, WaterLevelTable  # adjust the pa
 from .geometrymapper import GeometryMapper
 
 
-# ------------------------------
+# ##############################
 # Logging (compact)
-# ------------------------------
+# ##############################
 def _one_line(msg: str) -> str:
     return " ".join(str(msg).split())
 
@@ -67,9 +67,9 @@ def _log_error(kind: str, msg: str, exc: Exception) -> None:
     _log("ERROR", kind, f"{msg} msg={exc}")
 
 
-# ------------------------------
+# ##############################
 # Low-level helpers
-# ------------------------------
+# ##############################
 def _normalize(v: Any) -> Any:
     if isinstance(v, (list, tuple)) and v:
         return v[0]
@@ -132,9 +132,9 @@ def _ensure_flow_mode(g_i: Any) -> None:
     # If not available, continue silently; some versions don't require this.
 
 
-# ------------------------------
+# ##############################
 # Water table mapper
-# ------------------------------
+# ##############################
 class WaterTableMapper:
     """
     Create / update / delete water levels (UserWaterLevel) in PLAXIS 3D.
@@ -152,7 +152,7 @@ class WaterTableMapper:
     # candidates for movepoint (3D variant usually accepts index + (x y z))
     _MOVEPOINT: Tuple[str, ...] = ("movepoint", "MovePoint", "move_point")
 
-    # ---------- point (optional helper) ----------
+    # ########## point (optional helper) ##########
     @staticmethod
     def create_level_point(g_i: Any, lvl: WaterLevel) -> Any:
         """Ensure PLAXIS point exists for this WaterLevel (not strictly required by waterlevel())."""
@@ -168,7 +168,7 @@ class WaterTableMapper:
             _log_error("WaterLevelPoint", f"label={getattr(lvl,'label',None)}", e)
             raise
 
-    # ---------- create table ----------
+    # ########## create table ##########
     @staticmethod
     def create_table(g_i: Any, tbl: WaterLevelTable, *, goto_flow: bool = False) -> Any:
         """
@@ -213,7 +213,7 @@ class WaterTableMapper:
             _log_error("WaterLevelTable", f"label={getattr(tbl,'label',None)}", e)
             raise
 
-    # ---------- update table (move points or rebuild) ----------
+    # ########## update table (move points or rebuild) ##########
     @staticmethod
     def update_table(g_i: Any, tbl: WaterLevelTable, *, rebuild_if_needed: bool = True) -> Any:
         """
@@ -280,7 +280,7 @@ class WaterTableMapper:
             _log_error("WaterLevelTable", f"label={getattr(tbl,'label',None)}", e)
             raise
 
-    # ---------- delete ----------
+    # ########## delete ##########
     @staticmethod
     def delete_table(g_i: Any, tbl: WaterLevelTable) -> None:
         try:
@@ -294,13 +294,13 @@ class WaterTableMapper:
         except Exception as e:
             _log_error("WaterLevelTable", f"label={getattr(tbl,'label',None)}", e)
 
-    # ---------- convenience: create or update ----------
+    # ########## convenience: create or update ##########
     @staticmethod
     def create_or_update(g_i: Any, tbl: WaterLevelTable) -> Any:
         """Create if needed, else update."""
         return WaterTableMapper.update_table(g_i, tbl) if getattr(tbl, "plx_id", None) else WaterTableMapper.create_table(g_i, tbl)
 
-    # ---------- optional: set as global water level (best-effort) ----------
+    # ########## optional: set as global water level (best-effort) ##########
     @staticmethod
     def set_global(g_i: Any, tbl: Union[WaterLevelTable, Any]) -> None:
         """

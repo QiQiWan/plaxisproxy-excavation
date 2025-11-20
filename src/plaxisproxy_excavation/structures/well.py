@@ -44,7 +44,7 @@ class Well(BaseStructure, TwoPointLineMixin):
         # runtime handle
         self.plx_id = None
 
-    # --- geometry helpers ---
+    # ### geometry helpers ###
     def get_points(self):
         """Return top/bottom points of the line."""
         return self._line.get_points()
@@ -92,7 +92,7 @@ class Well(BaseStructure, TwoPointLineMixin):
     def pos(self):
         return self._pos
 
-    # --- parameters ---
+    # ### parameters ###
     @property
     def well_type(self) -> Union[WellType, str]:
         return self._well_type

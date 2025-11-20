@@ -22,9 +22,9 @@ from ..geometry import Point, Line3D, Polygon3D
 from .geometrymapper import GeometryMapper
 
 
-# ------------------------------
+# ##############################
 # Compact logging helpers
-# ------------------------------
+# ##############################
 def _one_line(msg: str) -> str:
     return " ".join(str(msg).split())
 
@@ -60,9 +60,9 @@ def _log_error(kind: str, msg: str, exc: Exception) -> None:
     _log("ERROR", kind, f"{msg} msg={exc}")
 
 
-# ------------------------------
+# ##############################
 # Low-level utility
-# ------------------------------
+# ##############################
 def _normalize(v: Any) -> Any:
     if isinstance(v, (list, tuple)) and v:
         return v[0]
@@ -148,9 +148,9 @@ def _delete_handle(g_i: Any, h: Any) -> None:
         pass
 
 
-# ------------------------------
+# ##############################
 # PROPERTY WRITERS (single place)
-# ------------------------------
+# ##############################
 def _write_point_static(tgt: Any, src: PointLoad) -> None:
     """Write point static values Fx/Fy/Fz and Mx/My/Mz."""
     _set_many(tgt, {
@@ -218,9 +218,9 @@ def _write_surface_static(tgt: Any, src: SurfaceLoad) -> None:
             _set_many(tgt, {"Vector_x": vec[0], "Vector_y": vec[1], "Vector_z": vec[2]})
 
 
-# ------------------------------
+# ##############################
 # LoadMapper
-# ------------------------------
+# ##############################
 class LoadMapper:
     """Unified creation & deletion for Point/Line/Surface loads.
 
@@ -240,7 +240,7 @@ class LoadMapper:
     _LINE_LOAD:  Tuple[str, ...] = ("LineLoad", "lineload", "line_load", "load_line")
     _SURF_LOAD:  Tuple[str, ...] = ("SurfLoad", "surfaceload", "surface_load", "load_surface", "areaload")
 
-    # ---------- PUBLIC API ----------
+    # ########## PUBLIC API ##########
     @staticmethod
     def create(g_i: Any, obj: Union[PointLoad, DynPointLoad, LineLoad, DynLineLoad, SurfaceLoad, DynSurfaceLoad]) -> Any:
         if isinstance(obj, (SurfaceLoad, DynSurfaceLoad)):
@@ -251,7 +251,7 @@ class LoadMapper:
             return LoadMapper.create_point(g_i, obj)
         raise TypeError(f"Unsupported load type: {type(obj)}")
 
-    # ---------- Point ----------
+    # ########## Point ##########
     @staticmethod
     def create_point(g_i: Any, obj: Union[PointLoad, DynPointLoad]) -> Any:
         try:
@@ -276,7 +276,7 @@ class LoadMapper:
             _log_error("Load:Point", f"name={getattr(obj,'name','N/A')}", e)
             raise
 
-    # ---------- Line ----------
+    # ########## Line ##########
     @staticmethod
     def create_line(g_i: Any, obj: Union[LineLoad, DynLineLoad]) -> Any:
         try:
@@ -306,7 +306,7 @@ class LoadMapper:
             _log_error("Load:Line", f"name={getattr(obj,'name','N/A')}", e)
             raise
 
-    # ---------- Surface ----------
+    # ########## Surface ##########
     @staticmethod
     def create_surface(g_i: Any, obj: Union[SurfaceLoad, DynSurfaceLoad]) -> Any:
         try:
@@ -331,7 +331,7 @@ class LoadMapper:
             _log_error("Load:Surface", f"name={getattr(obj,'name','N/A')}", e)
             raise
 
-    # ---------- Dynamic attachment: Point ----------
+    # ########## Dynamic attachment: Point ##########
     @staticmethod
     def _attach_dynamic_point(g_i: Any, dyn: DynPointLoad) -> Any:
         base = dyn.base
@@ -357,7 +357,7 @@ class LoadMapper:
         dyn.plx_id = tgt  # dynamic returns the same base handle
         return tgt
 
-    # ---------- Dynamic attachment: Line ----------
+    # ########## Dynamic attachment: Line ##########
     @staticmethod
     def _attach_dynamic_line(g_i: Any, dyn: DynLineLoad) -> Any:
         base = dyn.base
@@ -387,7 +387,7 @@ class LoadMapper:
         dyn.plx_id = tgt
         return tgt
 
-    # ---------- Dynamic attachment: Surface ----------
+    # ########## Dynamic attachment: Surface ##########
     @staticmethod
     def _attach_dynamic_surface(g_i: Any, dyn: DynSurfaceLoad) -> Any:
         base = dyn.base
@@ -412,7 +412,7 @@ class LoadMapper:
         dyn.plx_id = tgt
         return tgt
 
-    # ---------- Bind multipliers by key.value ----------
+    # ########## Bind multipliers by key.value ##########
     @staticmethod
     def _bind_multipliers(tgt: Any, mult: Optional[Dict[LoadMultiplierKey, LoadMultiplier]]) -> None:
         if not mult:
@@ -437,7 +437,7 @@ class LoadMapper:
             prop_name = k.value if hasattr(k, "value") else str(k)
             _set_many(tgt, {prop_name: getattr(m, "plx_id", None)})
 
-    # ---------- Delete (static/dynamic) ----------
+    # ########## Delete (static/dynamic) ##########
     @staticmethod
     def delete(g_i: Any, obj: Union[PointLoad, DynPointLoad, LineLoad, DynLineLoad, SurfaceLoad, DynSurfaceLoad, Any]) -> None:
         try:
@@ -488,9 +488,9 @@ class LoadMapper:
         LoadMapper.delete(g_i, obj)
 
 
-# ------------------------------
+# ##############################
 # LoadMultiplier mapper
-# ------------------------------
+# ##############################
 class LoadMultiplierMapper:
     """Create/configure LoadMultiplier (Harmonic or Table)."""
     _GENERIC   = ("multiplier", "loadmultiplier", "create_multiplier", "createmultiplier")

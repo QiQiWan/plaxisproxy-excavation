@@ -59,7 +59,7 @@ class ElasticPlate(BaseMaterial):
             self._G13 = float(G13) if G13 is not None else 0.0
             self._G23 = float(G23) if G23 is not None else 0.0
 
-    # ----------------------------- helpers -----------------------------
+    # ############################# helpers #############################
 
     @staticmethod
     def _compute_isotropic_G(E: float, nu: float) -> float:
@@ -82,7 +82,7 @@ class ElasticPlate(BaseMaterial):
     def __repr__(self) -> str:
         return "<plx.materials.elastic_plate>"
 
-    # --------------------------- properties ----------------------------
+    # ########################### properties ############################
 
     @property
     def d(self) -> float:
@@ -176,7 +176,7 @@ class ElastoplasticPlate(ElasticPlate):
     def __repr__(self) -> str:
         return "<plx.materials.elastoplastic_plate>"
 
-    # --------------------------- properties ----------------------------
+    # ########################### properties ############################
 
     @property
     def sigma_y_11(self) -> float:

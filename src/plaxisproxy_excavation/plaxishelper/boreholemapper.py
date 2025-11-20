@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 import re
 
-# ---- project imports (adjust to your tree) ----------------------------------
+# #### project imports (adjust to your tree) ##################################
 from ..borehole import BoreholeSet, Borehole, BoreholeLayer, SoilLayer
 
 # =============================================================================
@@ -281,7 +281,7 @@ class BoreholeSetMapper:
     Mapper for importing a **whole BoreholeSet** into PLAXIS.
 
     Pipeline
-    --------
+    ########
     1) Call `ensure_unique_names()` and then `normalize_all_boreholes(in_place=True)` to unify the stratigraphic sequence.
     Missing layers will be set to zero thickness (top==bottom), and the upper and lower layer boundaries will be corrected.
     2) Create all Boreholes ⇒ Write `Borehole.plx_id`.
@@ -290,11 +290,11 @@ class BoreholeSetMapper:
     5) Output a single-line English prompt to the console.
     """
 
-    # --- constructor candidates per binding ---
+    # ### constructor candidates per binding ###
     _BH_CALLS = ("borehole", "createborehole", "bhole", "bh", "add_borehole")
     _SL_CALLS = ("soillayer", "SoilLayer", "soil_layer", "addsoillayer")
 
-    # ------------------------------ create ---------------------------------
+    # ############################## create #################################
     @staticmethod
     def create(
         g_i: Any,
@@ -307,7 +307,7 @@ class BoreholeSetMapper:
         Import the entire BoreholeSet into PLAXIS.
 
         Returns
-        -------
+        #######
         summary : {layer_name: [(top,bottom)_bh0, (top,bottom)_bh1, ...]}
                   (By the order of BoreholeSet.boreholes)
         """
@@ -353,7 +353,7 @@ class BoreholeSetMapper:
             created = _normalize_created_handle(created)
 
             if set_name_on_objects:
-                _set_many_props(created, {"Name": bh.name, "Identification": bh.name})
+                _set_many_props(created, {"Name": bh.name, "Identification": bh.name, "Head": bh.water_head})
             bh.plx_id = created
             _log_create("Borehole", f"name={bh.name} at ({x},{y})", created)
 
@@ -415,7 +415,7 @@ class BoreholeSetMapper:
                     handle="OK")
         return summary
 
-    # ------------------------------- deletes -------------------------------
+    # ############################### deletes ###############################
     @staticmethod
     def delete_borehole(g_i: Any, borehole_or_handle: Union[Borehole, Any]) -> bool:
         """Delete a single borehole (best-effort); clears Borehole.plx_id if passed object."""

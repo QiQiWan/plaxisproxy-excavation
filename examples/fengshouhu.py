@@ -34,7 +34,7 @@ from plaxisproxy_excavation.structures.beam import Beam
 from plaxisproxy_excavation.structures.well import Well, WellType
 
 
-# ----------------------------- geometry helpers -----------------------------
+# ############################# geometry helpers #############################
 
 def rect_wall_x(x: float, y0: float, y1: float, z_top: float, z_bot: float) -> Polygon3D:
     pts = [
@@ -57,7 +57,7 @@ def line_2pts(p0: Tuple[float, float, float], p1: Tuple[float, float, float]) ->
     return Line3D(PointSet([a, b]))
 
 
-# ----------------------------- wells helpers -----------------------------
+# ############################# wells helpers #############################
 def _poly_area_sign(xy):
     a = 0.0
     for (x1,y1),(x2,y2) in zip(xy, xy[1:]+xy[:1]):
@@ -216,7 +216,7 @@ def layout_wells_with_limit(
     return wells_unique, stats
 
 
-# ----------------------------- dedupe (by line) -----------------------------
+# ############################# dedupe (by line) #############################
 
 def _as_xyz(p: Any) -> Tuple[float, float, float]:
     if hasattr(p, "x") and hasattr(p, "y") and hasattr(p, "z"):
@@ -274,7 +274,7 @@ def dedupe_wells_by_line(
     return unique, dupes, key_to_master
 
 
-# ----------------------------- soil overrides helper -----------------------------
+# ############################# soil overrides helper #############################
 
 def mk_soil_overrides(names: Iterable[str],
                       active: Optional[bool] = None,
@@ -291,7 +291,7 @@ def mk_soil_overrides(names: Iterable[str],
     return overrides
 
 
-# ----------------------------- Set wells ------------------------------
+# ############################# Set wells ##############################
 def make_random_flows(
     wells: Iterable[Any],
     base: float = 120.0,
@@ -334,7 +334,7 @@ def make_random_flows(
 
     return flows
 
-# ----------------------------- assemble pit -----------------------------
+# ############################# assemble pit #############################
 
 def assemble_pit(runner: Optional[PlaxisRunner] = None) -> FoundationPit:
     """Rectangular pit with D-walls, two brace levels, wells, and phased actions."""
@@ -1230,7 +1230,7 @@ def assemble_pit(runner: Optional[PlaxisRunner] = None) -> FoundationPit:
 
     return pit
 
-# --------------------------------- main ---------------------------------
+# ################################# main #################################
 
 runner = PlaxisRunner(PORT, PASSWORD, HOST)
 pit = assemble_pit(runner=runner)

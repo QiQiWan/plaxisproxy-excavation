@@ -4,7 +4,7 @@ from typing import Any, Optional, Sequence, Dict, List, Tuple
 from ..components.mesh import Mesh, MeshCoarseness
 
 
-# ---------- small helpers ----------
+# ########## small helpers ##########
 def _as_float(v: Any) -> Optional[float]:
     """Return float(v) if v is numeric (and not bool); otherwise None."""
     if isinstance(v, bool):

@@ -40,26 +40,24 @@ from .phasemapper import PhaseMapper
 
 # Domain class imports for typ`e hints / isinstance dispatch
 from ..borehole import BoreholeSet
-from ..materials.soilmaterial import BaseSoilMaterial
-from ..materials.platematerial import ElasticPlate, ElastoplasticPlate
-from ..materials.beammaterial import ElasticBeam, ElastoplasticBeam
-from ..materials.pilematerial import ElasticPile, ElastoplasticPile
-from ..materials.anchormaterial import (
+from ..materials import BaseSoilMaterial
+from ..materials import ElasticPlate, ElastoplasticPlate
+from ..materials import ElasticBeam, ElastoplasticBeam
+from ..materials import ElasticPile, ElastoplasticPile
+from ..materials import (
     ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor,
 )
-from ..structures.retainingwall import RetainingWall
-from ..structures.beam import Beam
-from ..structures.embeddedpile import EmbeddedPile
-from ..structures.anchor import Anchor
-from ..structures.well import Well
-from ..structures.soilblock import SoilBlock
-from ..structures.load import (
-    _BaseLoad, LoadMultiplier,
-)
-from ..components.projectinformation import ProjectInformation
-from ..components.watertable import WaterLevelTable
-from ..components.mesh import Mesh
-from ..components.phase import Phase
+from ..structures import RetainingWall
+from ..structures import Beam
+from ..structures import EmbeddedPile
+from ..structures import Anchor
+from ..structures import Well
+from ..structures import SoilBlock
+from ..structures import LoadMultiplier
+from ..components import ProjectInformation
+from ..components import WaterLevelTable
+from ..components import Mesh
+from ..components import Phase
 
 
 class PlaxisRunner:
@@ -95,7 +93,7 @@ class PlaxisRunner:
         self.g_i: Optional[PlxProxyFactory] = None  # The global input object (for modeling)
         self.g_o: Optional[PlxProxyFactory] = None  # The global output object (for results)
 
-    # ------------------------- connection management -------------------------
+    # ######################### connection management #########################
 
     def connect(self) -> "PlaxisRunner":
         """
@@ -111,12 +109,12 @@ class PlaxisRunner:
             return self
 
         except ConnectionRefusedError:
-            print("-----------------------------------------------------------------------")
+            print("#######################################################################")
             print(f"[Error] Connection was refused. Please confirm:")
             print("1. The Plaxis software has been launched.")
             print("2. The remote script service has been enabled.")
             print(f"3. The port number ({self.input_port}) and password settings are correct.")
-            print("-----------------------------------------------------------------------")
+            print("#######################################################################")
             print("Please check for any errors and then re-execute the 'connect()' function.")
             return self
 
@@ -166,7 +164,7 @@ class PlaxisRunner:
 
     # ===================== convenience wrappers to GeometryPlaxisMapper =====================
 
-    # ---- Points ----
+    # #### Points ####
     def create_point(self, point: Point) -> Any:
         """
         Thin wrapper: create a PLAXIS point via GeometryPlaxisMapper and return the handle.
@@ -193,7 +191,7 @@ class PlaxisRunner:
             raise RuntimeError("Not connected: g_i is None.")
         return GeometryMapper.create_points(self.g_i, data, stop_on_error=stop_on_error)
 
-    # ---- Lines ----
+    # #### Lines ####
     def create_line(
         self,
         data: Union[
@@ -221,7 +219,7 @@ class PlaxisRunner:
             raise RuntimeError("Not connected: g_i is None.")
         return GeometryMapper.create_line(self.g_i, data, name=name, stop_on_error=stop_on_error)
 
-    # ---- Surfaces ----
+    # #### Surfaces ####
     def create_surface(
         self,
         data: Union[
@@ -306,6 +304,13 @@ class PlaxisRunner:
         return ok
 
     # ===================== Structures =====================
+    def goto_structures(self):
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        goto = getattr(self.g_i, "gotostructures", None)
+        if callable(goto):
+            goto()
+    
     def create_retaining_wall(self, wall: RetainingWall) -> Any:
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
@@ -331,6 +336,12 @@ class PlaxisRunner:
             raise RuntimeError("Not connected: g_i is None.")
         return _WellMapper.create(self.g_i, well)
 
+    def delete_all_wells(self) -> bool:
+        self.goto_structures()
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return _WellMapper.delete_all_wells(self.g_i)
+
     def create_soil_block(self, block: SoilBlock) -> Any:
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
@@ -351,6 +362,13 @@ class PlaxisRunner:
         if self.g_i is None:
             raise RuntimeError("Not connected: g_i is None.")
         return LoadMultiplierMapper.create(self.g_i, mul)
+    
+    # ===================== Delete strutures =====================
+    def delete_well(self, well: Well) -> bool:
+        self.goto_structures()
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        return _WellMapper.delete(self.g_i, well)
 
     # ===================== Water table =====================
     def create_water_table(self, table: WaterLevelTable, *, goto_flow: bool = True) -> Any:
@@ -458,6 +476,47 @@ class PlaxisRunner:
             warn_on_missing=warn_on_missing,
         )
     
+    def delete_all_phases(self):
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        self.goto_stages()
+        phases = getattr(self.g_i, "phases", None)
+        delete_func = getattr(self.g_i, "delete", None)
+        if phases:
+            for phase in phases:
+                if str(phase.Name) == "InitialPhase":
+                    continue
+                if callable(delete_func):
+                    print(f"[Delete][Phase] The phase named {str(phase.Name)} is deleted!")
+                    delete_func(phase)
+
+    def mark_phase_should_calculate(self, phase: Phase, should_cal: bool = True):
+        """
+        Update the status for whether the phase should be calculated or not.
+        """
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        phase_handle = phase.plx_id
+        try:
+            set_func = getattr(self.g_i, "set", None)
+            if callable(set_func):
+                set_func(getattr(phase_handle, "ShouldCalculate", None), should_cal)
+        except Exception as e:
+            print(str(e))
+    
+    def is_calculated(self, phase: Phase) -> bool:
+        """
+        Return whether the phase is calculated.
+        """
+        if not phase.plx_id:
+            raise ValueError("This phase was not defined yet.")
+        
+        calculated = getattr(phase.plx_id, "CalculationResult", None)
+        if calculated == 1:
+            return True
+        return False
+            
+    
     # ===================================================================================
     # Soil helper
     # ===================================================================================
@@ -480,7 +539,7 @@ class PlaxisRunner:
         m = self.get_excavation_soils(phase=phase, prefer_volume=prefer_volume)
         return list(m.values())
 
-    # --- Remaining (non-excavated) child soils ---
+    # ### Remaining (non-excavated) child soils ###
 
     def get_remaining_soils(self, phase=None, prefer_volume: bool = True) -> dict:
         """
@@ -526,7 +585,7 @@ class PlaxisRunner:
     # Save and Load
     _project_path: Optional[str] = None  # last known project file path (best-effort cache)
 
-    # --------- small internals ---------
+    # ######### small internals #########
     def _ensure_connected(self) -> None:
         """Ensure we are connected to PLAXIS Input; call self.connect() if needed."""
         g_i = getattr(self, "g_i", None)
@@ -553,7 +612,7 @@ class PlaxisRunner:
             full = full + self._default_ext()
         return full
 
-    # --------- public API: Save / Load ---------
+    # ######### public API: Save / Load #########
     def save_project(self, path: Optional[str] = None, *, overwrite: bool = False) -> str:
         """
         Save the current PLAXIS project.

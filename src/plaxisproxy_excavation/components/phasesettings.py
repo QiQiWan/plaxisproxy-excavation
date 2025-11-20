@@ -2,7 +2,7 @@
 phasesettings.py — Strongly-typed stage settings (no Optional/|None), mapper-aligned.
 
 What this module provides
--------------------------
+#########################
 1) Enums for calculation, loading, pore calculation, solver and mass matrix types.
 2) A strict-typed `StageSettingsBase` (no Optional), with sensible defaults.
 3) Concrete stages:
@@ -18,7 +18,7 @@ What this module provides
    Deform/Loading/Flow/Numerical/Dynamics/Safety + ΣM(aliases) 等。
 
 Key design for "Automatic"/optional fields
-------------------------------------------
+##########################################
 - Internally we store **fixed types** only.
 - For time-step fields (first/min/max_time_step) and other optional knobs we use
   a **sentinel**: `0.0` or `0` means “not specified / Automatic”.
@@ -33,9 +33,9 @@ from enum import Enum
 from typing import Any, Dict, List, Mapping, Sequence, Type, TypeVar, cast
 
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # Enums
-# -----------------------------------------------------------------------------
+# #############################################################################
 class CalcType(Enum):
     Plastic = "Plastic"
     Consolidation = "Consolidation"                # Flow-only solver (transient/steady)
@@ -74,9 +74,9 @@ class SafetyMode(Enum):
     TargetSumMsf = "TargetSumMsf"                      # 输出 sum_msf
 
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # Helpers (normalization + tiny codecs)
-# -----------------------------------------------------------------------------
+# #############################################################################
 TStage = TypeVar("TStage", bound="StageSettingsBase")
 
 _TRUE = {"1", "true", "t", "yes", "y", "on"}
@@ -162,9 +162,9 @@ def normalize_settings_input(data: Mapping[str, Any] | None) -> Dict[str, Any]:
     return dict(d)
 
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # Base class — fixed types only (no Optional), with mapper-aligned defaults
-# -----------------------------------------------------------------------------
+# #############################################################################
 @dataclass
 class StageSettingsBase:
     """
@@ -251,7 +251,7 @@ class StageSettingsBase:
     p_stop: float = 0.0                    # Minimum excess pore pressure
     degree_of_consolidation: float = 0.0   # [0,100], when using degree target
 
-    # ---------------- serialization ----------------
+    # ################ serialization ################
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         # Enums → value
@@ -321,9 +321,9 @@ class StageSettingsBase:
         raise NotImplementedError
 
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # Concrete stages (fixed-typed, with mapper-aligned exports)
-# -----------------------------------------------------------------------------
+# #############################################################################
 @dataclass
 class PlasticStageSettings(StageSettingsBase):
     calc_type: CalcType = CalcType.Plastic
@@ -701,9 +701,9 @@ class SafetyStageSettings(StageSettingsBase):
         return _omit_none(out)
 
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # Factory + Plan helpers
-# -----------------------------------------------------------------------------
+# #############################################################################
 _STAGE_REGISTRY: dict[CalcType, type[StageSettingsBase]] = {
     CalcType.Plastic: PlasticStageSettings,
     CalcType.Consolidation: ConsolidationStageSettings,

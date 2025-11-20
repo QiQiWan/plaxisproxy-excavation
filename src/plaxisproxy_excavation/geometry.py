@@ -6,7 +6,7 @@ from .core.plaxisobject import PlaxisObject
 
 
 """plx.geometry - core geometric primitives with optional Shapely support
---------------------------------------------------------------------------
+##########################################################################
 This module defines lightweight 3-D Point / Line / Polygon containers that are
 sufficient for exchanging data with the Plaxis API while remaining free of any
 heavy GIS dependency.  When the *Shapely* package is available, richer planar
@@ -14,9 +14,9 @@ operations (area, perimeter, validity checks, boolean ops) are automatically
 enabled; otherwise, minimal fall-backs keep the library functional.
 """
 
-# ---------------------------------------------------------------------------
-# Optional Shapely backend ---------------------------------------------------
-# ---------------------------------------------------------------------------
+# ###########################################################################
+# Optional Shapely backend ###################################################
+# ###########################################################################
 try:
     from shapely.geometry import Point as _ShpPoint, LineString as _ShpLine, Polygon as _ShpPolygon
     from shapely.ops import unary_union as _shp_union, polygonize as _shp_polygonize
@@ -42,9 +42,9 @@ class GeometryBase(PlaxisObject):
         """Converts a string to a UUID object, handling None values."""
         return uuid.UUID(s) if s is not None and s != '' else None
 
-# ---------------------------------------------------------------------------
-# Core Primitives -----------------------------------------------------------
-# ---------------------------------------------------------------------------
+# ###########################################################################
+# Core Primitives ###########################################################
+# ###########################################################################
 class Point(GeometryBase):
     """
     Immutable three-dimensional point.
@@ -62,9 +62,9 @@ class Point(GeometryBase):
         self._y = float(y)
         self._z = float(z)
 
-    # ------------------------------------------------------------------
+    # ##################################################################
     # Public helpers
-    # ------------------------------------------------------------------
+    # ##################################################################
     def get_point(self) -> Tuple[float, float, float]:
         """Return the coordinates as a tuple."""
         return (self._x, self._y, self._z)
@@ -86,9 +86,9 @@ class Point(GeometryBase):
         from shapely.geometry import Point as _ShpPoint
         return _ShpPoint(self._x, self._y)
 
-    # ------------------------------------------------------------------
+    # ##################################################################
     # Dunder / Properties
-    # ------------------------------------------------------------------
+    # ##################################################################
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -147,12 +147,12 @@ class PointSet(GeometryBase):
         super().__init__()
         self._points: List[Point] = points if points is not None else []
 
-    # -------------------- mutation -----------------------------------
+    # #################### mutation ###################################
     def add_point(self, x: float, y: float, z: float) -> None:
         """Add a new point to the set from coordinates."""
         self._points.append(Point(x, y, z))
 
-    # -------------------- queries ------------------------------------
+    # #################### queries ####################################
     def get_points(self) -> List[Point]:
         """Return the internal list of Point objects."""
         return self._points
@@ -168,7 +168,7 @@ class PointSet(GeometryBase):
         from shapely.geometry import LineString as _ShpLine
         return _ShpLine([(p.x, p.y) for p in self._points])
 
-    # ---------------- container magic --------------------------------
+    # ################ container magic ################################
 
     def to_dict(self) -> Dict[str, Any]:
         return {"points": [p.to_dict() for p in self._points]}
@@ -192,9 +192,9 @@ class PointSet(GeometryBase):
         return f"<plx.geometry.PointSet n_points={len(self)} closed={self.is_closed()}>"
 
 
-# ---------------------------------------------------------------------------
-# Line3D --------------------------------------------------------------------
-# ---------------------------------------------------------------------------
+# ###########################################################################
+# Line3D ####################################################################
+# ###########################################################################
 class Line3D(GeometryBase):
     """
     Polyline in 3-D space.
@@ -211,7 +211,7 @@ class Line3D(GeometryBase):
             raise TypeError("Line3D must be initialized with a PointSet instance.")
         self._point_set = point_set
 
-    # --------------- delegation ---------------------------------------
+    # ############### delegation #######################################
     def add_point(self, x: float, y: float, z: float) -> None:
         """Add a point to the underlying PointSet."""
         self._point_set.add_point(x, y, z)
@@ -220,7 +220,7 @@ class Line3D(GeometryBase):
         """Return the list of points that define the line."""
         return self._point_set.get_points()
 
-    # --------------- geometric tests ---------------------------------
+    # ############### geometric tests #################################
     def is_closed(self) -> bool:
         """Check if the line is a closed loop."""
         return self._point_set.is_closed()
@@ -247,7 +247,7 @@ class Line3D(GeometryBase):
         - any iterable of length 3
 
         Raises
-        ------
+        ######
         TypeError: if a point is of unsupported type or coordinates are non-numeric.
         ValueError: if a point does not provide exactly 3 coordinates.
         """
@@ -284,7 +284,7 @@ class Line3D(GeometryBase):
         from shapely.geometry import LineString as _ShpLine
         return _ShpLine([(p.x, p.y) for p in self._point_set])
 
-    # --------------- helpers -----------------------------------------
+    # ############### helpers #########################################
     @property
     def length(self) -> float:
         """
@@ -318,7 +318,7 @@ class Line3D(GeometryBase):
             raise ValueError("Line is not vertical (x and y coordinates are not constant).")
         return (self._point_set[0].x, self._point_set[0].y)
 
-    # --------------- dunder ------------------------------------------
+    # ############### dunder ##########################################
     def __len__(self) -> int:
         return len(self._point_set)
 
@@ -354,9 +354,9 @@ class Line3D(GeometryBase):
         return f"<plx.geometry.Line3D id={self._id} points={len(self)} closed={self.is_closed()}>"
 
 
-# ---------------------------------------------------------------------------
-# Polygon3D ------------------------------------------------------------------
-# ---------------------------------------------------------------------------
+# ###########################################################################
+# Polygon3D ##################################################################
+# ###########################################################################
 class Polygon3D(GeometryBase):
     """
     Planar polygon (outer + optional inner rings).
@@ -611,7 +611,7 @@ class Polygon3D(GeometryBase):
         ])
         return cls([Line3D(closed_ps)])
         
-    # ---------------- mutation ---------------------------------------
+    # ################ mutation #######################################
     def add_hole(self, line: Line3D) -> None:
         """Add an inner hole (closed ring) to the polygon."""
         if not line.is_valid_ring():
@@ -650,7 +650,7 @@ class Polygon3D(GeometryBase):
         p1 = Point(x_max, y_max, max(z1, z2))
         return Cube(p0, p1)
 
-    # ---------------- shapely interop --------------------------------
+    # ################ shapely interop ################################
     def to_shapely(self):
         """Return a *shapely.geometry.Polygon* projected to XY plane."""
         if not _SHAPELY_AVAILABLE:
@@ -660,7 +660,7 @@ class Polygon3D(GeometryBase):
         from shapely.geometry import Polygon as _ShpPolygon
         return _ShpPolygon(outer, [inner.coords for inner in inners])
 
-    # ---------------- geometric properties ---------------------------
+    # ################ geometric properties ###########################
     def area(self) -> float:
         """
         Calculate the area of the polygon.
@@ -722,7 +722,7 @@ class Polygon3D(GeometryBase):
                 return False
         return True
 
-    # ---------------- container --------------------------------------
+    # ################ container ######################################
     def get_lines(self) -> List[Line3D]:
         """Return the list of Line3D rings that define the polygon."""
         return self._lines
@@ -780,9 +780,9 @@ class Polygon3D(GeometryBase):
         return f"<plx.geometry.Polygon3D rings={len(self)} area={area}>"
 
 
-# ---------------------------------------------------------------------------
-# Volume Models (Plaxis 3D Compatible) --------------------------------------
-# ---------------------------------------------------------------------------
+# ###########################################################################
+# Volume Models (Plaxis 3D Compatible) ######################################
+# ###########################################################################
 class Volume(GeometryBase):
     """
     Abstract base class for a 3D geometric volume.
@@ -907,7 +907,7 @@ class Polyhedron(Volume):
         
         self._faces = faces
 
-    # --- Volume calculation using Divergence Theorem (Gauss's theorem) ---
+    # ### Volume calculation using Divergence Theorem (Gauss's theorem) ###
     def volume(self) -> float:
         """
         Calculates the volume of the polyhedron using the divergence theorem.
@@ -985,9 +985,9 @@ class Polyhedron(Volume):
         vol = f"{self.volume():.3f}" if self._faces else "?"
         return f"<plx.geometry.Polyhedron id={self._id} n_faces={len(self._faces)} volume={vol}>"
 
-# ---------------------------------------------------------------------------
-# Utility - planar ring closure check (foundation pit walls) -----------------
-# ---------------------------------------------------------------------------
+# ###########################################################################
+# Utility - planar ring closure check (foundation pit walls) #################
+# ###########################################################################
 def rings_close_to_footprint(wall_faces: List[Polygon3D], footprint: Polygon3D, tol: float = 1e-3) -> bool:
     """Return *True* if the XY union of wall top edges encloses the footprint within *tol* m²."""
     if not _SHAPELY_AVAILABLE:

@@ -2,7 +2,7 @@
 
 *A Pythonic automation framework for Plaxis 3D excavation modeling and simulation*
 
----
+###
 
 
 ## English TL;DR
@@ -11,7 +11,7 @@
 * **What you get:** Automated modeling, staged calculation, unified result extraction (Excel-ready), and a maintainable framework that’s simple to extend and integrate.
 * **How to use:** See `examples/testmapper.py`—it walks through walls, braces, wells, phased runs, and Excel export. Adapt it to your project with minimal edits.
 
----
+###
 
 ## 🌍 Project Introduction
 
@@ -26,7 +26,7 @@ It wraps Plaxis’ native scripting interface (`plxscripting`) with an **object-
 
 **Goal:** replace the low-level, command-style experience of `plxscripting` with a **clear, maintainable, reproducible** Python API for Plaxis 3D numerical simulations.
 
----
+###
 
 ## 💡 Motivation: Why an Explicit Plaxis API?
 
@@ -48,14 +48,14 @@ It wraps Plaxis’ native scripting interface (`plxscripting`) with an **object-
 3. **Automated workflow + Output binding**
    From building to calculating to extracting, the wrapper handles **phase switching, Output binding, and node/gauss-point fallbacks**—so full-phase batch extraction is robust and repeatable.
 
----
+###
 
 ## ✨ Features & Benefits
 
 ### Side-by-side comparison (native vs wrapped)
 
 | Dimension            | Native `plxscripting`               | This Wrapper (explicit API)                   |
-| -------------------- | ----------------------------------- | --------------------------------------------- |
+| #################### | ################################### | ############################################# |
 | **API exposure**     | Probe via `__dir__()`/trial         | Clear classes & methods (IDE friendly)        |
 | **Params**           | Inconsistent names, order sensitive | Unified names, type hints, enforced order     |
 | **Error handling**   | Vague exceptions                    | Validations & helpful messages                |
@@ -75,7 +75,7 @@ It wraps Plaxis’ native scripting interface (`plxscripting`) with an **object-
 * [x] **Unified Pythonic style**: consistent naming & parameters.
 * [x] **Batch simulations**: quickly run comparative scenarios.
 
----
+###
 
 ## ⚙️ Installation & Environment
 
@@ -111,7 +111,7 @@ PASSWORD = "your_plaxis_password"
 
 Ensure Plaxis 3D is running and Remote Scripting is enabled.
 
----
+###
 
 ## 🧩 Project Architecture
 
@@ -223,7 +223,7 @@ PlaxisRunner  →  ExcavationBuilder  →  FoundationPit
 4. Add/update tests under `tests/`.
 5. Open a PR with motivation, API notes, and usage example.
 
----
+###
 
 ## 🧠 Example Walkthrough — `examples/testmapper.py`
 
@@ -242,7 +242,7 @@ This end-to-end demo assembles a pit with **retaining walls, three brace levels,
 
 > Tip: Treat the example as a template—swap in your geometry/materials/phases, and keep the build→compute→export rhythm.
 
----
+###
 
 ## 🔮 Future Directions
 
@@ -252,7 +252,7 @@ This end-to-end demo assembles a pit with **retaining walls, three brace levels,
 * 🧠 Adaptive meshing strategies by depth/wall stiffness.
 * 🌐 Web console for remote previews and job queues.
 
----
+###
 
 ## 📜 License & Acknowledgments
 

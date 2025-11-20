@@ -22,7 +22,8 @@ classifiers = [
 # 公共依赖（纯开源、可从 PyPI 获取的）
 dependencies = [
   "shapely==2.0.7",
-  "plxscripting>=1.0.4"
+  "plxscripting>=1.0.4",
+  "pykrige>=1.7.3"
 ]
 
 [project.optional-dependencies]

@@ -3,7 +3,7 @@ from typing import Any, Iterable, Iterator, List, Sequence, Tuple, Union, Option
 from ..geometry import Point, PointSet, Line3D, Polygon3D
 
 
-# ----------------------------- logging helpers ------------------------------
+# ############################# logging helpers ##############################
 def _enum_to_str(v: Any) -> str:
     try:
         if hasattr(v, "name"):
@@ -79,7 +79,7 @@ class GeometryMapper:
     and supports deletion with plx_id reset on the domain object.
     """
 
-    # ----------------------------- public: points -----------------------------
+    # ############################# public: points #############################
     @staticmethod
     def create_point(g_i: Any, point: Point) -> Union[Any, bool]:
         """Create a PLAXIS point and attach handle to point.plx_id."""
@@ -151,7 +151,7 @@ class GeometryMapper:
         _log_create("PointBatch", f"count={len(results)}", results[0] if results else None, extra=f"ok={ok_count} fail={len(results)-ok_count}")
         return results
 
-    # ----------------------------- public: lines ------------------------------
+    # ############################# public: lines ##############################
     @staticmethod
     def create_line(
         g_i: Any,
@@ -176,7 +176,7 @@ class GeometryMapper:
         Create PLAXIS line(s) with g_i.line. Attach plx_id to Line3D where applicable.
         """
         try:
-            # --------- B) Line3D input (single or multiple) ---------
+            # ######### B) Line3D input (single or multiple) #########
             if isinstance(data, Line3D) or (
                 isinstance(data, (list, tuple)) and len(data) > 0 and all(isinstance(x, Line3D) for x in data)
             ):
@@ -203,7 +203,7 @@ class GeometryMapper:
                     _log_create("Line", f"id={getattr(ln,'id','N/A')} {seg_info}", created_ids[0] if created_ids else None)
                 return line_objs[0] if isinstance(data, Line3D) else line_objs
 
-            # --------- A) Points input (two or more points) ----------
+            # ######### A) Points input (two or more points) ##########
             if isinstance(data, (tuple, list)) and len(data) == 2 and (
                 isinstance(data[0], Point) or isinstance(data[0], (tuple, list))
             ):
@@ -286,7 +286,7 @@ class GeometryMapper:
             _log_delete("Line", "raw_handle", obj, ok=ok)
             return ok
 
-    # ---------------------------- public: surfaces ----------------------------
+    # ############################ public: surfaces ############################
     @overload
     @staticmethod
     def create_surface(
@@ -401,7 +401,7 @@ class GeometryMapper:
         _log_delete("Surface", desc, handle, ok=ok)
         return ok
 
-    # ----------------------------- helpers (static) ---------------------------
+    # ############################# helpers (static) ###########################
     @staticmethod
     def _as_point(obj: Any) -> Point:
         """Normalize any supported input into a Point instance."""

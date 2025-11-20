@@ -1,5 +1,5 @@
 from ..geometry import Point
-from ..core.plaxisobject import PlaxisObject
+from ..core import PlaxisObject
 from typing import List, Optional, Dict, Any, Type
 import uuid
 

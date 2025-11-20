@@ -102,7 +102,7 @@ def _try_delete_with_gi(g_i: Any, plx_obj: Any) -> bool:
 
     return False
 
-# --------------------------- logging helpers (single-line) -------------------
+# ########################### logging helpers (single-line) ###################
 
 def _enum_to_str(v: Any) -> str:
     try:
@@ -187,7 +187,7 @@ class SoilMaterialMapper:
       Derivation uses the soil's own cref/phi that have been written to the PLAXIS object.
     """
 
-    # --------------------------- public entrypoints ---------------------------
+    # ########################### public entrypoints ###########################
     @staticmethod
     def create_material(g_i: Any, mat: BaseSoilMaterial) -> Any:
         """
@@ -246,7 +246,7 @@ class SoilMaterialMapper:
         _log_delete("Soil", mat_obj, plx_obj, ok=ok)
         return ok
 
-    # --------------------------- creation primitive --------------------------
+    # ########################### creation primitive ##########################
     @staticmethod
     def _create_raw_soil(g_i: Any) -> Any:
         """
@@ -257,7 +257,7 @@ class SoilMaterialMapper:
         created = g_i.soilmat()
         return _normalize_created_handle(created)
 
-    # --------------------------- property setting ----------------------------
+    # ########################### property setting ############################
     @staticmethod
     def _set_many_props(plx_obj: Any, props: Dict[str, Any]) -> None:
         """
@@ -275,6 +275,11 @@ class SoilMaterialMapper:
                 v = v.value
             try:
                 setattr(plx_obj, k, v)
+                if k == "GwUseDefaults" and bool(getattr(plx_obj, k)) != v:
+                    # If GwUseDefaults was not updated yet, loop the assignment operation.
+                    while bool(getattr(plx_obj, k)) == v:
+                        setattr(plx_obj, k, v)
+                
             except Exception:
                 if hasattr(plx_obj, "setproperties"):
                     try:
@@ -289,7 +294,7 @@ class SoilMaterialMapper:
                     except Exception:
                         pass
 
-    # --------------------------- helpers ------------------------------------
+    # ########################### helpers ####################################
     @staticmethod
     def _first_not_none(*vals):
         for v in vals:
@@ -310,7 +315,7 @@ class SoilMaterialMapper:
         except Exception:
             return None
 
-    # --------------------------- common mappings -----------------------------
+    # ########################### common mappings #############################
     @staticmethod
     def _map_common_props(mat: BaseSoilMaterial) -> Dict[str, Any]:
         """
@@ -338,7 +343,7 @@ class SoilMaterialMapper:
             "eInit":          getattr(mat, "e_init", None),
         }
 
-    # --------------------------- model-specific mappings ---------------------
+    # ########################### model-specific mappings #####################
     @staticmethod
     def _map_mc_props(mc: MCMaterial) -> Dict[str, Any]:
         """Mohr-Coulomb model properties."""
@@ -387,7 +392,7 @@ class SoilMaterialMapper:
             "psi":     getattr(hss, "psi", None),
         }
 
-    # --------------------------- MCC interface handling ----------------------
+    # ########################### MCC interface handling ######################
     @staticmethod
     def _apply_mcc_interface(plx_mat: Any, mcc: MCCMaterial) -> None:
         """
@@ -439,7 +444,7 @@ class SoilMaterialMapper:
             except Exception:
                 pass
 
-    # --------------------------- optional groups -----------------------------
+    # ########################### optional groups #############################
     @staticmethod
     def _apply_optional_groups(plx_mat: Any, mat: BaseSoilMaterial) -> None:
         """
@@ -518,7 +523,7 @@ class PlateMaterialMapper:
     - For ElastoplasticPlate, also sets yield strengths and section moduli.
     """
 
-    # --------------------------- public entrypoints ---------------------------
+    # ########################### public entrypoints ###########################
     @staticmethod
     def create_material(g_i: Any, mat: ElasticPlate) -> Any:
         """
@@ -570,7 +575,7 @@ class PlateMaterialMapper:
         _log_delete("Plate", mat_obj, plx_obj, ok=ok)
         return ok
 
-    # --------------------------- creation primitive --------------------------
+    # ########################### creation primitive ##########################
     @staticmethod
     def _create_raw_plate(g_i: Any) -> Any:
         """
@@ -580,7 +585,7 @@ class PlateMaterialMapper:
         created = getattr(g_i, "platemat")()
         return _normalize_created_handle(created)
 
-    # --------------------------- property setting ----------------------------
+    # ########################### property setting ############################
     @staticmethod
     def _set_many_props(plx_obj: Any, props: Dict[str, Any]) -> None:
         """
@@ -608,7 +613,7 @@ class PlateMaterialMapper:
             except Exception:
                 pass
 
-    # --------------------------- helpers ------------------------------------
+    # ########################### helpers ####################################
     @staticmethod
     def _normalize_plate_object(mat: ElasticPlate) -> None:
         """Normalize/repair fields on the in-memory plate object."""
@@ -645,7 +650,7 @@ class PlateMaterialMapper:
         if _need_fill(getattr(mat, "_G23", None)):
             mat._G23 = G_iso
 
-    # --------------------------- mappings -----------------------------------
+    # ########################### mappings ###################################
     @staticmethod
     def _map_common_props(mat: ElasticPlate) -> Dict[str, Any]:
         """Map fields common to all plate materials (adapt keys as needed)."""
@@ -762,7 +767,7 @@ class BeamMaterialMapper:
     - Elastoplastic adds YieldStress / YieldDirection.
     """
 
-    # --------------------------- public entrypoints ---------------------------
+    # ########################### public entrypoints ###########################
     @staticmethod
     def create_material(
         g_i: Any,
@@ -806,13 +811,13 @@ class BeamMaterialMapper:
         _log_delete("Beam", mat_obj, plx_obj, ok=ok)
         return ok
 
-    # --------------------------- creation primitive --------------------------
+    # ########################### creation primitive ##########################
     @staticmethod
     def _create_raw_beam(g_i: Any) -> Any:
         created = getattr(g_i, "beammat")()
         return _normalize_created_handle(created)
 
-    # --------------------------- property setting ----------------------------
+    # ########################### property setting ############################
     @staticmethod
     def _set_many_props(plx_obj: Any, props: Dict[str, Any]) -> None:
         """Prefer per-key setproperties(k, v); fallback to setattr/setproperty; skip None."""
@@ -838,7 +843,7 @@ class BeamMaterialMapper:
             except Exception:
                 pass
 
-    # --------------------------- mappings -----------------------------------
+    # ########################### mappings ###################################
     @staticmethod
     def _map_common(mat: ElasticBeam) -> Dict[str, Any]:
         K = BEAM_KEYS
@@ -909,7 +914,7 @@ class BeamMaterialMapper:
             K["YieldDirection"]: getattr(mat, "yield_dir", None),
         }
 
-    # --------------------------- optional groups -----------------------------
+    # ########################### optional groups #############################
     @staticmethod
     def _maybe_apply_rayleigh(plx_mat: Any, mat: Union[ElasticBeam, ElastoplasticBeam]) -> None:
         K = BEAM_KEYS
@@ -966,7 +971,7 @@ PILE_KEYS = {
 class PileMaterialMapper:
     """Create PLAXIS embedded pile/beam and push pile properties."""
 
-    # --------------------------- public entrypoints ---------------------------
+    # ########################### public entrypoints ###########################
     @staticmethod
     def create_material(g_i: Any, mat: Union[ElasticPile, ElastoplasticPile]) -> Any:
         if not isinstance(mat, (ElasticPile, ElastoplasticPile)):
@@ -1008,7 +1013,7 @@ class PileMaterialMapper:
         _log_delete("Pile", mat_obj, plx_obj, ok=ok)
         return ok
 
-    # --------------------------- creation primitive --------------------------
+    # ########################### creation primitive ##########################
     @staticmethod
     def _create_raw_pile(g_i: Any) -> Any:
         """
@@ -1021,7 +1026,7 @@ class PileMaterialMapper:
         obj = fn()
         return _normalize_created_handle(obj)
 
-    # --------------------------- property setter -----------------------------
+    # ########################### property setter #############################
     @staticmethod
     def _set_many_props(plx_obj: Any, props: Dict[str, Any]) -> None:
         if not props:
@@ -1046,7 +1051,7 @@ class PileMaterialMapper:
             except Exception:
                 pass
 
-    # --------------------------- mappings -----------------------------------
+    # ########################### mappings ###################################
     @staticmethod
     def _map_common(mat: ElasticPile) -> Dict[str, Any]:
         K = PILE_KEYS
@@ -1133,7 +1138,7 @@ class PileMaterialMapper:
 
         return props
 
-    # --------------------------- optional groups -----------------------------
+    # ########################### optional groups #############################
     @staticmethod
     def _maybe_apply_rayleigh(plx_mat: Any, mat: Union[ElasticPile, ElastoplasticPile]) -> None:
         K = PILE_KEYS
@@ -1176,7 +1181,7 @@ class AnchorMaterialMapper:
     - For elastoplastic variants, writes capacity limits; residual adds residual capacities.
     """
 
-    # --------------------------- public entrypoints ---------------------------
+    # ########################### public entrypoints ###########################
     @staticmethod
     def create_material(
         g_i: Any,
@@ -1231,7 +1236,7 @@ class AnchorMaterialMapper:
         _log_delete("Anchor", mat_obj, plx_obj, ok=ok)
         return ok
 
-    # --------------------------- creation primitive --------------------------
+    # ########################### creation primitive ##########################
     @staticmethod
     def _create_raw_anchor(g_i: Any) -> Any:
         """
@@ -1245,7 +1250,7 @@ class AnchorMaterialMapper:
                 return _normalize_created_handle(obj)
         raise RuntimeError("No anchor material constructor found on g_i (tried: n2nanchormat, anchormat, cablemat, anchor_mat).")
 
-    # --------------------------- property setting ----------------------------
+    # ########################### property setting ############################
     @staticmethod
     def _set_many_props(plx_obj: Any, props: Dict[str, Any]) -> None:
         """Prefer per-key setproperties(k, v); fallback to setattr/setproperty; skip None."""
@@ -1271,7 +1276,7 @@ class AnchorMaterialMapper:
             except Exception:
                 pass
 
-    # --------------------------- mappings -----------------------------------
+    # ########################### mappings ###################################
     @staticmethod
     def _map_common(
             mat: Union[ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor]

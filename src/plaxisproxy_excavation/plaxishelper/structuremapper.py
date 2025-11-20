@@ -145,7 +145,7 @@ def _first_non_none(*vals):
 # Name helpers
 # =============================================================================
 
-# ---- helpers for name & rebind (put near other helpers) ----
+# #### helpers for name & rebind (put near other helpers) ####
 import re
 
 def _ident_str(x):
@@ -690,18 +690,52 @@ class WellMapper:
         return well_h
 
     @staticmethod
-    def delete(g_i: Any, obj_or_handle: Union[Well, Any]) -> bool:
+    def delete(g_i: Any, obj_or_handle: Union[Well, Any], delete_line: bool = False) -> bool:
         """
         Delete the well object only (do not delete the auxiliary Line3D).
         """
         obj = obj_or_handle if isinstance(obj_or_handle, Well) else None
         h = getattr(obj, "plx_id", None) if obj else obj_or_handle
-        ok = _try_delete_with_gi(g_i, h)
-        if ok and obj:
-            obj.plx_id = None
-        _log_delete("Well", f"name={getattr(obj, 'name', 'raw')}", h, ok=ok)
-        return ok
+        if delete_line:
+            line_name = re.findall(r"Line_\d+", getattr(h, "dump", str)())[0]
+            ok = _try_delete_with_gi(g_i, h)
+            line_handle = None
+            if hasattr(g_i, line_name):
+                line_handle = getattr(g_i, line_name)
+                ok = _try_delete_with_gi(g_i, line_handle)
+            if not ok:
+                result = False
+            _log_delete("Well", f"name={str(getattr(h, 'Name', 'raw'))}", h, ok=ok)
+            _log_delete("Line", f"name={str(getattr(line_handle, 'Name', 'line'))}", line_handle, ok=ok)  
+            return ok
+        else:
+            ok = _try_delete_with_gi(g_i, h)
+            if ok and obj:
+                obj.plx_id = None
+            _log_delete("Well", f"name={getattr(obj, 'name', 'raw')}", h, ok=ok)
+            return ok
     
+    @staticmethod
+    def delete_all_wells(g_i: Any) -> bool:
+        """
+        Delete all of the wells in the input viewer.
+        """
+        import re
+        wells = g_i.Wells
+        result = True
+        for well in wells:
+            line_name = re.findall(r"Line_\d+", well.dump())[0]
+            ok = _try_delete_with_gi(g_i, well)
+            _log_delete("Well", f"name={str(getattr(well, 'Name', 'raw'))}", well, ok=ok)
+            line_handle = None
+            if hasattr(g_i, line_name):
+                line_handle = getattr(g_i, line_name)
+                _log_delete("Line", f"name={str(getattr(line_handle, 'Name', 'line'))}", line_handle, ok=ok)
+                ok = _try_delete_with_gi(g_i, line_handle)
+            if not ok:
+                result = False
+        return result
+
 # =============================================================================
 # SoilBlock (best-effort volume creation)
 # =============================================================================
@@ -741,7 +775,7 @@ class SoilBlockMapper:
         if geom is None:
             raise ValueError("SoilBlock geometry is None.")
 
-        # ---------- A) Polygon3D -> Surface -> Extrude to volume ----------
+        # ########## A) Polygon3D -> Surface -> Extrude to volume ##########
         if isinstance(geom, Polygon3D):
             # 1) ensure surface exists
             surf_h = _first_non_none(getattr(geom, "plx_id", None), None)
@@ -779,7 +813,7 @@ class SoilBlockMapper:
             _log_create("SoilBlock", f"name={obj.name} extrude={extrude_vec}", created)
             return created
 
-        # ---------- B) Already-closed volume (rare) -> try soil(...) ----------
+        # ########## B) Already-closed volume (rare) -> try soil(...) ##########
         # 如果你的几何类型本身就是封闭体（例如自定义 Polyhedron 并能返回各包围面），
         # 你可以把它转换为一组 surface 句柄后传入 soil(...)。此处保留原来的 best-effort 调用。
         try:

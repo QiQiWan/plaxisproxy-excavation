@@ -26,7 +26,7 @@ If you want to configure the default list of supported cipher suites, you can
 set the ``urllib3.contrib.pyopenssl.DEFAULT_SSL_CIPHER_LIST`` variable.
 
 Module Variables
-----------------
+################
 
 :var DEFAULT_SSL_CIPHER_LIST: The list of supported SSL/TLS cipher suites.
     Default: ``EECDH+ECDSA+AESGCM EECDH+aRSA+AESGCM EECDH+ECDSA+SHA256

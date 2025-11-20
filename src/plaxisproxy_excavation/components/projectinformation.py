@@ -127,7 +127,7 @@ class ProjectInformation:
         # Set by the Mapper after PLAXIS creation (group/handle/object)
         self.plx_id = None
 
-    # --------------------------- read-only properties ---------------------------
+    # ########################### read-only properties ###########################
 
     @property
     def id(self) -> uuid.UUID:
@@ -197,7 +197,7 @@ class ProjectInformation:
     def y_max(self) -> float:
         return self._y_max
 
-    # ------------------------------ convenience -------------------------------
+    # ############################## convenience ###############################
 
     def bounding_box(self) -> Tuple[float, float, float, float]:
         """Return (x_min, x_max, y_min, y_max)."""
@@ -216,7 +216,7 @@ class ProjectInformation:
         """Convenience constructor for a typical SI, 3D setup with 50x80 box."""
         return cls(title=title, **kwargs)
 
-    # ------------------------------- serialization ----------------------------
+    # ############################### serialization ############################
 
     def to_dict(self) -> Dict[str, Any]:
         """JSON-friendly dict; enums are stored via `.value`."""
@@ -321,7 +321,7 @@ class ProjectInformation:
             pass
         return inst
 
-    # --------------------------------- misc -----------------------------------
+    # ################################# misc ###################################
 
     def __repr__(self) -> str:
         return f"<ProjectInformation '{self._title}' {self._model} {self._element} {self.x_size:.0f}x{self.y_size:.0f} id={str(self._id)[:8]}>"

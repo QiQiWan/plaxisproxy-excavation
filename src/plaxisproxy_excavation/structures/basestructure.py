@@ -31,9 +31,9 @@ class BaseStructure(PlaxisObject):
         return f"<plx.structures.BaseStructure name='{self.name}'>"
 
 
-# ---------------------------------------------------------------------
+# #####################################################################
 # Mixin: exactly-two-point line support + helpers
-# ---------------------------------------------------------------------
+# #####################################################################
 from ..geometry import Line3D, Point, PointSet
 
 class TwoPointLineMixin:

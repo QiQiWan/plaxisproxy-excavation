@@ -1,30 +1,19 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Iterable, List, Optional, Sequence, Tuple, Union
 from enum import Enum
 try:
     from plxscripting.easy import new_server
 except:
     from plxscripting.server import new_server
 
-# ---------------------------------------------------------------------
-# PLAXIS scripting API (fallback stub so static analysis won't break)
-# ---------------------------------------------------------------------
-try:
-    from plxscripting.easy import new_server  # type: ignore
-except Exception:  # pragma: no cover
-    def new_server(host: str, port: int, password: str) -> Tuple[Any, Any]:
-        class _DummyServer:
-            def close(self) -> None: ...
-        class _DummyG:
-            ResultTypes = type("RT", (), {})()
-        return _DummyServer(), _DummyG()  # type: ignore[misc]
+from ..components import Phase
 
-# ---------------------------------------------------------------------
+# #####################################################################
 # Use your uploaded ResultTypes enums resolver
 # DO NOT re-define any result leaves here.
-# ---------------------------------------------------------------------
+# #####################################################################
 # Adjust the import to your project structure if needed.
 from .resulttypes import resolve_resulttype  # type: ignore
 
@@ -37,12 +26,15 @@ class PlaxisOutput:
     - Create s_o/g_o via new_server(host, port, password)
     - Fetch results for the *currently bound* phase using g_o.getresults(...)
     """
-    def __init__(self, host: str, password: str) -> None:
+    def __init__(self, host: str, password: str, port: Optional[int] = None) -> None:
         self.host = host
         self.password = password
-        self.port: Optional[int] = None
-        self.s_o = None
-        self.g_o = None
+        self.port: Optional[int] = port
+        if port is not None:
+            self.s_o, self.g_o = new_server(self.host, self.port, password=self.password)
+        else:
+            self.s_o = None
+            self.g_o = None
         self._current_phase_id: Optional[int] = None
 
     @property
@@ -61,7 +53,11 @@ class PlaxisOutput:
             self.port = None
             self._current_phase_id = None
 
-    # ---------- resolvers ----------
+    @classmethod
+    def create_new_client(cls, HOST = "localhost", PORT = 10001, PASSWORD = "yS9f$TMP?$uQ@rW3") -> PlaxisOutput:
+        return cls(HOST, PASSWORD, PORT)
+
+    # ########## resolvers ##########
 
     def _resolve_phase_id(self, phase: Any) -> int:
         """Accept Phase-like (with .plx_id) or numeric id."""
@@ -75,7 +71,7 @@ class PlaxisOutput:
             return getattr(structure, "plx_id")
         raise TypeError("structure must be an object with plx_id or an integer id.")
 
-    # ---------- connections ----------
+    # ########## connections ##########
 
     def connect_via_input(self, g_i: Any, phase: Any) -> "PlaxisOutput":
         """
@@ -83,7 +79,7 @@ class PlaxisOutput:
         Stores s_o/g_o and the bound phase id.
         """
         ph_id = self._resolve_phase_id(phase)
-        port = g_i.view(ph_id)
+        port = int(g_i.view(ph_id))
         s_o, g_o = new_server(self.host, port, password=self.password)
         self.s_o, self.g_o, self.port = s_o, g_o, port
         self._current_phase_id = ph_id
@@ -94,7 +90,7 @@ class PlaxisOutput:
         self.close()
         self.connect_via_input(g_i, phase)
 
-    # ---------- resulttypes resolution ----------
+    # ########## resulttypes resolution ##########
 
     def _resolve_leaf(self, leaf: Enum) -> object:
         """
@@ -189,41 +185,155 @@ class PlaxisOutput:
         return node
 
 
-    # ---------- results ----------
-
-    def get_results(self, structure: Any, leaf: Any, *, smoothing: bool = False
-                    ) -> Union[list, float, str]:
+    # ########## results ##########
+    
+    def get_results(
+        self,
+        *args: Any,
+        smoothing: bool = False,
+        raw: bool = False
+    ) -> Union[List[float], float, str, Iterable]:
         """
         Fetch results for the CURRENT connected phase.
-        Tries 'nodes' first, then 'stresspoint'.
-        Returns:
-          - list[float] if iterable
-          - float if scalar-number
-          - str for text statuses
+
+        Overloads at call site:
+          - get_results(structure, leaf, *, smoothing=False, raw=False)
+              Fetch results for a given structure.
+          - get_results(leaf, *, smoothing=False, raw=False)
+              Fetch results of all soils / global leaf.
+
+        For both forms it:
+          - Tries 'node' location first, then falls back to 'stresspoint'.
+          - Returns:
+              * list[float] if the result is iterable
+              * float       if the result is a scalar number
+              * str         for text / status strings
+              * raw         if the raw iterable result returns directly 
         """
         if not self.g_o:
-            raise RuntimeError("Output not connected. Call connect_via_input/set_default_phase first.")
+            raise RuntimeError(
+                "Output not connected. Call connect_via_input/set_default_phase first."
+            )
 
-        struct_id = self._resolve_structure_id(structure)
+        # ######### Dispatch on positional arguments #########
+        if len(args) == 1:
+            # get_results(leaf, *, smoothing=...)
+            structure = None
+            leaf = args[0]
+        elif len(args) == 2:
+            # get_results(structure, leaf, *, smoothing=...)
+            structure, leaf = args
+        else:
+            raise TypeError(
+                "get_results() expects either (leaf, *) or (structure, leaf, *)."
+            )
+
         leaf_member = self._resolve_leaf(leaf)
 
-        def _try(loc: str):
-            return self.g_o.getresults(struct_id, leaf_member, loc, bool(smoothing))
+        # Build the internal caller depending on whether a structure is given
+        if structure is None:
+            # No structure: use the 'all soils' form of getresults
+            def _try(loc: str):
+                if self.g_o:
+                    return self.g_o.getresults(leaf_member, loc, bool(smoothing))
+                else:
+                    raise RuntimeError(
+                        f"The output viewer is None when picking results of {leaf!r}"
+                    )
+        else:
+            # Structure provided: use the structured form of getresults
+            struct_id = self._resolve_structure_id(structure)
 
-        # prefer nodes, fallback to stresspoint
+            def _try(loc: str):
+                if self.g_o:
+                    return self.g_o.getresults(struct_id, leaf_member, loc, bool(smoothing))
+                else:
+                    raise RuntimeError(
+                        f"The output viewer is None when picking results of {structure!r}"
+                    )
+
+        # ######### Prefer 'node', fallback to 'stresspoint' #########
         try:
             data = _try("node")
         except Exception:
             data = _try("stresspoint")
 
-        # normalize return
+        # ######### Normalize return type #########
+        # Text: just pass through
         if isinstance(data, str):
             return data
+
+        # Try iterable -> list[float]
         try:
-            iter(data)  # iterable?
-            return [float(x) for x in data]
+            iter(data)
         except TypeError:
+            # Not iterable: try scalar float
             try:
-                return float(data)  # scalar numeric
+                return float(data)
             except Exception:
+                # Give up converting; return raw
                 return data
+        else:
+            # Iterable: convert to list[float]
+            if raw:
+                return data
+            else:
+                return [float(x) for x in data]
+        
+
+    def get_single_result_at(
+        self,
+        phase_step: Phase,
+        leaf: Enum,
+        x: float,
+        y: float,
+        z: float,
+        smoothing: bool = False,
+    ):
+        """
+        Thin wrapper of PLAXIS Output:
+
+            getsingleresult Phase_1 ResultTypes.Soil.Suction 3 5 7 False
+
+        Args:
+        ##########
+        phase_step:
+            - Your own Phase object (components.phase-.phase, with.name)
+            - Or it is already a StepPath string (for example, "Phase_1")
+            - Or it could be directly the CalculationStage handle in the Output
+        leaf:
+            - Enumerations such as -resulttypes.Soil.Uz/Soil.Suction
+            - or strings like 'Soil.Uz' are uniformly handled by _resolve_leaf
+        x, y, z: The position of target point.
+        smoothing:
+            The last Boolean corresponding to getsingleresult, True enables smoothing and False disables it.
+        """
+        if not self.g_o:
+            raise RuntimeError(
+                "Output not connected. Call connect_via_input()/set_default_phase() first."
+            )
+
+        # 1) 解析 ResultTypes
+        leaf_member = self._resolve_leaf(leaf)
+
+        # 2) 解析 CalculationStage | CalculationStepPath
+        #    ——这里优先把你自己的 Phase 对象转成 StepPath 字符串
+        phase_handle = phase_step.plx_id
+        name = getattr(phase_step, "name", None)
+
+        # 3) 真正调用 getsingleresult Alternative 4
+        val = self.g_o.getsingleresult(
+            phase_handle,          # CalculationStage | CalculationStepPath
+            leaf_member,    # ResultTypes.Soil.*
+            float(x),
+            float(y),
+            float(z),
+            bool(smoothing)
+        )
+
+        # 4) 尽量转成 float，转不了就原样返回（有时会返回字符串）
+        try:
+            print(f"[GetResult] Get {str(leaf_member)} at Point {x, y, z} from {name}")
+            return float(val)
+        except Exception:
+            return val

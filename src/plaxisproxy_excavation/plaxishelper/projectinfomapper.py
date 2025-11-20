@@ -2,11 +2,11 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Sequence, Union, Tuple, List
 
 # === import your domain model ===
-from ..components.projectinformation import ProjectInformation
+from ..components import ProjectInformation
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # Logging (single-line, English)
-# -----------------------------------------------------------------------------
+# #############################################################################
 def _format_handle(h: Any) -> str:
     if h is None:
         return "None"
@@ -31,9 +31,9 @@ def _log_create(kind: str, desc: str, handle: Any) -> None:
 def _log_delete(kind: str, desc: str, handle: Any, ok: bool) -> None:
     print(_one_line(f"[DELETE][{kind}] {desc} handle={_format_handle(handle)} result={'OK' if ok else 'FAIL'}"), flush=True)
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # Utils
-# -----------------------------------------------------------------------------
+# #############################################################################
 def _normalize_created_handle(created: Any) -> Any:
     if isinstance(created, (list, tuple)) and created:
         return created[0]
@@ -94,9 +94,9 @@ def _set_many_props(plx_obj: Any, props: Dict[str, Any]) -> None:
         except Exception:
             pass
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # SoilContour helper
-# -----------------------------------------------------------------------------
+# #############################################################################
 def _apply_soil_contour(g_i: Any, xmin: float, xmax: float, ymin: float, ymax: float) -> Any:
     """
     Define the soil contour as a rectangle :
@@ -114,9 +114,9 @@ def _apply_soil_contour(g_i: Any, xmin: float, xmax: float, ymin: float, ymax: f
     # If nothing worked:
             raise RuntimeError("Failed to apply SoilContour via known entrypoints.")
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # Mapper
-# -----------------------------------------------------------------------------
+# #############################################################################
 class ProjectInformationMapper:
     """
     Apply project metadata and units into the PLAXIS model, and define SoilContour
@@ -191,7 +191,7 @@ class ProjectInformationMapper:
         _log_create("Project", f"title={proj.title} soilcontour=rect({proj.x_min},{proj.y_min})-({proj.x_max},{proj.y_max})", container)
         return container
 
-    # ----------------------------- resets ---------------------------------
+    # ############################# resets #################################
     @staticmethod
     def resetsoilcontour(
         g_i: Any,

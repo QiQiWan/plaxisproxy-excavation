@@ -16,6 +16,9 @@ from .phasesettings import (
     LoadType
 )
 
+from .projectinformation import Units, ProjectInformation
+from .watertable import WaterLevel, WaterLevelTable
+
 # Explicitly define public interfaces to avoid exposing internal module details during import.
 __all__ = [
     # Core classes
@@ -30,4 +33,12 @@ __all__ = [
     "DynamicWithConsolidationStageSettings",
     "SafetyStageSettings",
     "StageSettingsFactory",
+
+    # Water level
+    "WaterLevel",
+    "WaterLevelTable",
+
+    # Project Information
+    "Units",
+    "ProjectInformation"
 ]

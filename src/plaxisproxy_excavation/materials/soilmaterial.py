@@ -6,9 +6,9 @@ from typing import Any, Dict, Optional
 from .basematerial import BaseMaterial
 
 
-# ---------------------------------------------------------------------------
+# ###########################################################################
 # Enums (strings should match mapper.model_name_map / PLAXIS names)
-# ---------------------------------------------------------------------------
+# ###########################################################################
 
 class SoilMaterialsType(Enum):
     MC  = "Mohr-Coulomb"       # Mohr-Coulomb
@@ -33,9 +33,9 @@ class RayleighInputMethod(Enum):
     SDOFEquivalent = "SDOFEquivalent"
 
 
-# ---------------------------------------------------------------------------
+# ###########################################################################
 # Base class and concrete soil material classes
-# ---------------------------------------------------------------------------
+# ###########################################################################
 
 class BaseSoilMaterial(BaseMaterial):
     """
@@ -119,7 +119,7 @@ class BaseSoilMaterial(BaseMaterial):
         self._K_0_x: Optional[float] = None
         self._K_0_y: Optional[float] = None
 
-    # ---------------- Optional groups consumed by the mapper -----------------
+    # ################ Optional groups consumed by the mapper #################
 
     def set_super_pore_stress_parameters(
         self, pore_stress_type: int = 0, vu: int = 0, value: Optional[float] = None
@@ -159,9 +159,12 @@ class BaseSoilMaterial(BaseMaterial):
         self._SWCC_method = SWCC_method
         self._soil_posi = soil_posi
         self._soil_fine = soil_fine
-        self._Gw_defaults = Gw_defaults
         self._infiltration = infiltration
         self._default_method = default_method
+        if Gw_defaults:
+            kx, ky, kz = 0.6, 0.6, 0.6
+            self._Gw_defaults = False
+        self._Gw_defaults = False
         self._kx, self._ky, self._kz = float(kx), float(ky), float(kz)
         self._Gw_Psiunsat = float(Gw_Psiunsat)
 
@@ -201,7 +204,7 @@ class BaseSoilMaterial(BaseMaterial):
         self._K_0_x = float(K_0_x)
         self._K_0_y = float(K_0_y)
 
-    # -------------------------- Representation & props -----------------------
+    # ########################## Representation & props #######################
 
     def __repr__(self) -> str:  # pragma: no cover - friendly string
         return f"<plx.materials.soilbase name={self.name!r} model={self.type.value!r}>"
@@ -528,14 +531,14 @@ class HSSMaterial(BaseSoilMaterial):
     def psi(self) -> float: return self._psi
 
 
-# ---------------------------------------------------------------------------
+# ###########################################################################
 # Factory
-# ---------------------------------------------------------------------------
+# ###########################################################################
 
 class SoilMaterialFactory:
     """Factory for soil materials with alias-aware, validated argument parsing."""
 
-    # ------------------------- helpers (private) -------------------------
+    # ######################### helpers (private) #########################
 
     _SENTINEL: object = object()
 
@@ -629,7 +632,7 @@ class SoilMaterialFactory:
             return default
         return str(val)
 
-    # --------------------------- main factory ---------------------------
+    # ########################### main factory ###########################
 
     @staticmethod
     def create(material_type: SoilMaterialsType, **kwargs: Any) -> BaseSoilMaterial:

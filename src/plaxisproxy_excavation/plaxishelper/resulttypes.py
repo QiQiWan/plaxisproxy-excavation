@@ -570,6 +570,7 @@ class Soil(str, Enum):
     NodeID = "NodeID"
     OCR1 = "OCR1"
     PActive = "PActive"
+    ActivePorePressure = "PActive"
     PEps1 = "PEps1"
     PEps2 = "PEps2"
     PEps3 = "PEps3"

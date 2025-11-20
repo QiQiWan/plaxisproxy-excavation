@@ -8,10 +8,10 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Type, Callable, Mapping
 import importlib
 
-# ---- base object ----
+# #### base object ####
 from ..core import PlaxisObject  # package-style
 
-# ---- stage settings ----
+# #### stage settings ####
 from .phasesettings import StageSettingsBase, StageSettingsFactory  # package-style
 
 
@@ -21,11 +21,11 @@ from ..structures.load import _BaseLoad
 
 from ..structures import (
     Well,
-    LoadStage, LoadMultiplier, # ---- loads (static/dynamic) & multipliers ----
-    SoilBlock, # ---- structures & soils ----
+    LoadStage, LoadMultiplier, # #### loads (static/dynamic) & multipliers ####
+    SoilBlock, # #### structures & soils ####
 )
 
-# ---- water table (single per phase) ----
+# #### water table (single per phase) ####
 from ..components.watertable import WaterLevelTable   # package-style
 
 
@@ -39,7 +39,7 @@ class Phase(PlaxisObject):
       - inheritance: the PLAXIS phase this phase is created from (prev/base phase)
     """
 
-    # ---------------------- construction ----------------------
+    # ###################### construction ######################
     def __init__(
         self,
         name: str,
@@ -95,7 +95,7 @@ class Phase(PlaxisObject):
         # NEW: inheritance reference (may carry an existing plx_id)
         self._inherits: Optional["Phase"] = inherits
 
-    # ---------------------- properties ----------------------
+    # ###################### properties ######################
     @property
     def settings(self) -> StageSettingsBase:
         return self._settings
@@ -149,7 +149,7 @@ class Phase(PlaxisObject):
         self._inherits = base
         return self
 
-    # ---------------------- mutation helpers ----------------------
+    # ###################### mutation helpers ######################
     def add_soils(self, *blocks: SoilBlock) -> "Phase":
         self._soil_blocks.extend(blocks)
         return self
@@ -179,8 +179,6 @@ class Phase(PlaxisObject):
         self._water_table = tbl
         return self
     
-    
-
     def activate_structures(self, objs: Sequence[BaseStructure]) -> "Phase":
         self._activate.extend(objs)
         return self
@@ -188,8 +186,34 @@ class Phase(PlaxisObject):
     def deactivate_structures(self, objs: Sequence[BaseStructure]) -> "Phase":
         self._deactivate.extend(objs)
         return self
+    
+    def init_phase(self):
+        """
+        initialize the phase, reset the activated structures, deactivated structures, soilblocks.
+        """
+        self._activate = []
+        self._deactivate = []
+        self._soil_blocks = []
+    
+    def init_activate(self):
+        """
+        Initialize the activated structures.
+        """
+        self._activate = []
 
-    # ---------------------- exports for mappers ----------------------
+    def init_deactivate(self):
+        """
+        Initialize the deactivated structures.
+        """
+        self._deactivate = []
+
+    def init_soilblocks(self):
+        """
+        Initialize the soilblocks.
+        """
+        self._soil_blocks = []
+
+    # ###################### exports for mappers ######################
     def settings_payload(self) -> Dict[str, Any]:
         # keep your original logic; this is a placeholder
         if hasattr(self._settings, "to_dict"):
@@ -224,7 +248,7 @@ class Phase(PlaxisObject):
             }
         }
 
-    # ---------------------- Soil block helper ----------------------
+    # ###################### Soil block helper ######################
     def set_soil_overrides(self, overrides: Optional[Dict[str, Dict[str, bool]]]) -> "Phase":
         """
         Declare per-soil behavior for this phase. Example:
@@ -243,7 +267,7 @@ class Phase(PlaxisObject):
     def get_soil_overrides(self) -> Dict[str, Dict[str, bool]]:
         return getattr(self, "_soil_overrides", {})
 
-    # ---------------------- (de)serialization ----------------------
+    # ###################### (de)serialization ######################
     def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
         d.update({
@@ -354,7 +378,7 @@ class Phase(PlaxisObject):
         )
         return obj
 
-    # ---------------------- queries & validation ----------------------
+    # ###################### queries & validation ######################
     def list_structures(self, pred: Optional[Callable[[BaseStructure], bool]] = None) -> List[BaseStructure]:
         if pred is None:
             return list(self._structures)

@@ -8,9 +8,9 @@ from .packages import chardet
 
 import sys
 
-# -------
+# #######
 # Pythons
-# -------
+# #######
 
 # Syntax sugar.
 _ver = sys.version_info
@@ -49,9 +49,9 @@ is_py25 = (is_py2 and _ver[1] == 5)
 is_py24 = (is_py2 and _ver[1] == 4)   # I'm assuming this is not by choice.
 
 
-# ---------
+# #########
 # Platforms
-# ---------
+# #########
 
 
 # Syntax sugar.
@@ -78,9 +78,9 @@ try:
 except ImportError:
     import json
 
-# ---------
+# #########
 # Specifics
-# ---------
+# #########
 
 if is_py2:
     from urllib import quote, unquote, quote_plus, unquote_plus, urlencode, getproxies, proxy_bypass

@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple, Type, TypeVar
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # Project imports (keep the `type: ignore` if Pylance cannot resolve in your IDE)
-# -----------------------------------------------------------------------------
+# #############################################################################
 from .core.plaxisobject import PlaxisObject as _PlxBase  # type: ignore
 from .geometry import Point  # type: ignore
 from .materials.soilmaterial import BaseSoilMaterial  # type: ignore
@@ -21,16 +21,16 @@ EPS = 1e-9
 T_BH = TypeVar("T_BH", bound="Borehole")
 
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # SoilLayer (thickness-centric, also keeps absolute elevations for bookkeeping)
-# -----------------------------------------------------------------------------
+# #############################################################################
 class SoilLayer(_PlxBase):
     """
     Geological layer represented primarily by **thickness** (height).
     For bookkeeping/UI and mapper needs we also store **top/bottom elevations**.
 
     Fields
-    ------
+    ######
     name      : unique layer name within a project (mapper will ensure uniqueness)
     material  : in-memory soil material (should have `.plx_id` after material mapper)
     top_z     : optional top elevation (m)
@@ -56,7 +56,7 @@ class SoilLayer(_PlxBase):
         self.height: Optional[float] = float(height) if height is not None else None
         self.plx_id: Any = None
 
-    # ------------------------------ helpers ---------------------------------
+    # ############################## helpers #################################
 
     def thickness(self) -> float:
         """
@@ -76,7 +76,7 @@ class SoilLayer(_PlxBase):
         if self.top_z is not None and self.bottom_z is not None:
             self.height = float(self.top_z) - float(self.bottom_z)
 
-    # ---------------------------- (de)serialization --------------------------
+    # ############################ (de)serialization ##########################
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -118,15 +118,15 @@ class SoilLayer(_PlxBase):
         )
 
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # BoreholeLayer (absolute-elevation-centric; references a SoilLayer)
-# -----------------------------------------------------------------------------
+# #############################################################################
 class BoreholeLayer(_PlxBase):
     """
     Geological layer described by **absolute elevations**.
 
     Conventions
-    -----------
+    ###########
     - `top_z` and `bottom_z` are elevations (m), usually 0.0 at ground and negative below.
     - `top_z >= bottom_z` must hold.
     - `soil_layer` references the canonical `SoilLayer` (shared across boreholes).
@@ -146,12 +146,12 @@ class BoreholeLayer(_PlxBase):
         self.soil_layer: SoilLayer = soil_layer
         self.plx_id: Any = None
 
-    # ------------------------------ helpers ---------------------------------
+    # ############################## helpers #################################
 
     def thickness(self) -> float:
         return float(self.top_z) - float(self.bottom_z)
 
-    # ---------------------------- (de)serialization --------------------------
+    # ############################ (de)serialization ##########################
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -163,16 +163,16 @@ class BoreholeLayer(_PlxBase):
         }
 
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # Borehole (single location with multiple BoreholeLayer)
-# -----------------------------------------------------------------------------
+# #############################################################################
 class Borehole(_PlxBase):
     """
     Represents a single borehole with location, ground level, and ordered
     `BoreholeLayer` entries.
 
     Fields
-    ------
+    ######
     name          : borehole ID
     location      : Point (Z usually ignored in PLAXIS borehole creation)
     ground_level  : elevation at this borehole (m)
@@ -200,7 +200,7 @@ class Borehole(_PlxBase):
         self.layers: List[BoreholeLayer] = list(layers) if layers else []
         self.plx_id: Any = None
 
-    # ---- editing ----
+    # #### editing ####
     def add_layer(self, layer: BoreholeLayer, *, enforce_continuity: bool = True) -> None:
         """Append a layer; optionally enforce continuity with previous bottom."""
         if not isinstance(layer, BoreholeLayer):
@@ -268,15 +268,15 @@ class Borehole(_PlxBase):
         return f"<Borehole name={self.name} n_layers={len(self.layers)} at ({self.location.x},{self.location.y})>"
 
 
-# -----------------------------------------------------------------------------
+# #############################################################################
 # BoreholeSet (collection + normalization + unique-naming + queries)
-# -----------------------------------------------------------------------------
+# #############################################################################
 class BoreholeSet(_PlxBase):
     """
     Container for multiple Borehole objects.
 
     Highlights
-    ----------
+    ##########
     - `ensure_unique_names()` makes names globally unique across **materials,
       soil layers, boreholes, borehole layers** (avoids PLAXIS naming conflicts).
     - `normalize_all_boreholes()` unifies the **ordered layer list** for all
@@ -306,7 +306,7 @@ class BoreholeSet(_PlxBase):
         # canonical SoilLayer store by name (built on demand)
         self._global_soil_layers: Dict[str, SoilLayer] = {}
 
-    # -------------------------- name uniqueness -----------------------------
+    # ########################## name uniqueness #############################
 
     def ensure_unique_names(self) -> None:
         """
@@ -383,7 +383,7 @@ class BoreholeSet(_PlxBase):
         """Public accessor used by mappers."""
         return list(self._iter_unique_soil_layers())
 
-    # -------------------------- normalization -------------------------------
+    # ########################## normalization ###############################
 
     def _collect_ordered_layer_names(self) -> List[str]:
         """Collect union of all SoilLayer names in order of first appearance."""
@@ -429,12 +429,12 @@ class BoreholeSet(_PlxBase):
         I/O contract: in-place rewrite of `bh.layers`. Return a summary dict with the
         same shape as the original implementation.
         """
-        # ---- Internal policies (do not change external interface) ----
+        # #### Internal policies (do not change external interface) ####
         SPLIT_REAPPEARING = True          # split non-consecutive reappearance into variants
         INSERT_ZERO_THICKNESS = True      # ensure each BH is a subsequence of global order
         PINCHOUT_POLICY = "top_of_next"   # or "bottom_of_prev"
 
-        # ---------- helpers (object-based; NO name-based logic) ----------
+        # ########## helpers (object-based; NO name-based logic) ##########
         def base_id_of(bl: BoreholeLayer) -> int:
             sl = getattr(bl, "soil_layer", None)
             return id(sl) if sl is not None else id(bl)  # fallback to BL object id
@@ -606,7 +606,7 @@ class BoreholeSet(_PlxBase):
         return summary
 
 
-    # ------------------------------- queries ---------------------------------
+    # ############################### queries #################################
 
     def layer_index_in_borehole(self, lname: str, bh_index: int) -> int:
         """Return the index of layer `lname` in borehole #`bh_index`, or -1."""
@@ -632,7 +632,7 @@ class BoreholeSet(_PlxBase):
             }
         return out
 
-    # ---------------------------- (de)serialization --------------------------
+    # ############################ (de)serialization ##########################
 
     def to_dict(self) -> Dict[str, Any]:
         return {

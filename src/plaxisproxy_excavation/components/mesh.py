@@ -9,7 +9,7 @@ class MeshCoarseness(Enum):
     Discrete presets for the target element relative size (mesh factor).
 
     Notes
-    -----
+    #####
     The numeric values are typical element-relative-size factors used by
     PLAXIS 3D. You can override these with `element_relative_size` if you
     want a custom value.
@@ -30,7 +30,7 @@ class Mesh:
       2) calls the `mesh` command with the right signature.
 
     Design goals
-    ------------
+    ############
     - Backward compatible with your previous `Mesh` object:
       * `mesh_coarseness`, `enhanced_refine`, `emr_global_scale`,
         `emr_min_elem`, `swept_mesh`.
@@ -64,7 +64,7 @@ class Mesh:
         # Custom mesh size
         self._element_relative_size = float(element_relative_size) if element_relative_size is not None else None
 
-    # ---------------- Properties (backward compatible) ----------------
+    # ################ Properties (backward compatible) ################
 
     @property
     def mesh_coarseness(self) -> MeshCoarseness:
@@ -114,7 +114,7 @@ class Mesh:
     def swept_mesh(self, value: bool) -> None:
         self._swept_mesh = bool(value)
 
-    # ---------------- New optional fields (full command coverage) ----------------
+    # ################ New optional fields (full command coverage) ################
 
     @property
     def max_cpus(self) -> Optional[int]:
@@ -152,7 +152,7 @@ class Mesh:
     def element_relative_size(self, value: Optional[float]) -> None:
         self._element_relative_size = None if value is None else float(value)
 
-    # ---------------- Helpers ----------------
+    # ################ Helpers ################
 
     def factor(self) -> float:
         """
@@ -178,7 +178,7 @@ class Mesh:
         if self._max_cpus is not None and self._max_cpus <= 0:
             raise ValueError("max_cpus must be > 0 when provided.")
 
-    # ---------------- Serialization ----------------
+    # ################ Serialization ################
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to a simple dict for persistence/UI."""

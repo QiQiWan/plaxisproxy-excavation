@@ -2,10 +2,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from math import ceil
-from typing import List, Dict, Any, Optional, Tuple, Union, Sequence
+from typing import Iterable, List, Dict, Any, Optional, Tuple, Union, Sequence
+from pathlib import Path
+from more_itertools import iterate
+import numpy as np
+import pandas as pd
+from ..utils import NeighborPointPicker
+
 
 from ..plaxishelper.plaxisrunner import PlaxisRunner
 from ..excavation import FoundationPit, StructureType, _normalize_structure_type
+from ..structures.basestructure import BaseStructure
 from ..structures.soilblock import SoilBlock
 from ..geometry import Polygon3D
 from ..components import Mesh, Phase
@@ -22,7 +29,7 @@ from ..plaxishelper.resulttypes import (
 
 """
 Excavation Engineering Automation — Builder
--------------------------------------------
+###########################################
 This builder orchestrates mapping the FoundationPit model into PLAXIS
 via a PlaxisRunner adapter. It builds only the *initial design*; phase
 options/activations and per-phase water/well overrides are applied later.
@@ -147,7 +154,7 @@ class ExcavationBuilder:
     - Provide helpers to apply phases and update well parameters later.
     """
 
-    def __init__(self, app: PlaxisRunner, excavation_object: FoundationPit, HOST="localhost", PORT=10000, PASSWORD="yS9f$TMP?$uQ@rW3") -> None:
+    def __init__(self, excavation_object: FoundationPit, HOST="localhost", PORT=10000, PASSWORD="yS9f$TMP?$uQ@rW3") -> None:
         # Always create our own runner instance using config; keep provided `app` for signature parity.
         self.PORT = PORT 
         self.PASSWORD = PASSWORD
@@ -157,13 +164,29 @@ class ExcavationBuilder:
         self.Output: Optional[PlaxisOutput] = None
         self._calc_done: bool = False  # True after a successful builder.calculate()
 
-    @classmethod
-    def create(cls, app: PlaxisRunner, excavation_object: FoundationPit):
-        return cls(app, excavation_object)
+        # Caches for soil coordinates and result fields (per phase)
+        # phase_name -> NeighborPointPicker (KD-tree on soil X/Y/Z)
+        self._soil_coord_picker_cache: Dict[str, NeighborPointPicker] = {}
+        # phase_name -> coords (N,3) array of (x,y,z)
+        self._soil_coord_cache: Dict[str, np.ndarray] = {}
+        # (phase_name, leaf_name, smoothing) -> values (N,) array
+        self._soil_field_cache: Dict[Tuple[str, str, bool], np.ndarray] = {}
 
-    # -------------------------------------------------------------------------
+    @classmethod
+    def create(cls, excavation_object: FoundationPit, HOST="localhost", PORT=10000, PASSWORD="yS9f$TMP?$uQ@rW3"):
+        return cls(excavation_object, HOST, PORT, PASSWORD)
+    
+    @staticmethod
+    def create_input_client(HOST="localhost", PORT=10000, PASSWORD="yS9f$TMP?$uQ@rW3") -> PlaxisRunner:
+        return PlaxisRunner(PORT, PASSWORD, HOST)
+    
+    @staticmethod
+    def create_output_client(HOST="localhost", PORT=10001, PASSWORD="yS9f$TMP?$uQ@rW3") -> PlaxisOutput:
+        return PlaxisOutput(HOST, PASSWORD, PORT) 
+
+    # #########################################################################
     # Lifecycle
-    # -------------------------------------------------------------------------
+    # #########################################################################
 
     def initialize(self) -> None:
         """Initialize builder: validate pit object and ensure a fresh PLAXIS project."""
@@ -176,9 +199,9 @@ class ExcavationBuilder:
         # If no exception was raised, mark as calculated
         self._calc_done = True
 
-    # -------------------------------------------------------------------------
+    # #########################################################################
     # Validation (aligned with current FoundationPit definition)
-    # -------------------------------------------------------------------------
+    # #########################################################################
 
     def check_completeness(self) -> None:
         """
@@ -205,7 +228,7 @@ class ExcavationBuilder:
         errors: list[str] = []
         warns: list[str] = []
 
-        # ---- Project information (required) ----
+        # #### Project information (required) ####
         proj = getattr(pit, "project_information", None)
         if proj is None:
             errors.append("Missing project information (pit.project_information).")
@@ -221,7 +244,7 @@ class ExcavationBuilder:
                     warns.append(f"ProjectInformation.{attr} not found; mapper may use defaults.")
                     break
 
-        # ---- Name (optional): prefer explicit pit.name; fallback to project title ----
+        # #### Name (optional): prefer explicit pit.name; fallback to project title ####
         pit_name = getattr(pit, "name", None)
         if not pit_name or not str(pit_name).strip():
             fallback = getattr(proj, "title", None) if proj else None
@@ -234,7 +257,7 @@ class ExcavationBuilder:
             else:
                 warns.append("pit.name not provided; continuing without explicit name.")
 
-        # ---- Boreholes (optional) ----
+        # #### Boreholes (optional) ####
         bhset = getattr(pit, "borehole_set", None)
         bh_count = 0
         if bhset is None:
@@ -247,7 +270,7 @@ class ExcavationBuilder:
             except Exception:
                 warns.append("borehole_set present but not iterable; ignoring.")
 
-        # ---- Materials (init empty buckets if needed) ----
+        # #### Materials (init empty buckets if needed) ####
         mats = getattr(pit, "materials", None)
         if not isinstance(mats, dict):
             warns.append("materials is not a dict; initializing empty material categories.")
@@ -263,7 +286,7 @@ class ExcavationBuilder:
                 if k not in mats:
                     mats[k] = []
 
-        # ---- Structures (init empty buckets if needed) ----
+        # #### Structures (init empty buckets if needed) ####
         st = getattr(pit, "structures", None)
         if not isinstance(st, dict):
             warns.append("structures is not a dict; initializing empty structure categories.")
@@ -279,7 +302,7 @@ class ExcavationBuilder:
                 if k not in st:
                     st[k] = []
 
-        # ---- Loads (init empty buckets if needed) ----
+        # #### Loads (init empty buckets if needed) ####
         loads = getattr(pit, "loads", None)
         if not isinstance(loads, dict):
             warns.append("loads is not a dict; initializing empty load categories.")
@@ -316,7 +339,7 @@ class ExcavationBuilder:
             else:
                 errors.append("[check] Walls do not form a closed ring; bottom surface will not be created.")
 
-        # ---- Phases (optional at build-time; required only for apply_phases) ----
+        # #### Phases (optional at build-time; required only for apply_phases) ####
         phases = getattr(pit, "phases", None)
         if phases is None:
             pit.phases = []
@@ -325,7 +348,7 @@ class ExcavationBuilder:
             warns.append("phases is not a list; converting to empty list for safety.")
             pit.phases = []
 
-        # ---- Finalize ----
+        # #### Finalize ####
         if errors:
             msg = ["FoundationPit completeness check failed:"]
             msg += [f" - {e}" for e in errors]
@@ -344,7 +367,7 @@ class ExcavationBuilder:
             f"boreholes={bh_count}, walls={walls}, phases={len(pit.phases)}."
         )
 
-    # -------------------------------- Excavation volumn check --------------------------------
+    # ################################ Excavation volumn check ################################
 
     @staticmethod
     def _walls_form_closed_ring(walls, tol: float = 1e-6) -> bool:
@@ -420,7 +443,7 @@ class ExcavationBuilder:
         hull = lower[:-1] + upper[:-1]
         return hull
 
-    # ---------- New public helpers: wall footprint / bottom polygon ----------
+    # ########## New public helpers: wall footprint / bottom polygon ##########
 
     def get_wall_footprint_polygon3d(self, z_value: float = 0.0, tol: float = 1e-6):
         """
@@ -539,187 +562,202 @@ class ExcavationBuilder:
 
 
 
-    # -------------------------------------------------------------------------
+    # #########################################################################
     # Build (initial design only)
-    # -------------------------------------------------------------------------
+    # #########################################################################
+    # #### 0) iterate helper ###################################################
+    def _iter_dict_lists(self, dct):
+        if isinstance(dct, dict):
+            for _k, _lst in dct.items():
+                for _it in (_lst or []):
+                    if _it is not None:
+                        yield _k, _it
 
-    def build(self, mesh: bool = True) -> Dict[str, Any]:
-        """Build the base PLAXIS model from the FoundationPit object.
-
-        IMPORTANT:
-          - Builds ONLY the initial design:
-              * project info
-              * materials
-              * relink borehole-layer materials → boreholes & layers
-              * geometries & structures (including wells)
-              * loads (+ optional multipliers)
-              * monitor points
-              * mesh
-              * phase shells (created in sequence, NOT applied)
-          - It does NOT apply per-phase options, water table, or well parameter changes.
-            Those belong to phases and must be applied later via `apply_phases(...)`.
-        """
+    # #### 1) Project info ###################################################
+    def build_project_info(self) -> None:
         pit = self.excavation_object
         app = self.App
-
-        # Ensure connection & a new project exists
-        if not getattr(app, "is_connected", False) or getattr(app, "g_i", None) is None or getattr(app, "input_server", None) is None:
-            app.connect().new()
-
-        # Optional: completeness check (will raise on blocking issues)
-        if hasattr(self, "check_completeness") and callable(self.check_completeness):
-            self.check_completeness()
-
-        # ---------------- helpers ----------------
-        def _iter_dict_lists(dct):
-            """Yield items from a dict-of-lists safely."""
-            if isinstance(dct, dict):
-                for _k, _lst in dct.items():
-                    for _it in (_lst or []):
-                        if _it is not None:
-                            yield _k, _it
-
-        # ---------------- 1) Project info ----------------
         if getattr(pit, "project_information", None) is not None:
             try:
                 app.apply_project_information(pit.project_information)
             except Exception as e:
                 print(f"[build] Warning: apply_project_information failed: {e}")
 
-        # ---------------- 2) Materials (create first) ----------------
+    # #### 2) Materials ######################################################
+    def build_materials(self) -> int:
+        pit = self.excavation_object
+        app = self.App
         total_mats = 0
         try:
-            for _k, mat in _iter_dict_lists(getattr(pit, "materials", {})):
+            for _k, mat in self._iter_dict_lists(getattr(pit, "materials", {})):
                 app.create_material(mat)
                 total_mats += 1
         except Exception as e:
             print(f"[build] Warning: create_material failed on some items: {e}")
+        return total_mats
 
-        # ---------------- 3) Relink BH layers to library & create boreholes ----
+    # #### 3) Boreholes & layer relinking ###################################
+    def relink_borehole_layers(self) -> None:
         try:
             self._relink_borehole_layers_to_library()
         except Exception as e:
             print(f"[build] Warning: relink borehole layers failed: {e}")
 
+    def build_boreholes(self) -> None:
+        pit = self.excavation_object
+        app = self.App
         if getattr(pit, "borehole_set", None) is not None:
             try:
-                app.create_boreholes(pit.borehole_set)  # mapper should normalize layers
+                app.create_boreholes(pit.borehole_set)
             except Exception as e:
                 print(f"[build] Warning: create_boreholes failed: {e}")
 
-        # ---------------- 4) Geometries / soil blocks (optional) ---------------
-        structures = getattr(pit, "structures", {}) or {}
-        for blk in structures.get("soil_blocks", []) or []:
+    # #### 4) Soil blocks (pre-existing) ####################################
+    def build_initial_soil_blocks(self) -> None:
+        pit = self.excavation_object
+        app = self.App
+        for blk in (getattr(pit, "structures", {}) or {}).get("soil_blocks", []) or []:
             try:
                 app.create_soil_block(blk)
             except Exception as e:
                 print(f"[build] Warning: create_soil_block failed: {e}")
 
-        # ---------------- 5) Structures (including wells) ----------------------
-        for wall in structures.get(StructureType.RETAINING_WALLS.value, []) or []:
+    # #### 5) Structures broken down ########################################
+    def build_walls(self) -> int:
+        pit = self.excavation_object
+        app = self.App
+        cnt = 0
+        for wall in (getattr(pit, "structures", {}) or {}).get(StructureType.RETAINING_WALLS.value, []) or []:
             try:
                 app.create_retaining_wall(wall)
+                cnt += 1
             except Exception as e:
                 print(f"[build] Warning: create_retaining_wall failed: {e}")
+        return cnt
 
-        # ---------------- 5.1) Insert the bottom of the excavation -----------------------
+    def build_bottom_surface(self) -> bool:
+        pit = self.excavation_object
+        app = self.App
         try:
             ok = bool(getattr(self, "_bottom_surface_ok", False))
         except Exception:
             ok = False
+        if not ok:
+            return False
+        try:
+            excava_depth = float(getattr(pit, "excava_depth", 0.0))
+            bottom_poly = self.get_wall_footprint_polygon3d(z_value=excava_depth, tol=1e-6)
+            if bottom_poly is None:
+                print("[build] Warning: could not derive bottom polygon from walls (need >=3 points).")
+                return False
+            app.create_surface(bottom_poly, name="ExcavationBottom", auto_close=True)
+            print(f"[build] Bottom surface created at z={excava_depth:.3f} using wall-enclosed polygon.")
+            return True
+        except Exception as e:
+            print(f"[build] Warning: bottom polygon creation failed: {e}")
+            return False
 
-        # if ok:
-        #     try:
-        #         excava_depth = float(getattr(pit, "excava_depth", 0.0))
-        #         walls_now = pit.structures.get("retaining_walls", []) if isinstance(pit.structures, dict) else []
-
-        #         bottom_poly = self._make_bottom_polygon3d(walls_now, excava_depth)
-        #         if bottom_poly is None:
-        #             print("[build] Warning: could not derive bottom polygon from walls (need >=3 points).")
-        #         else:
-        #             app = self.App  # runner facade
-        #             app.create_surface(bottom_poly, name="ExcavationBottom", auto_close=True)
-        #             print(f"[build] Bottom surface created at z={excava_depth:.3f} using wall-enclosed polygon.")
-        #     except Exception as e:
-        #         print(f"[build] Warning: failed to create bottom surface: {e}")
-
-        if ok:
-            try:
-                excava_depth = float(getattr(pit, "excava_depth", 0.0))
-                bottom_poly = self.get_wall_footprint_polygon3d(z_value=excava_depth, tol=1e-6)
-                if bottom_poly is None:
-                    print("[build] Warning: could not derive bottom polygon from walls (need >=3 points).")
-                else:
-                    app = self.App
-                    app.create_surface(bottom_poly, name="ExcavationBottom", auto_close=True)
-                    print(f"[build] Bottom surface created at z={excava_depth:.3f} using wall-enclosed polygon.")
-            except Exception as e:
-                print(f"[build] Warning: bottom polygon creation failed: {e}")
-
-        # ---------------- 5.2) Create beams -----------------------
-        for beam in structures.get(StructureType.BEAMS.value, []) or []:
+    def build_beams(self) -> int:
+        pit = self.excavation_object
+        app = self.App
+        cnt = 0
+        for beam in (getattr(pit, "structures", {}) or {}).get(StructureType.BEAMS.value, []) or []:
             try:
                 app.create_beam(beam)
+                cnt += 1
             except Exception as e:
                 print(f"[build] Warning: create_beam failed: {e}")
+        return cnt
 
-        for anc in structures.get(StructureType.ANCHORS.value, []) or []:
+    def build_anchors(self) -> int:
+        pit = self.excavation_object
+        app = self.App
+        cnt = 0
+        for anc in (getattr(pit, "structures", {}) or {}).get(StructureType.ANCHORS.value, []) or []:
             try:
                 app.create_anchor(anc)
+                cnt += 1
             except Exception as e:
                 print(f"[build] Warning: create_anchor failed: {e}")
+        return cnt
 
-        for pile in structures.get(StructureType.EMBEDDED_PILES.value, []) or []:
+    def build_piles(self) -> int:
+        pit = self.excavation_object
+        app = self.App
+        cnt = 0
+        for pile in (getattr(pit, "structures", {}) or {}).get(StructureType.EMBEDDED_PILES.value, []) or []:
             try:
                 app.create_embedded_pile(pile)
+                cnt += 1
             except Exception as e:
                 print(f"[build] Warning: create_embedded_pile failed: {e}")
+        return cnt
 
-        # Wells — created once at structure stage (geometry-level only)
-        for well in structures.get(StructureType.WELLS.value, []) or []:
+    def build_wells(self) -> int:
+        """Create wells at geometry stage. Parameter overrides belong to phases."""
+        pit = self.excavation_object
+        app = self.App
+        cnt = 0
+        for well in (getattr(pit, "structures", {}) or {}).get(StructureType.WELLS.value, []) or []:
             try:
                 app.create_well(well)
+                cnt += 1
             except Exception as e:
                 print(f"[build] Warning: create_well failed: {e}")
+        return cnt
 
-        if not structures.get(StructureType.SOIL_BLOCKS.value):
-            self._cut_inside_soil_blocks(self.excavation_object)
+    def cut_and_register_inside_soil_blocks(self) -> None:
+        pit = self.excavation_object
+        if not (getattr(pit, "structures", {}) or {}).get(StructureType.SOIL_BLOCKS.value):
+            self._cut_inside_soil_blocks(pit)
+        for blk in (getattr(pit, "structures", {}) or {}).get(StructureType.SOIL_BLOCKS.value, []):
+            self.App.create_soil_block(blk)
 
-        for blk in structures.get(StructureType.SOIL_BLOCKS.value, []):
-            app.create_soil_block(blk)
-
-        # ---------------- 6) Loads (+ optional multipliers) --------------------
+    # #### 6) Loads ##########################################################
+    def build_loads(self) -> int:
+        pit = self.excavation_object
+        app = self.App
         loads = getattr(pit, "loads", {}) or {}
-        total_loads = 0
+        total = 0
         try:
-            for _k, ld in _iter_dict_lists(loads):
+            for _k, ld in self._iter_dict_lists(loads):
                 app.create_load(ld)
-                total_loads += 1
+                total += 1
         except Exception as e:
             print(f"[build] Warning: create_load failed on some items: {e}")
-
         for mul in getattr(pit, "load_multipliers", []) or []:
             try:
                 app.create_load_multiplier(mul)
             except Exception as e:
                 print(f"[build] Warning: create_load_multiplier failed: {e}")
+        return total
 
-        # ---------------- 7) Monitor points (best-effort) ----------------------
+    # #### 7) Monitors #######################################################
+    def build_monitors(self) -> int:
+        pit = self.excavation_object
+        app = self.App
         monitors = getattr(pit, "monitors", []) or []
-        if monitors:
+        if not monitors:
+            return 0
+        try:
+            if getattr(app, "g_i", None) is None:
+                raise RuntimeError("Not connected (g_i is None).")
             try:
-                if getattr(app, "g_i", None) is None:
-                    raise RuntimeError("Not connected (g_i is None).")
-                try:
-                    from ..plaxishelper.monitormapper import MonitorMapper  # type: ignore
-                except Exception:
-                    from plaxisproxy_excavation.plaxishelper.monitormapper import MonitorMapper  # type: ignore
-                MonitorMapper.create_monitors(app.g_i, monitors)  # type: ignore
-            except Exception as e:
-                print(f"[build] Warning: monitor mapping skipped: {e}")
+                from ..plaxishelper.monitormapper import MonitorMapper  # type: ignore
+            except Exception:
+                from plaxisproxy_excavation.plaxishelper.monitormapper import MonitorMapper  # type: ignore
+            MonitorMapper.create_monitors(app.g_i, monitors)  # type: ignore
+            return len(monitors)
+        except Exception as e:
+            print(f"[build] Warning: monitor mapping skipped: {e}")
+            return 0
 
-        # ---------------- 8) Mesh (optional) -----------------------------------
-        meshed = not mesh
+    # #### 8) Mesh ###########################################################
+    def build_mesh(self, mesh: bool) -> bool:
+        if not mesh:
+            return False
+        pit = self.excavation_object
+        app = self.App
         mesh_cfg = getattr(pit, "mesh", None)
         if mesh_cfg is None:
             mesh_cfg = Mesh()
@@ -727,44 +765,102 @@ class ExcavationBuilder:
             print("[build] Info: no mesh config on FoundationPit; use the default!")
         try:
             app.mesh(mesh_cfg)
-            meshed = True
+            return True
         except Exception as e:
             print(f"[build] Warning: mesh() failed: {e}")
+            return False
 
-        # ---------------- 9) Phase shells ONLY (no apply) ----------------------
-        phases = list(getattr(pit, "phases", [])) or getattr(pit, "stages", []) or []
-        created_phase_handles = []
-        if phases:
-            try:
-                app.goto_stages()
-                prev = app.get_initial_phase()
-                for ph in phases:
-                    for blk in pit.structures.get(StructureType.SOIL_BLOCKS.value, []):
-                        if blk.name.endswith("_in"):
-                            phase_name = blk.name[:-3]  # 去掉后缀“_in”得到阶段名
-                            for ph in phases:  # phases为待应用的Phase列表
-                                if ph.name == phase_name:
-                                    ph.deactivate_structures(blk)
-                    # Create the phase entity (inheriting sequence), DO NOT apply here
-                    h = app.create_phase(ph, inherits=prev)
-                    created_phase_handles.append(h)
-                    prev = h
-            except Exception as e:
-                print(f"[build] Warning: phase creation failed: {e}")
+    # #### 9) Phase shells (no apply) #######################################
+    def build_phase_shells(self) -> int:
+        pit = self.excavation_object
+        app = self.App
+        phases = list(getattr(pit, "phases", []) or getattr(pit, "stages", []) or [])
+        if not phases:
+            return 0
+        created = 0
+        try:
+            app.goto_stages()
+            prev = app.get_initial_phase()
+            for ph in phases:
+                # Special handling for soil blocks with suffix _in
+                for blk in pit.structures.get(StructureType.SOIL_BLOCKS.value, []):
+                    if blk.name.endswith("_in"):
+                        phase_name = blk.name[:-3]
+                        for ph2 in phases:
+                            if ph2.name == phase_name:
+                                ph2.deactivate_structures(blk)
+                handle = app.create_phase(ph, inherits=prev)
+                created += 1
+                prev = handle
+        except Exception as e:
+            print(f"[build] Warning: phase creation failed: {e}")
+        return created
 
-        # Summary for logs/tests
+    # =========================== Public build() =============================
+    def build(self, mesh: bool = True) -> Dict[str, Any]:
+        """Build ONLY the initial design using modular helpers."""
+        pit = self.excavation_object
+        app = self.App
+
+        # Ensure connection & fresh project
+        if not getattr(app, "is_connected", False) or getattr(app, "g_i", None) is None or getattr(app, "input_server", None) is None:
+            app.connect().new()
+
+        # Optional: completeness check
+        if hasattr(self, "check_completeness") and callable(self.check_completeness):
+            self.check_completeness()
+
+        # 1) project
+        self.build_project_info()
+        # 2) materials
+        total_mats = self.build_materials()
+        # 3) boreholes
+        self.relink_borehole_layers()
+        self.build_boreholes()
+        # 4) pre-declared soil blocks
+        self.build_initial_soil_blocks()
+        # 5) structures (walls → bottom → beams/anchors/piles/wells)
+        _walls = self.build_walls()
+        _bottom_ok = self.build_bottom_surface()
+        _beams = self.build_beams()
+        _ancs = self.build_anchors()
+        _piles = self.build_piles()
+        _wells = self.build_wells()
+        # optional cut/registration for inside soil blocks
+        self.cut_and_register_inside_soil_blocks()
+        # 6) loads
+        total_loads = self.build_loads()
+        # 7) monitors
+        total_monitors = self.build_monitors()
+        # 8) mesh
+        meshed = self.build_mesh(mesh)
+        # 9) phase shells only
+        phases_created = self.build_phase_shells()
+
         return {
             "materials": total_mats,
-            "structures": {k: len(v or []) for k, v in (structures or {}).items()},
+            "structures": {
+                StructureType.RETAINING_WALLS.value: _walls,
+                StructureType.BEAMS.value: _beams,
+                StructureType.ANCHORS.value: _ancs,
+                StructureType.EMBEDDED_PILES.value: _piles,
+                StructureType.WELLS.value: _wells,
+                StructureType.SOIL_BLOCKS.value: len((getattr(pit, "structures", {}) or {}).get(StructureType.SOIL_BLOCKS.value, []) or []),
+            },
             "loads": total_loads,
-            "monitors": len(monitors),
-            "phases_created": len(created_phase_handles),
+            "monitors": total_monitors,
+            "phases_created": phases_created,
             "meshed": meshed,
         }
 
-    # -------------------------------------------------------------------------
+    # ================= Keep all your original non-build helpers =============
+    # (apply_phases, soil block utilities, Output helpers, save/load, results, etc.)
+    # Paste them below unchanged from your current file.
+
+
+    # #########################################################################
     # Soil-material relinking helpers (borehole layers → library)
-    # -------------------------------------------------------------------------
+    # #########################################################################
 
     def _debug_dump_bh_material_links(self) -> None:
         """Print a compact report of SoilLayer.material links for debugging."""
@@ -836,9 +932,28 @@ class ExcavationBuilder:
             print(f"[materials] Relinked {fixed} soil-layer → material references to library.")
         return fixed
 
-    # -------------------------------------------------------------------------
+    # region Delete strutures
+    # #########################################################################
+    # Delete structures
+    # #########################################################################
+
+    def delete_well(self, well: Any) -> bool:
+        """
+        Delete the specified well.
+        """
+        return self.App.delete_well(well)
+    
+    def delete_all_wells(self) -> bool:
+        """
+        Delete all of the wells.
+        """
+        return self.App.delete_all_wells()
+    
+    #endregion
+
+    # #########################################################################
     # SoilBlocks helpers
-    # -------------------------------------------------------------------------
+    # #########################################################################
 
     def _cut_inside_soil_blocks(self, pit: FoundationPit):
         """
@@ -884,9 +999,9 @@ class ExcavationBuilder:
             geom = pit_polygon.extrude(z1, z2)
             blk = SoilBlock(name=name, geometry=geom, material=layer.material)
             pit.add_structure(StructureType.SOIL_BLOCKS, blk)
-    # -------------------------------------------------------------------------
+    # #########################################################################
     # Phase helpers
-    # -------------------------------------------------------------------------
+    # #########################################################################
 
     def apply_phases(self, phases: List[Phase] = [], *, warn_on_missing: bool = False) -> Dict[str, Any]:
         """
@@ -928,15 +1043,19 @@ class ExcavationBuilder:
 
         for ph in phases:
             ph_name = getattr(ph, "name", "<unnamed>")
-            # 1) create phase inheriting from the previous one
-            try:
-                handle = app.create_phase(ph, inherits=prev_handle)
-                created += 1
-                handles.append(handle)
-            except Exception as e:
-                errors.append(f"create_phase('{ph_name}') failed: {e}")
-                # Cannot apply if creation failed; keep prev_handle unchanged and continue
-                continue
+
+            # 1) create phase inheriting from the previous one, if the phase exists, skip
+            handle = ph.plx_id
+            if handle is None:
+                try:
+                    handle = app.create_phase(ph, inherits=prev_handle)
+                    created += 1
+                    handles.append(handle)
+                except Exception as e:
+                    errors.append(f"create_phase('{ph_name}') failed: {e}")
+                    # Cannot apply if creation failed; keep prev_handle unchanged and continue
+                    continue
+                
 
             # 2) apply the phase (options, water table, well overrides, activations, etc.)
             try:
@@ -950,6 +1069,12 @@ class ExcavationBuilder:
 
         return {"created": created, "applied": applied, "errors": errors, "handles": handles}
 
+    def delete_all_phases(self):
+        """
+        Delete all of the phases in plaxis software.
+        """
+        self.App.delete_all_phases()
+        self.excavation_object.clear_all_phases()
 
     # =========================================================================================
     # Excavation soillayers methods
@@ -990,9 +1115,9 @@ class ExcavationBuilder:
 
         return soil_blocks
 
-    # -------------------------------------------------------------------------
+    # #########################################################################
     # Soil blocks registration & application (names -> deactivate in a phase)
-    # -------------------------------------------------------------------------
+    # #########################################################################
 
     def apply_soil_blocks(self, phase):
         """
@@ -1149,6 +1274,20 @@ class ExcavationBuilder:
         """
         return self.create_output_viewer(phase=view_phase, reuse=reuse)
 
+    def mark_phase_calculate(self, phase, should_cal: bool = True):
+        """
+        Update a phase whether it should be calculated or not.
+        """
+        if phase in self.excavation_object.phases:
+            print(f"The phase named {phase.name} does not exist, please check it.")
+        self.App.mark_phase_should_calculate(phase, should_cal)
+
+    def mark_all_phases_calculate(self):
+        """
+        Mark all of phases of the project should be calculate.
+        """
+        for phase in self.excavation_object.phases:
+            self.mark_phase_calculate(phase)
 
     def list_project_phases(self) -> List[Any]:
         """
@@ -1161,57 +1300,20 @@ class ExcavationBuilder:
         )
         return list(getattr(pit, "phases", []) or [])
 
-    def _ensure_phase_is_calculated(self, phase: object) -> None:
+    def _ensure_phase_is_calculated(self, phase: Phase) -> bool:
         """
         Ensure the given phase has been calculated before querying Output.
         Strategy (in order):
         1) If we've run builder.calculate() in this session -> trust flag.
         2) Use Runner-provided probes when available:
-            - is_phase_calculated(phase)
-            - phase_has_results(handle)
-            - is_project_calculated()
-        3) If none available / uncertain -> raise with a clear message.
+            - is_calculated(phase)
+
         """
         # Fast-path: we already ran calculate() in this builder session
         if getattr(self, "_calc_done", False):
-            return
+            return False
 
-        app = self.App
-
-        # 1) Direct probe: is_phase_calculated(phase)
-        probe = getattr(app, "is_phase_calculated", None)
-        if callable(probe):
-            try:
-                if bool(probe(phase)):
-                    return
-            except Exception:
-                pass
-
-        # 2) Indirect probe via handle + phase_has_results(handle)
-        try:
-            find_h = getattr(app, "find_phase_handle", None)
-            has_res = getattr(app, "phase_has_results", None)
-            if callable(find_h) and callable(has_res):
-                h = find_h(phase)  # accept Phase object or identifier
-                if h is not None and bool(has_res(h)):
-                    return
-        except Exception:
-            pass
-
-        # 3) Project-level probe
-        proj_probe = getattr(app, "is_project_calculated", None)
-        if callable(proj_probe):
-            try:
-                if bool(proj_probe()):
-                    return
-            except Exception:
-                pass
-
-        # If we reach here, we cannot establish that results exist for this phase
-        raise RuntimeError(
-            "Requested results before calculation. Please run builder.calculate() "
-            "or otherwise ensure the target phase has finished calculation."
-        )
+        return self.App.is_calculated(phase)
 
 
     def _ensure_output_for_phase(self, phase: object) -> Optional[PlaxisOutput]:
@@ -1265,33 +1367,672 @@ class ExcavationBuilder:
                 self.Output = po.connect_via_input(g_i, phase)
 
         return self.Output
+    
+    ###########################################################################
+    # Update the structures
+    ###########################################################################
+    def update_structures(self, structure_type: StructureType, structure_list: List, rebuild: bool = False):
+        """
+        Update the structures from a list.
 
+        Args:
+            rebuild: Rebuild the total simulation model.
+        """
+        self.excavation_object.update_structures(structure_type, structure_list)
+        if rebuild:
+            if structure_type == StructureType.ANCHORS:
+                self.check_completeness()
+                self.build_anchors()
+            if structure_type == StructureType.BEAMS:
+                self.check_completeness()
+                self.build_beams()
+            if structure_type == StructureType.EMBEDDED_PILES:
+                self.check_completeness()
+                self.build_piles()
+            if structure_type == StructureType.RETAINING_WALLS:
+                self.check_completeness()
+                self.build_walls()
+                self.build_bottom_surface()
+            if structure_type == StructureType.WELLS:
+                self.check_completeness()
+                self.build_wells()
+
+    def initial_phase(self, phase: Phase):
+        """
+        Initial the status of a phase.
+        """
+        phase.init_phase()
+    
+    def initial_all_phases(self):
+        """
+        Initial all the phases.
+        """
+        for phase in self.excavation_object.phases:
+            self.initial_phase(phase)
+
+    def initial_all_phase_soilblocks(self):
+        for phase in self.excavation_object.phases:
+            phase.init_soilblocks()
+
+    #region Get Results
+    ###########################################################################
+    # Get Results
+    ###########################################################################
 
     def get_results(
         self,
         *,
-        structure: object,   # structure object or its plx_id (Output resolves)
-        leaf: object,        # resulttypes enum member, or "Plate.UX" string
-        phase: object,       # Phase object or its plx_id (Output resolves)
+        structure: Optional[BaseStructure] = None,  # optional: structure object or its plx_id
+        leaf: Enum,                                  # resulttypes enum member, or "Plate.UX" string
+        phase: Optional[Phase] = None,               # Phase object or its plx_id
         smoothing: bool = False,
-    ):
+        raw: bool = False
+    ) -> Union[List[float], float, str, Iterable, None]:
         """
         One-call result fetch with pre-checks:
-        - Ensure the phase was calculated (or raise).
+        - Ensure the phase was calculated (or print a warning).
         - Ensure Output is bound to the given phase (create/rebind if needed).
-        - Return results from PlaxisOutput.get_results(...).
+        - Delegate to PlaxisOutput.get_results(...).
+
+        Parameters
+        ##########
+        structure : BaseStructure | None
+            If provided, results are fetched for this structure.
+            If None, results are fetched for "all soils"/global leaf.
+        leaf : Enum
+            Result type enum (e.g. g_o.ResultTypes.Soil.Uy).
+        phase : Phase | None
+            Phase object or id. Must not be None here unless you implement
+            a "default phase" fallback inside _ensure_* helpers.
+        smoothing : bool
+            Whether to use smoothed results.
         """
+
+        # If you want to support a "current/default phase", you can
+        # replace this check with your own fallback logic.
+        if phase is None:
+            raise ValueError("phase must be provided for get_results().")
+
         # 1) must be calculated first
-        self._ensure_phase_is_calculated(phase)
+        if not self._ensure_phase_is_calculated(phase):
+            print(f"{phase.name} was not calculated yet!")
 
         # 2) ensure Output bound to this phase (creates/rebinds as needed)
         po = self._ensure_output_for_phase(phase)
 
-        # 3) fetch and return
-        if isinstance(po, "PlaxisOutput"):
-            return po.get_results(structure, leaf, smoothing=smoothing)
-        return None
+        # 3) fetch and return via PlaxisOutput
+        if isinstance(po, PlaxisOutput):
+            # structure provided -> use (structure, leaf, smoothing)
+            if structure is not None:
+                return po.get_results(structure, leaf, smoothing=smoothing, raw=raw)
+            # no structure -> use (leaf, smoothing)
+            return po.get_results(leaf, smoothing=smoothing, raw=raw)
 
+        return None
+    
+    # Cache the position and scalar field of the soil.
+
+    def _get_or_build_soil_picker(
+        self,
+        phase: Phase,
+    ) -> Tuple[NeighborPointPicker, np.ndarray]:
+        """
+        For a given phase, fetch Soil.X/Y/Z once and build a KD-tree based
+        NeighborPointPicker on the soil grid.
+
+        Returns
+        -------
+        picker : NeighborPointPicker
+            KD-tree accelerated neighbor search on (x, y, z).
+        coords : np.ndarray, shape (N, 3)
+            Coordinates corresponding to soil result points.
+        """
+        phase_name = getattr(phase, "name", str(phase))
+
+        # cached?
+        picker = self._soil_coord_picker_cache.get(phase_name)
+        coords = self._soil_coord_cache.get(phase_name)
+        if picker is not None and coords is not None:
+            return picker, coords
+
+        # Use generic get_results wrapper; raw=True -> full field as 1D array
+        xs_raw = self.get_results(
+            leaf=SoilResult.X,
+            phase=phase,
+            smoothing=False,
+            raw=True,
+        )
+        ys_raw = self.get_results(
+            leaf=SoilResult.Y,
+            phase=phase,
+            smoothing=False,
+            raw=True,
+        )
+        zs_raw = self.get_results(
+            leaf=SoilResult.Z,
+            phase=phase,
+            smoothing=False,
+            raw=True,
+        )
+
+        if xs_raw is None or ys_raw is None or zs_raw is None:
+            raise RuntimeError(f"Soil.X/Y/Z results are not available for phase {phase_name!r}.")
+
+        xs = np.asarray(xs_raw, dtype=float).ravel()
+        ys = np.asarray(ys_raw, dtype=float).ravel()
+        zs = np.asarray(zs_raw, dtype=float).ravel()
+
+        if not (xs.size == ys.size == zs.size):
+            raise ValueError(
+                f"Soil.X/Y/Z lengths mismatch for phase {phase_name!r}: "
+                f"{xs.size}, {ys.size}, {zs.size}"
+            )
+
+        coords = np.vstack([xs, ys, zs]).T  # (N, 3)
+
+        picker = NeighborPointPicker(
+            xs=xs,
+            ys=ys,
+            zs=zs,
+            use_kdtree=True,   # use KD-tree backend
+        )
+
+        self._soil_coord_picker_cache[phase_name] = picker
+        self._soil_coord_cache[phase_name] = coords
+        return picker, coords
+
+    def _get_or_fetch_soil_field(
+        self,
+        phase: Phase,
+        leaf: SoilResult,
+        *,
+        smoothing: bool = False,
+    ) -> np.ndarray:
+        """
+        Fetch (or return cached) soil result field for a given phase and result type,
+        as a flat numpy array.
+
+        leaf examples: SoilResult.Uz, SoilResult.PActive, etc.
+        """
+        phase_name = getattr(phase, "name", str(phase))
+        key = (phase_name, leaf.name, bool(smoothing))
+
+        cached = self._soil_field_cache.get(key)
+        if cached is not None:
+            return cached
+
+        vals_raw = self.get_results(
+            leaf=leaf,
+            phase=phase,
+            smoothing=smoothing,
+            raw=True,
+        )
+        if vals_raw is None:
+            raise RuntimeError(
+                f"No results returned for {leaf!r} in phase {phase_name!r} (raw=True)."
+            )
+
+        vals = np.asarray(vals_raw, dtype=float).ravel()
+        self._soil_field_cache[key] = vals
+        return vals
+    
+    def reset_soil_result_cache(self):
+        """
+        Reset all dicts of the soil results.
+        """
+        self._soil_coord_cache = {}
+        self._soil_coord_picker_cache = {}
+        self._soil_field_cache = {}
+        
+
+    def _estimate_water_depth_for_point_fast(
+        self,
+        picker: NeighborPointPicker,
+        pvals: np.ndarray,
+        x: float,
+        y: float,
+        z_ground: float,
+        z_min: float,
+        *,
+        tol: float = 0.1,
+    ) -> Optional[float]:
+        """
+        Fast groundwater depth estimation using a pre-fetched Soil.PActive field
+        and a KDTree-based NeighborPointPicker.
+
+        Approximation:
+        - P(x,y,z) is approximated by the value at the nearest soil-field point
+          in (x,y,z) space.
+        - Otherwise, logic is the same as _estimate_water_depth_for_point:
+            * assume P≈0 above water table, P<0 below,
+            * bisection on "P(z) < 0" between z_ground and z_min.
+        """
+        # ensure z_top > z_bottom
+        z_top = max(z_ground, z_min)
+        z_bottom = min(z_ground, z_min)
+
+        if x == -98.3 and y == -29.8:
+            print(x, y)
+
+        def p_at(z: float) -> Optional[float]:
+            idx, _coord = picker.nearest_to_coord(x, y, float(z))
+            v = pvals[idx]
+            if isinstance(v, (int, float, np.floating)):
+                return float(v)
+            return None
+
+        # 1) check top and bottom pore pressure
+        p_top = p_at(z_top)
+        p_bot = p_at(z_bottom)
+
+        if p_top is None or p_bot is None:
+            return None
+
+        # Above water: pressure should be 0. If already negative, water is above ground.
+        if p_top < 0.0:
+            return 0.0
+
+        # Below water: pressure must be negative; otherwise assumptions fail.
+        if p_bot >= 0.0:
+            # water table is deeper than z_min or model does not follow 0/negative pattern
+            return None
+
+        # Predicate: "below water table" (True if P < 0)
+        def is_below(z: float) -> Optional[bool]:
+            p = p_at(z)
+            if p is None:
+                return None
+            return p < 0.0
+
+        # initial booleans
+        b_top = is_below(z_top)   # expected False
+        b_bot = is_below(z_bottom)  # expected True
+
+        if b_top is None or b_bot is None:
+            return None
+
+        # If top already "below" -> water above ground
+        if b_top:
+            return 0.0
+
+        # If bottom not below -> no negative values in interval
+        if not b_bot:
+            return None
+
+        # 2) bisection on boolean step: False (above) -> True (below)
+        z_lo, b_lo = z_bottom, True
+        z_hi, b_hi = z_top, False
+
+        while (z_hi - z_lo) > tol:
+            z_mid = 0.5 * (z_lo + z_hi)
+            b_mid = is_below(z_mid)
+
+            if b_mid is None:
+                # if invalid, shrink interval conservatively towards top
+                z_hi = z_mid
+                continue
+
+            if b_mid:
+                # mid is already below water table (P<0)
+                # interface lies between z_hi (above) and z_mid (below)
+                z_lo, b_lo = z_mid, True
+            else:
+                # mid is still above water table (P>=0)
+                # interface lies between z_mid (above) and z_lo (below)
+                z_hi, b_hi = z_mid, False
+
+        # 此时 z_hi ≈ 刚刚“差一点进入负水位”的高度（最后一个仍为 P>=0 的位置）
+        z_water = z_hi
+        return z_water
+
+    def sample_water_depth_for_points_fast(
+        self,
+        phase,
+        xy_points,
+        *,
+        z_ground: float,
+        z_min: float,
+        tol: float = 0.1,
+        smoothing: bool = False,
+    ):
+        """
+        Fast version of groundwater depth sampling using soil-field + NeighborPointPicker.
+
+        For each (x, y), estimate depth where PActive crosses from ~0 to negative
+        between z_ground and z_min using a boolean bisection, with P(z) obtained
+        via nearest-neighbor lookup in a pre-fetched Soil.PActive field.
+        """
+        # 1) KDTree picker on Soil.X/Y/Z
+        picker, _coords = self._get_or_build_soil_picker(phase)
+        # 2) Soil.PActive field as array
+        pvals = self._get_or_fetch_soil_field(
+            phase,
+            SoilResult.PActive,
+            smoothing=smoothing,
+        )
+
+        depths: List[Optional[float]] = []
+        for (x, y) in xy_points:
+            d = self._estimate_water_depth_for_point_fast(
+                picker,
+                pvals,
+                float(x),
+                float(y),
+                float(z_ground),
+                float(z_min),
+                tol=float(tol),
+            )
+            depths.append(d)
+        return depths
+
+    def sample_settlement_for_points_fast(
+        self,
+        phase,
+        xy_points,
+        *,
+        z_ground: float,
+        smoothing: bool = False,
+    ):
+        """
+        Fast version of sample_settlement_for_points using a pre-fetched Soil.Uz
+        field and a KDTree-based NeighborPointPicker on Soil.X/Y/Z.
+
+        For each (x, y), we query the nearest (x, y, z_ground) soil point and
+        read Uz from the cached field (raw=True).
+        """
+        # 1) KDTree picker on Soil.X/Y/Z
+        picker, _coords = self._get_or_build_soil_picker(phase)
+        # 2) Soil.Uz field as array
+        uz_vals = self._get_or_fetch_soil_field(
+            phase,
+            SoilResult.Uz,
+            smoothing=smoothing,
+        )
+
+        values: List[Optional[float]] = []
+        for (x, y) in xy_points:
+            idx, _coord = picker.nearest_to_coord(
+                float(x),
+                float(y),
+                float(z_ground),
+            )
+            # uz_vals 是 float 数组，按索引取即可
+            val = float(uz_vals[idx])
+            values.append(val)
+        return values
+
+    # ########## helper: Pick up the deformation of walls ##################
+
+    def get_plate_displacement_for_structure(
+        self,
+        phase,
+        structure,
+        include_uz: bool = True,
+    ) -> Dict[str, np.ndarray]:
+        """
+        Get plate results (X, Y, Z, Ux, Uy[, Uz]) for a given structure (e.g. a retaining wall)
+        in a given phase, converted to float numpy arrays.
+
+        This is a thin wrapper over builder.get_results, but centralizes:
+        - result leaf selection (X, Y, Z, Ux, Uy, Uz)
+        - list/scalar -> np.ndarray conversion
+        - error handling (missing leaves -> empty arrays)
+        """
+        keys = ["X", "Y", "Z", "Ux", "Uy"]
+        if include_uz:
+            keys.append("Uz")
+
+        result: Dict[str, np.ndarray] = {}
+
+        for k in keys:
+            # PlateResult.X / PlateResult.Ux / ...
+            leaf = getattr(PlateResult, k, None)
+            if leaf is None:
+                # This result is not supported by current PLAXIS version
+                result[k] = np.asarray([], dtype=float)
+                continue
+
+            try:
+                raw = self.get_results(
+                    structure=structure,
+                    leaf=leaf,
+                    phase=phase,
+                    smoothing=False,
+                )
+            except Exception:
+                arr = np.asarray([], dtype=float)
+            else:
+                # normalize to 1D float array
+                if isinstance(raw, list):
+                    arr = np.asarray(raw, dtype=float).ravel()
+                elif isinstance(raw, (int, float, np.floating)):
+                    arr = np.asarray([float(raw)], dtype=float)
+                else:
+                    arr = np.asarray(raw, dtype=float).ravel()
+
+            result[k] = arr
+
+        return result
+
+    # ########## helper: estimate groundwater depth at one (x, y) ##########
+    def _estimate_water_depth_for_point(
+        self,
+        po,
+        phase,
+        x: float,
+        y: float,
+        z_ground: float,
+        z_min: float,
+        *,
+        tol: float = 0.1,
+        smoothing: bool = False,
+    ):
+        """
+        Estimate groundwater depth below z_ground at (x, y) assuming:
+
+            Pore pressure = 0 above water table,
+            Pore pressure < 0 below water table.
+
+        We assume:
+        - P(z_ground) ≈ 0
+        - P(z_min) < 0
+        - There is a unique transition from 0 to negative between them.
+
+        Algorithm:
+        - Binary search on the boolean predicate (P(z) < 0):
+            * at z_ground: False
+            * at z_min: True
+        - Find the smallest depth where P becomes negative
+          with vertical accuracy <= tol (m).
+
+        Returns
+        #######
+        depth : float or None
+            Groundwater depth below z_ground (>= 0), or None if assumptions
+            are violated or results are not available.
+        """
+        # ensure z_top > z_bottom
+        z_top = max(z_ground, z_min)
+        z_bottom = min(z_ground, z_min)
+
+        # 1) check top and bottom pore pressure
+        p_top = po.get_single_result_at(
+            phase, SoilResult.PActive, x, y, z_top, smoothing
+        )
+        p_bot = po.get_single_result_at(
+            phase, SoilResult.PActive, x, y, z_bottom, smoothing
+        )
+
+        if not isinstance(p_top, (int, float)) or not isinstance(p_bot, (int, float)):
+            return None
+
+        # Above water: pressure should be 0. If already negative, water is above ground.
+        if p_top < 0.0:
+            return 0.0
+
+        # Below water: pressure must be negative; otherwise assumptions fail.
+        if p_bot >= 0.0:
+            # water table is deeper than z_min or model does not follow 0/negative pattern
+            return None
+
+        # Predicate: "below water table" (True if P < 0)
+        def is_below(z: float) -> bool | None:
+            p = po.get_single_result_at(
+                phase, SoilResult.PActive, x, y, z, smoothing
+            )
+            if not isinstance(p, (int, float)):
+                return None
+            return p < 0.0
+
+        # initial booleans
+        b_top = is_below(z_top)   # expected False
+        b_bot = is_below(z_bottom)  # expected True
+
+        if b_top is None or b_bot is None:
+            return None
+
+        # If top already "below" -> water above ground
+        if b_top:
+            return 0.0
+
+        # If bottom not below -> no negative values in interval
+        if not b_bot:
+            return None
+
+        # 2) bisection on boolean step: False (above) -> True (below)
+        z_lo, b_lo = z_bottom, True   # below
+        z_hi, b_hi = z_top, False     # above
+
+        while (z_hi - z_lo) > tol:
+            z_mid = 0.5 * (z_lo + z_hi)
+            b_mid = is_below(z_mid)
+
+            if b_mid is None:
+                # if invalid, shrink interval conservatively
+                z_hi = z_mid
+                continue
+
+            if b_mid:
+                # still below water table -> transition is above
+                z_hi, b_hi = z_mid, True
+            else:
+                # still above water table -> transition is deeper
+                z_lo, b_lo = z_mid, False
+
+        # At the end, z_hi is the highest depth where P<0 (first negative point)
+        z_water = z_hi
+        depth = z_top - z_water
+        if depth < 0.0:
+            depth = 0.0
+        return depth
+    
+
+    def sample_water_depth_for_points(
+        self,
+        phase,
+        xy_points,
+        *,
+        z_ground: float,
+        z_min: float,
+        tol: float = 0.1,
+        smoothing: bool = False,
+    ):
+        """
+        Compute groundwater depth for a list of (x, y) locations in a single phase,
+        using a boolean bisection on:
+
+            PorePressure(z) < 0  (below water table)
+
+        Assumes:
+        - P(z_ground) == 0
+        - P(z_min) < 0
+
+        Parameters
+        ##########
+        phase : Phase
+            Calculation stage / Phase object (with .name).
+        xy_points : iterable[(x, y)]
+            List of plan coordinates.
+        z_ground : float
+            Ground surface elevation (upper bound).
+        z_min : float
+            Lower bound (must be below expected water table).
+        tol : float
+            Target accuracy in meters (default 0.1 m).
+        smoothing : bool
+            Whether to enable smoothing in getsingleresult.
+
+        Returns
+        #######
+        List[float | None]
+            Groundwater depths for each point; None if cannot be determined.
+        """
+        po = self._ensure_output_for_phase(phase)
+        if po is None:
+            raise RuntimeError("Output viewer is not available for this phase.")
+
+        depths = []
+        for (x, y) in xy_points:
+            d = self._estimate_water_depth_for_point(
+                po,
+                phase,
+                float(x),
+                float(y),
+                float(z_ground),
+                float(z_min),
+                tol=float(tol),
+                smoothing=smoothing,
+            )
+            depths.append(d)
+        return depths
+
+
+    def sample_settlement_for_points(
+        self,
+        phase,
+        xy_points,
+        *,
+        z_ground: float,
+        smoothing: bool = False,
+    ):
+        """
+        Sample vertical displacement (Soil.Uz) at z = z_ground for a list
+        of (x, y) locations, in a single phase.
+
+        Parameters
+        ##########
+        phase : Phase
+            Calculation stage / Phase object (with .name).
+        xy_points : iterable[(x, y)]
+            List of plan coordinates.
+        z_ground : float
+            Elevation where settlement is sampled.
+        smoothing : bool
+            Whether to enable smoothing in getsingleresult.
+
+        Returns
+        #######
+        List[float | None]
+            Uz at each point; None if result is not available.
+        """
+        po = self._ensure_output_for_phase(phase)
+        if po is None:
+            raise RuntimeError("Output viewer is not available for this phase.")
+
+        values = []
+        for (x, y) in xy_points:
+            uz = po.get_single_result_at(
+                phase, SoilResult.Uz, float(x), float(y), float(z_ground), smoothing
+            )
+            if isinstance(uz, (int, float)):
+                values.append(float(uz))
+            else:
+                values.append(None)
+        return values
+
+    #endregion
+
+    #region Project operations
     ###########################################################################
     # Save and Load
     ###########################################################################
@@ -1346,7 +2087,7 @@ class ExcavationBuilder:
         """
         return self.App.get_project_path()
 
-    # -------- Optional convenience: save using ProjectInformation path ----------
+    # ######## Optional convenience: save using ProjectInformation path ##########
 
     def save_to_project_info_path(self, *, overwrite: bool = True) -> str:
         """
@@ -1365,3 +2106,5 @@ class ExcavationBuilder:
         import os
         full = os.path.join(dir_, fname)
         return self.App.save_as(full, overwrite=overwrite)
+
+    #endregion

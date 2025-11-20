@@ -24,7 +24,7 @@ class SoilBlock(BaseStructure):
         # Unified with Mapper: Store the handle of the volume in _plx_volume_id in the project, and access it uniformly through plx_id.
         self._plx_volume_id: Optional[Any] = None  # Any: Handle object or ID
 
-    # ------------ The "plx_id" and "_plx_volume_id" are interchangeable. ----------------
+    # ############ The "plx_id" and "_plx_volume_id" are interchangeable. ################
     @property
     def plx_id(self):
         return self._plx_volume_id
@@ -33,7 +33,7 @@ class SoilBlock(BaseStructure):
     def plx_id(self, value):
         self._plx_volume_id = value
 
-    # ----------------- Properties & Methods -----------------
+    # ################# Properties & Methods #################
     @property
     def material(self) -> Optional[BaseSoilMaterial]:
         return self._material

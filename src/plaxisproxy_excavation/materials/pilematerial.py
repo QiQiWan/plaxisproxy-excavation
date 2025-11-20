@@ -85,7 +85,7 @@ class ElasticPile(ElasticBeam):
     def __repr__(self) -> str:
         return "<plx.materials.elastic_pile>"
 
-    # --- pile-specific properties
+    # ### pile-specific properties
     @property
     def lateral_type(self) -> LateralResistanceType:
         return self._lateral_type
@@ -111,7 +111,7 @@ class ElasticPile(ElasticBeam):
     def F_max(self) -> Optional[float]:
         return self._F_max
 
-    # --- override section_properties to support Square ---
+    # ### override section_properties to support Square ###
     def section_properties(self, predefined: Optional[PreDefineSection] = None):
         """
         Returns (A, Iy, Iz, W).

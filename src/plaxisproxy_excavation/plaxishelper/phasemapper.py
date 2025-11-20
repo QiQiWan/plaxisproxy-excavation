@@ -67,7 +67,7 @@ CLASS_TAGS = {
 # Internal alias for PLAXIS phase handle (only used in private helpers)
 PhaseHandle = Any
 
-# --- heplers: pick up objects by names ---
+# ### heplers: pick up objects by names ###
 
 def _ident_str(x) -> str:
     if x is None: return ""
@@ -187,7 +187,7 @@ def _get_first_collection(g_i: Any, names: Sequence[str]) -> Optional[Any]:
             pass
     return None
 
-# --- helpers: flatten nested dicts---
+# ### helpers: flatten nested dicts###
 def _flatten_options_dict(d: Dict[str, Any]) -> Dict[str, Any]:
     flat: Dict[str, Any] = {}
     def _rec(prefix: str, obj: Dict[str, Any]) -> None:
@@ -200,7 +200,7 @@ def _flatten_options_dict(d: Dict[str, Any]) -> Dict[str, Any]:
     _rec("", d or {})
     return flat
 
-# --- helper: map the phase settings ---
+# ### helper: map the phase settings ###
 # Map normalized user keys -> exact PLAXIS property path "Phase|Deform|Flow|Dynamics|GroundwaterFlow|Deformations.<Prop>"
 # Normalization rule: lower-case, remove spaces/dashes/underscores.
 def _norm(s: Any) -> str:
@@ -249,14 +249,14 @@ def split_target(path: str) -> Tuple[str | None, str]:
     parts = path.split(".")
     return (None, parts[0]) if len(parts) == 1 else (parts[0], parts[1])
 
-# ---------- Canonical key maps (normalized_key -> 'Phase or Sub.Property') ----------
+# ########## Canonical key maps (normalized_key -> 'Phase or Sub.Property') ##########
 PHASE_MAP = {
     "timeinterval": "TimeInterval",
     "maxstepsstored": "MaxStepsStored",
     "maxcores": "MaxCores",
     "shouldcalculate": "ShouldCalculate",
     "deformcalctype": "DeformCalcType",
-    "poreprescalctype": "PorePresCalcType",
+    "porecaltype": "PorePresCalcType",
     "estimatedendtime": "EstimatedEndTime",
 }
 
@@ -343,7 +343,7 @@ FLAT_ALIAS: Dict[str, str] = {
     **PHASE_MAP, **DEFORM_MAP, **FLOW_MAP, **DYNAMICS_MAP, **GROUNDWATERFLOW_MAP, **DEFORMATIONS_BC_MAP
 }
 
-# ---------- Enum normalization tables ----------
+# ########## Enum normalization tables ##########
 ENUMS: Dict[str, Dict[str, str]] = {
     "DeformCalcType": {
         _norm("K0 procedure"): "K0 procedure",
@@ -525,9 +525,9 @@ class PhaseMapper:
       - find_phase_handle(g_i, name: str) -> Optional[PhaseHandle]
     """
 
-    # ---------------------------------------------------------------------
+    # #####################################################################
     # Stage navigation & discovery
-    # ---------------------------------------------------------------------
+    # #####################################################################
 
     @staticmethod
     def goto_stages(g_i: Any) -> None:
@@ -577,7 +577,7 @@ class PhaseMapper:
 
         raise RuntimeError("Cannot resolve InitialPhase handle from g_i.")
 
-    # --------------------- Wrap InitialPhase as a Phase domain object ---------------------
+    # ##################### Wrap InitialPhase as a Phase domain object #####################
 
     @staticmethod
     def wrap_initial_as_phase(
@@ -671,9 +671,9 @@ class PhaseMapper:
             pass
         return None
 
-    # ---------------------------------------------------------------------
+    # #####################################################################
     # Private low-level helpers (handle land; not public)
-    # ---------------------------------------------------------------------
+    # #####################################################################
 
     @staticmethod
     def _create_phase_from_base(g_i: Any, previous: PhaseHandle) -> PhaseHandle:
@@ -760,9 +760,9 @@ class PhaseMapper:
         setattr(phase_obj, "plx_id", new_ph)
         return new_ph
 
-    # ---------------------------------------------------------------------
+    # #####################################################################
     # Public: create/apply using Phase objects
-    # ---------------------------------------------------------------------
+    # #####################################################################
 
     @staticmethod
     def create(g_i: Any, phase: Phase, *, inherits: Optional[Phase | Any] = None,
@@ -911,7 +911,7 @@ class PhaseMapper:
             for raw_key, reason in skipped:
                 print(f"[phase-apply] skipped key '{raw_key}': {reason}")
 
-    # ---- structures activation/deactivation
+    # #### structures activation/deactivation
     @staticmethod
     def _resolve_handle(obj: Any) -> Optional[Any]:
         """Resolve a PLAXIS object handle from a domain object or a raw handle."""
@@ -1274,7 +1274,7 @@ class PhaseMapper:
         if warn_on_missing:
             print("[PhaseMapper] No supported API found to apply water table object; skipped.")
 
-    # ---- wells
+    # #### wells
 
     @staticmethod
     def _looks_like_handle(obj: Any) -> bool:
@@ -1456,9 +1456,9 @@ class PhaseMapper:
         if isinstance(mapping, dict):
             PhaseMapper.apply_well_overrides_dict(g_i, phase, mapping, warn_on_missing=warn_on_missing)
 
-    # ---------------------------------------------------------------------
+    # #####################################################################
     # High-level "apply phase" (Phase-first)
-    # ---------------------------------------------------------------------
+    # #####################################################################
 
     @staticmethod
     def apply_phase(g_i: Any, phase: Phase, *, warn_on_missing: bool = False) -> None:
@@ -1480,9 +1480,9 @@ class PhaseMapper:
 
         PhaseMapper.apply_well_overrides(g_i, phase, warn_on_missing=warn_on_missing)
 
-    # ---------------------------------------------------------------------
+    # #####################################################################
     # Batch helpers (Phase-first)
-    # ---------------------------------------------------------------------
+    # #####################################################################
 
     @staticmethod
     def apply_plan(g_i: Any, phases: Sequence[Phase], *, warn_on_missing: bool = False) -> List[Phase]:
@@ -1714,7 +1714,7 @@ class PhaseMapper:
         )
         return {h: PhaseMapper._to_name(h) for h in handles}
 
-    # --- optional legacy helper (keep if some code still expects a list of names) ---
+    # ### optional legacy helper (keep if some code still expects a list of names) ###
     @staticmethod
     def guess_excavation_soil_names_list(g_i, phase=None, prefer_volume: bool = True) -> List[str]:
         """

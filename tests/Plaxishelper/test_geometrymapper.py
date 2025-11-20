@@ -3,13 +3,13 @@ from __future__ import annotations
 from typing import List
 from plxscripting.server import new_server
 
-# --- 根据你的项目结构调整这行导入 ---
+# ### 根据你的项目结构调整这行导入 ###
 from src.plaxisproxy_excavation.mappers.geometry_mapper import GeometryMapper
 
 # 几何基础模型（与你的库保持一致）
 from src.plaxisproxy_excavation.geometry import Point, PointSet, Line3D, Polygon3D
 
-# ---------------------------- helpers ----------------------------
+# ############################ helpers ############################
 def make_rectangle(z: float = 0.0, width: float = 10.0, height: float = 6.0, x0: float = 0.0, y0: float = 0.0):
     """返回闭合矩形：Point 列表、PointSet、Line3D、Polygon3D（外环）"""
     pts: List[Point] = [
@@ -32,7 +32,7 @@ def assert_plx_id_cleared(obj, name: str):
     plx_id = getattr(obj, "plx_id", "NOT-ATTR")
     assert plx_id is None, f"{name}.plx_id should be None after deletion."
 
-# ---------------------------- demo runner ----------------------------
+# ############################ demo runner ############################
 def run_demo():
     # 连接 PLAXIS 远程
     passwd = 'yS9f$TMP?$uQ@rW3'

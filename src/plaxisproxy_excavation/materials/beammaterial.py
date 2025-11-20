@@ -23,7 +23,7 @@ class PreDefineSection(Enum):
     Rectangle       = "Solid rectangular beam"  # rectangle: width / height
     Square          = "Solid square beam"     # For square pile: width
 
-# ------------------------------ ElasticBeam ----------------------------------
+# ############################## ElasticBeam ##################################
 class ElasticBeam(BaseMaterial):
     """
     Elastic beam material.
@@ -87,7 +87,7 @@ class ElasticBeam(BaseMaterial):
     def __repr__(self) -> str:
         return "<plx.materials.elastic_beam>"
 
-    # ---- properties
+    # #### properties
     @property
     def cross_section(self) -> CrossSectionType:
         return self._cross_section
@@ -128,7 +128,7 @@ class ElasticBeam(BaseMaterial):
     def W(self) -> Optional[float]:
         return self._W
 
-    # ---- helpers
+    # #### helpers
     def section_properties(
         self,
         predefined: Optional[PreDefineSection] = None
@@ -174,7 +174,7 @@ class ElasticBeam(BaseMaterial):
 
         return (None, None, None, None)
 
-# --------------------------- ElastoplasticBeam -------------------------------
+# ########################### ElastoplasticBeam ###############################
 class ElastoplasticBeam(ElasticBeam):
     """
     Elasto-plastic beam material.

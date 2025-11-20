@@ -45,7 +45,7 @@ class BaseAnchor(PlaxisObject):
         self._F_res_tens = None if F_res_tens is None else float(F_res_tens)
         self._F_res_comp = None if F_res_comp is None else float(F_res_comp)
 
-    # --- properties (shared) ---
+    # ### properties (shared) ###
     @property
     def type(self) -> AnchorType:
         return self._type

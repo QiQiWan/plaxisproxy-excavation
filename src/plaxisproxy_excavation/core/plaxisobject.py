@@ -12,7 +12,7 @@ from enum import Enum
 
 T = TypeVar("T", bound="SerializableBase")
 
-# ------------------------------ Meta ---------------------------------
+# ############################## Meta #################################
 class SerializableMeta(type):
     """
     Auto-discovers @property names to serialize if a subclass
@@ -34,7 +34,7 @@ class SerializableMeta(type):
         return cls  # type: ignore[return-value]  # metaclass return type is the class itself
 
 
-# --------------------------- Serializable ----------------------------
+# ########################### Serializable ############################
 class SerializableBase(metaclass=SerializableMeta):
     """
     Unifies (de)serialization for PLAXIS domain objects.
@@ -46,7 +46,7 @@ class SerializableBase(metaclass=SerializableMeta):
     _SERIAL_VERSION: int = 1
     __serialize_fields__: ClassVar[List[str]]
 
-    # ----------- Serialization -----------
+    # ########### Serialization ###########
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         fields = getattr(self, "__serialize_fields__", None)
@@ -80,7 +80,7 @@ class SerializableBase(metaclass=SerializableMeta):
             return value.to_dict()
         return value
 
-    # ----------- Deserialization ----------
+    # ########### Deserialization ##########
     @classmethod
     def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
         # Remove meta keys that constructors don't expect
@@ -153,7 +153,7 @@ class SerializableBase(metaclass=SerializableMeta):
         except Exception:
             return value  # be tolerant
 
-    # ----------- JSON helpers ------------
+    # ########### JSON helpers ############
     def to_json(self, **kwargs: Any) -> str:
         return json.dumps(self.to_dict(), **kwargs)
 
@@ -162,7 +162,7 @@ class SerializableBase(metaclass=SerializableMeta):
         return cls.from_dict(json.loads(s))
 
 
-# -------- Constants for copy scrubbing --------
+# ######## Constants for copy scrubbing ########
 _PRIMITIVES: Tuple[type, ...] = (str, bytes, int, float, bool, type(None))
 _RUNTIME_FIELDS: Sequence[str] = ("plx_id", "_plaxis_ref", "_g_i", "_g_o", "_cache", "_log")
 _ID_FIELDS: Sequence[str] = ("id", "_id", "uid", "_uid", "uuid", "_uuid", "serial", "_serial")
@@ -185,7 +185,7 @@ class PlaxisObject(SerializableBase):
         self._name: str = name
         self._comment: str = comment
 
-    # -------------------- copying with scrubbing --------------------
+    # #################### copying with scrubbing ####################
     def copy(
         self: T,
         *,
@@ -223,7 +223,7 @@ class PlaxisObject(SerializableBase):
             )
         return new_obj
 
-    # --------------------------- properties ---------------------------
+    # ########################### properties ###########################
     @property
     def id(self) -> str:
         """Client-side GUID."""

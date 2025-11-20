@@ -283,7 +283,7 @@ class PointLoad(_BaseLoad):
     @property
     def point(self) -> Point: return self._point
 
-    # ---- factory to create a dynamic counterpart with identical magnitudes ----
+    # #### factory to create a dynamic counterpart with identical magnitudes ####
     def create_dyn(
         self,
         name: str,
@@ -365,7 +365,7 @@ class LineLoad(_BaseLoad):
     @property
     def qz_end(self) -> float: return self._Fz_end
 
-    # ---- factory to create a dynamic counterpart with identical magnitudes ----
+    # #### factory to create a dynamic counterpart with identical magnitudes ####
     def create_dyn(
         self,
         name: str,
@@ -446,7 +446,7 @@ class SurfaceLoad(_BaseLoad):
     @property
     def sigmaz_end(self) -> float: return self._Fz_end
 
-    # ---- factory to create a dynamic counterpart with identical magnitudes ----
+    # #### factory to create a dynamic counterpart with identical magnitudes ####
     def create_dyn(
         self,
         name: str,

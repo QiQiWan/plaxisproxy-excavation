@@ -2,21 +2,21 @@ import json
 import uuid
 from typing import List, Dict, Any, Type, TypeVar, Sequence
 
-# --- Core & Components ---
+# ### Core & Components ###
 from .core.plaxisobject import SerializableBase, PlaxisObject
 from .components.projectinformation import ProjectInformation
 from .components.phase import Phase
 from .components.curvepoint import CurvePoint, NodePoint, StressPoint # Import curve point objects
 from .borehole import BoreholeSet
 
-# --- Structures ---
+# ### Structures ###
 from .structures.retainingwall import RetainingWall
 from .structures.anchor import Anchor
 from .structures.beam import Beam
 from .structures.well import Well
 from .structures.embeddedpile import EmbeddedPile
 
-# --- Loads ---
+# ### Loads ###
 from .structures.load import (
     PointLoad, LineLoad, SurfaceLoad, LoadMultiplier,
     DynPointLoad, DynLineLoad, DynSurfaceLoad, UniformSurfaceLoad,
@@ -25,7 +25,7 @@ from .structures.load import (
     FreeIncrementSurfaceLoad, PerpendicularSurfaceLoad
 )
 
-# --- Materials ---
+# ### Materials ###
 from .materials.soilmaterial import SoilMaterialFactory, SoilMaterialsType
 from .materials.platematerial import ElasticPlate, ElastoplasticPlate
 from .materials.anchormaterial import ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor
@@ -42,7 +42,7 @@ from enum import Enum
 # A generic TypeVar to properly type hint the from_dict class method.
 T = TypeVar('T', bound='FoundationPit')
 
-# --- StructureType Enum and helpers ---
+# ### StructureType Enum and helpers ###
 class StructureType(str, Enum):
     """
     Canonical structure bucket names used throughout the project.
@@ -220,6 +220,18 @@ class FoundationPit(SerializableBase):
 
         self.structures[key].append(structure_obj)
 
+    def update_structures(self, structure_type: Any, structure_list: List):
+        """
+        Update a structural component to the model, substitute the original structures. All phases will be reset to [], after update the structures.
+
+        Args:
+            structure_type (Any): The type of the structure (e.g., 'retaining_walls' or StructureType).
+            structure_list (Any): The list of the structure objects.
+        """
+        key = _normalize_structure_type(structure_type)
+        self.structures[key] = structure_list
+
+
     def add_load(self, load_type: str, load_obj: Any):
         """
         Adds a load to the model, preventing duplicates.
@@ -276,7 +288,13 @@ class FoundationPit(SerializableBase):
             
         self.monitors.append(point)
 
-    # ----------------- Footprint helpers: walls → closed polygon -----------------
+    def clear_all_phases(self):
+        """
+        Delete all of the phases in this object.
+        """
+        self.phases = []
+
+    # ################# Footprint helpers: walls → closed polygon #################
 
     @staticmethod
     def _extract_surface_points(surface: Any) -> List[Any]:
@@ -472,7 +490,7 @@ class FoundationPit(SerializableBase):
         Deserializes a dictionary to create a PlaxisFoundationPit object.
         This method is specifically tailored to handle the polymorphism within the model.
         """
-        # --- 1. Define Type Mappings ---
+        # ### 1. Define Type Mappings ###
         # This makes the deserialization logic cleaner and more extensible.
         material_mapping = {
             # Soil materials are handled by the factory; this maps other materials.
@@ -512,7 +530,7 @@ class FoundationPit(SerializableBase):
             "CurvePoint": CurvePoint # Fallback
         }
 
-        # --- 2. Instantiate the main object ---
+        # ### 2. Instantiate the main object ###
         # First, create ProjectInformation
         proj_info_data = data["project_information"]
         instance = cls(ProjectInformation.from_dict(proj_info_data))
@@ -520,7 +538,7 @@ class FoundationPit(SerializableBase):
         instance._id = data["_id"]
         instance._version = data.get("_version", "1.0.0")
 
-        # --- 3. Deserialize nested objects ---
+        # ### 3. Deserialize nested objects ###
         if "borehole_set" in data:
             instance.borehole_set = BoreholeSet.from_dict(data["borehole_set"])
 
