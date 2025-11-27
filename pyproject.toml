@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plaxisproxy_excavation"
-version = "1.0.2"                      # 交给 setuptools-scm
+version = "1.0.4"                      # 交给 setuptools-scm
 description = "Automation & simulation toolkit for excavation engineering (PLAXIS-driven)."
 readme = "README.md"
 requires-python = "~=3.9"
@@ -23,7 +23,12 @@ classifiers = [
 dependencies = [
   "shapely==2.0.7",
   "plxscripting>=1.0.4",
-  "pykrige>=1.7.3"
+  "pykrige>=1.7.3",
+  "numpy>=2.0.2",
+  "scipy>=1.13.1",
+  "matplotlib>=0.1.7",
+  "openpyxl>=3.1.5",
+  "pandas>=2.2.3"
 ]
 
 [project.optional-dependencies]
@@ -32,7 +37,7 @@ cli = ["typer>=0.12"]      # 如果你的 CLI 需要
 # private = []             # 不要把私有库真名写在公共依赖里（详见第三部分）
 
 [project.urls]
-# Homepage = "https://your.site/"
+Homepage = "https://www.eatrice.cn/post/PlaxisFrameworkOne/"
 Repository = "https://github.com/QiQiWan/plaxisproxy-excavation"
 
 [tool.setuptools]

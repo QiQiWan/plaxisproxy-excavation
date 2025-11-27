@@ -7,10 +7,6 @@ import time
 # from ..plaxisexcavation import *  # noqa: F401,F403  (keep existing usage)
 # Legacy facade (optional). Some codebases import PlaxisRunner.PlaxisMapper for DI.
 # Avoid hard failure if the old facade module is not present.
-try:
-    from .plaxismapper import PlaxisMapper  # type: ignore  # noqa: F401
-except Exception:
-    PlaxisMapper = None  # type: ignore
 from plxscripting.server import new_server, Server, PlxProxyFactory
 from ..geometry import *
 
@@ -72,7 +68,7 @@ class PlaxisRunner:
     utility class GeometryPlaxisMapper to improve separation of concerns.
     """
 
-    def __init__(self, input_port: int, password: str, host: str):
+    def __init__(self, password: str, host: str, input_port: int):
         """
         Initializes the runner with connection details for the Plaxis server.
 

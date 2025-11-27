@@ -26,7 +26,7 @@ class PlaxisOutput:
     - Create s_o/g_o via new_server(host, port, password)
     - Fetch results for the *currently bound* phase using g_o.getresults(...)
     """
-    def __init__(self, host: str, password: str, port: Optional[int] = None) -> None:
+    def __init__(self, password: str, host: str, port: Optional[int] = None) -> None:
         self.host = host
         self.password = password
         self.port: Optional[int] = port
@@ -54,8 +54,8 @@ class PlaxisOutput:
             self._current_phase_id = None
 
     @classmethod
-    def create_new_client(cls, HOST = "localhost", PORT = 10001, PASSWORD = "yS9f$TMP?$uQ@rW3") -> PlaxisOutput:
-        return cls(HOST, PASSWORD, PORT)
+    def create_new_client(cls, PASSWORD: str, HOST = "localhost", PORT = 10001) -> PlaxisOutput:
+        return cls(PASSWORD, HOST, PORT)
 
     # ########## resolvers ##########
 

@@ -36,7 +36,7 @@ def assert_plx_id_cleared(obj, name: str):
 def run_demo():
     # 连接 PLAXIS 远程
     passwd = 'yS9f$TMP?$uQ@rW3'
-    s_i, g_i = new_server('localhost', 10000, password=passwd)
+    s_i, g_i = new_server(passwd, 'localhost', 10000)
     s_i.new()  # 新工程
 
     # 1) 点：批量创建

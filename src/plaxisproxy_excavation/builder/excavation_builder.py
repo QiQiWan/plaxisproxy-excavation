@@ -3,10 +3,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from math import ceil
 from typing import Iterable, List, Dict, Any, Optional, Tuple, Union, Sequence
-from pathlib import Path
-from more_itertools import iterate
 import numpy as np
-import pandas as pd
 from ..utils import NeighborPointPicker
 
 
@@ -29,7 +26,7 @@ from ..plaxishelper.resulttypes import (
 
 """
 Excavation Engineering Automation — Builder
-###########################################
+
 This builder orchestrates mapping the FoundationPit model into PLAXIS
 via a PlaxisRunner adapter. It builds only the *initial design*; phase
 options/activations and per-phase water/well overrides are applied later.
@@ -154,12 +151,12 @@ class ExcavationBuilder:
     - Provide helpers to apply phases and update well parameters later.
     """
 
-    def __init__(self, excavation_object: FoundationPit, HOST="localhost", PORT=10000, PASSWORD="yS9f$TMP?$uQ@rW3") -> None:
+    def __init__(self, excavation_object: FoundationPit, PASSWORD: str, HOST="localhost", PORT=10000) -> None:
         # Always create our own runner instance using config; keep provided `app` for signature parity.
         self.PORT = PORT 
         self.PASSWORD = PASSWORD
         self.HOST = HOST
-        self.App: PlaxisRunner = PlaxisRunner(PORT, PASSWORD, HOST)
+        self.App: PlaxisRunner = PlaxisRunner(PASSWORD, HOST, PORT)
         self.excavation_object: FoundationPit = excavation_object
         self.Output: Optional[PlaxisOutput] = None
         self._calc_done: bool = False  # True after a successful builder.calculate()
@@ -173,16 +170,16 @@ class ExcavationBuilder:
         self._soil_field_cache: Dict[Tuple[str, str, bool], np.ndarray] = {}
 
     @classmethod
-    def create(cls, excavation_object: FoundationPit, HOST="localhost", PORT=10000, PASSWORD="yS9f$TMP?$uQ@rW3"):
-        return cls(excavation_object, HOST, PORT, PASSWORD)
+    def create(cls, excavation_object: FoundationPit, PASSWORD: str, HOST="localhost", PORT=10000):
+        return cls(excavation_object, PASSWORD, HOST, PORT)
     
     @staticmethod
-    def create_input_client(HOST="localhost", PORT=10000, PASSWORD="yS9f$TMP?$uQ@rW3") -> PlaxisRunner:
-        return PlaxisRunner(PORT, PASSWORD, HOST)
+    def create_input_client(PASSWORD: str, HOST="localhost", PORT=10000) -> PlaxisRunner:
+        return PlaxisRunner( PASSWORD, HOST, PORT)
     
     @staticmethod
-    def create_output_client(HOST="localhost", PORT=10001, PASSWORD="yS9f$TMP?$uQ@rW3") -> PlaxisOutput:
-        return PlaxisOutput(HOST, PASSWORD, PORT) 
+    def create_output_client(PASSWORD: str, HOST="localhost", PORT=10001) -> PlaxisOutput:
+        return PlaxisOutput(PASSWORD, HOST, PORT) 
 
     # #########################################################################
     # Lifecycle
