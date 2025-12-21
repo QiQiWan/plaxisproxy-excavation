@@ -114,7 +114,8 @@ def _set_many_props(plx_obj: Any, props: Dict[str, Any]) -> None:
         try:
             kv: List[Any] = []
             for k, v in filtered.items():
-                kv.extend([k, v])
+                if hasattr(plx_obj, k):
+                    kv.extend([k, v])
             if kv:
                 plx_obj.setproperties(*kv)  # type: ignore[misc]
                 return

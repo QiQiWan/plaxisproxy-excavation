@@ -221,6 +221,8 @@ class PlaxisObject(SerializableBase):
                 reset_ids=reset_ids,
                 exclude=set(exclude),
             )
+        if hasattr(new_obj, "id"):
+            setattr(new_obj, "id", str(uuid.uuid4()))
         return new_obj
 
     # ########################### properties ###########################
@@ -230,9 +232,9 @@ class PlaxisObject(SerializableBase):
         return self._id
     
     @id.setter
-    def id(self, id: str) -> None:
+    def id(self, value: str) -> None:
         """Set UUID Object."""
-        self._id = id
+        self._id = value
 
     @property
     def plx_id(self) -> Optional[object]:

@@ -11,6 +11,10 @@ from .soilmaterial import (
     SoilMaterialsType,
     MCGWType,
     MCGwSWCC,
+    InterfaceStiffness,
+    InterfaceStrength,
+    CrossPermeability,
+    K0Define,
 )
 
 # Import the classes and enumerations related to beam materials
@@ -59,7 +63,11 @@ __all__ = [
     "SoilMaterialsType",
     "MCGWType",
     "MCGwSWCC",
-    
+    "InterfaceStiffness",
+    "InterfaceStrength",
+    "CrossPermeability",
+    "K0Define",
+
     # Beam material
     "PreDefineSection",
     "CrossSectionType",

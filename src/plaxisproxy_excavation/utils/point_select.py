@@ -1,10 +1,20 @@
-from typing import List, Tuple, Optional, Iterable
+from typing import List, Tuple, Optional, Iterable, TYPE_CHECKING
 import math
 from random import Random
-import random
 
 import numpy as np
-from scipy.spatial import cKDTree
+
+if TYPE_CHECKING:
+    from scipy.spatial import cKDTree
+    USE_KDTREE = True
+else:
+    try:
+        from scipy.spatial import cKDTree
+        USE_KDTREE = True
+    except Exception as e:
+        cKDTree = None
+        USE_KDTREE = False
+        print("[Warning] Scipy is not installed. KDTree functionality allows for faster point cloud processing but is currently disabled.")
 
 from ..geometry import Point
 
@@ -64,7 +74,7 @@ class NeighborPointPicker:
         xs: Optional[Iterable[float]] = None,
         ys: Optional[Iterable[float]] = None,
         zs: Optional[Iterable[float]] = None,
-        use_kdtree: bool = False,
+        use_kdtree: bool = USE_KDTREE,
     ) -> None:
         """
         Create a NeighborPointPicker.

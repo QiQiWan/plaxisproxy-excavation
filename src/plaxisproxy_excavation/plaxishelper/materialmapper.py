@@ -36,9 +36,11 @@ from enum import Enum
 # Domain imports (adapt to your project structure)
 # =============================================================================
 # -- Soil
+from ..materials import BaseMaterial
+
 from ..materials.soilmaterial import (
     BaseSoilMaterial, MCMaterial, MCCMaterial, HSSMaterial,
-    SoilMaterialsType, RayleighInputMethod
+    SoilMaterialsType, RayleighInputMethod, InterfaceStiffness, InterfaceStrength, CrossPermeability, K0Define
 )
 # -- Plate
 from ..materials.platematerial import (
@@ -56,7 +58,7 @@ from ..materials.pilematerial import (
 )
 # -- Anchor
 from ..materials.anchormaterial import (
-    AnchorType,
+    AnchorType, BaseAnchor,
     ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor,
 )
 
@@ -160,6 +162,33 @@ def _log_delete(kind: str, mat_obj: Any, plx_obj: Any, ok: bool) -> None:
     status = "OK" if ok else "FAIL"
     print(_one_line(f"[PLAXIS 3D][DELETE][{kind}] name='{name}' type={mtype} plx_id={handle} result={status}"), flush=True)
 
+# ########################### property setting ############################
+def _set_many_props(plx_obj: Any, props: Dict[str, Any]) -> None:
+    """
+    Try setting properties in a robust way:
+    1) If obj has 'setproperties', use a single call with key/value sequence.
+    2) Else, fallback to setattr for each property name.
+    Skips None values.
+    """
+    if not props:
+        return
+    filtered: Dict[str, Any] = {k: v for k, v in props.items() if v is not None}
+
+    props_list = []
+    for k, v in filtered.items():
+        if isinstance(v, Enum):
+            v = v.value
+
+        if hasattr(plx_obj, k):
+            props_list.extend([k, v])
+    try:
+        plx_obj.setproperties(*props_list)
+    except: 
+        for k, v in filtered.items():
+            if isinstance(v, Enum):
+                v = v.value
+            setattr(plx_obj, k, v)
+
 # =============================================================================
 # SoilMaterialMapper
 # =============================================================================
@@ -197,29 +226,38 @@ class SoilMaterialMapper:
         # 1) Create raw PLAXIS material
         plx_mat = SoilMaterialMapper._create_raw_soil(g_i)
         plx_mat = _normalize_created_handle(plx_mat)
-
-        # 2) Common properties
-        common_props = SoilMaterialMapper._map_common_props(mat)
-        SoilMaterialMapper._set_many_props(plx_mat, common_props)
-
-        # 3) Model-specific properties
-        if isinstance(mat, MCMaterial):
-            SoilMaterialMapper._set_many_props(plx_mat, SoilMaterialMapper._map_mc_props(mat))
-        elif isinstance(mat, MCCMaterial):
-            SoilMaterialMapper._set_many_props(plx_mat, SoilMaterialMapper._map_mcc_props(mat))
-            SoilMaterialMapper._apply_mcc_interface(plx_mat, mat)
-        elif isinstance(mat, HSSMaterial):
-            SoilMaterialMapper._set_many_props(plx_mat, SoilMaterialMapper._map_hss_props(mat))
-        else:
-            raise TypeError(f"Unsupported soil material class: {type(mat).__name__}")
-
-        # 4) Optional groups
-        SoilMaterialMapper._apply_optional_groups(plx_mat, mat)
-
-        # 5) Backref & log
         _write_backref(mat, plx_mat)
+
+        # 2) Update properties
+        SoilMaterialMapper.update_material(mat)
+
+        # 3) log
         _log_create("Soil", mat, plx_mat)
         return plx_mat
+
+    @staticmethod
+    def update_material(mat: BaseSoilMaterial) -> Any:
+        """
+        Update the parameters of the Soil Material.
+        """
+        plx_mat = mat.plx_id
+
+        common_props = SoilMaterialMapper._map_common_props(mat)
+        _set_many_props(plx_mat, common_props)
+
+        if isinstance(mat, MCMaterial):
+            _set_many_props(plx_mat, SoilMaterialMapper._map_mc_props(mat))
+        elif isinstance(mat, MCCMaterial):
+            _set_many_props(plx_mat, SoilMaterialMapper._map_mcc_props(mat))
+            SoilMaterialMapper._apply_mcc_interface(plx_mat, mat)
+        elif isinstance(mat, HSSMaterial):
+            _set_many_props(plx_mat, SoilMaterialMapper._map_hss_props(mat))
+        else:
+            raise TypeError(f"Unsupported soil material class: {type(mat).__name__}")
+    
+        # 4) Optional groups
+        SoilMaterialMapper._apply_optional_groups(plx_mat, mat)
+        
 
     @staticmethod
     def delete_material(g_i: Any, mat_or_plx: Union[BaseSoilMaterial, Any]) -> bool:
@@ -256,43 +294,6 @@ class SoilMaterialMapper:
         """
         created = g_i.soilmat()
         return _normalize_created_handle(created)
-
-    # ########################### property setting ############################
-    @staticmethod
-    def _set_many_props(plx_obj: Any, props: Dict[str, Any]) -> None:
-        """
-        Try setting properties in a robust way:
-        1) If obj has 'setproperties', use a single call with key/value sequence.
-        2) Else, fallback to setattr for each property name.
-        Skips None values.
-        """
-        if not props:
-            return
-        filtered: Dict[str, Any] = {k: v for k, v in props.items() if v is not None}
-
-        for k, v in filtered.items():
-            if isinstance(v, Enum):
-                v = v.value
-            try:
-                setattr(plx_obj, k, v)
-                if k == "GwUseDefaults" and bool(getattr(plx_obj, k)) != v:
-                    # If GwUseDefaults was not updated yet, loop the assignment operation.
-                    while bool(getattr(plx_obj, k)) == v:
-                        setattr(plx_obj, k, v)
-                
-            except Exception:
-                if hasattr(plx_obj, "setproperties"):
-                    try:
-                        plx_obj.setproperty(k, v)
-                        continue
-                    except Exception:
-                        pass
-                if hasattr(plx_obj, "setproperty"):
-                    try:
-                        plx_obj.setproperty(k, v)
-                        continue
-                    except Exception:
-                        pass
 
     # ########################### helpers ####################################
     @staticmethod
@@ -465,7 +466,7 @@ class SoilMaterialMapper:
                 "VU":             getattr(mat, "_vu", None),
                 "PoreValue":      getattr(mat, "_water_value", None),
             }
-            SoilMaterialMapper._set_many_props(plx_mat, props)
+            _set_many_props(plx_mat, props)
 
         # 3) Under-ground water
         if getattr(mat, "_set_ug_water", False):
@@ -482,30 +483,51 @@ class SoilMaterialMapper:
                 "PermVertical":                     getattr(mat, "_kz", None),
                 "GwPsiUnsat":                       getattr(mat, "_Gw_Psiunsat", None),
             }
-            SoilMaterialMapper._set_many_props(plx_mat, props)
+            _set_many_props(plx_mat, props)
 
         # 4) Additional interface
         if getattr(mat, "_set_additional_interface", False):
             props = {
                 "InterfaceStiffnessDetermination":  getattr(mat, "_stiffness_define", None),
-                "InterfaceStrengthDef":             getattr(mat, "_strengthen_define", None),
-                "knInter":                          getattr(mat, "_k_n", None),
-                "ksInter":                          getattr(mat, "_k_s", None),
+                "InterfaceStrengthDetermination":   getattr(mat, "_strengthen_define", None),
                 "GapClosure":                       getattr(mat, "_gap_closure", None),
                 "CrossPermeability":                getattr(mat, "_cross_permeability", None),
                 "DrainageConductivity1":            getattr(mat, "_drainage_conduct1", None),
                 "DrainageConductivity2":            getattr(mat, "_drainage_conduct2", None),
             }
-            SoilMaterialMapper._set_many_props(plx_mat, props)
+            # Interface stiffness define
+            if getattr(mat, "_stiffness_define", None) == InterfaceStiffness.Direct:
+                props["knInter"] = getattr(mat, "_k_n", None)
+                props["ksInter"] = getattr(mat, "_k_s", None)
+
+            # Interface strength define
+            if getattr(mat, "_strengthen_define") == InterfaceStrength.Manual:
+                props["Rinter"] = getattr(mat, "_R_inter", None)
+            if getattr(mat, "_strengthen_define") == InterfaceStrength.Residual:
+                props["Rinter"] = getattr(mat, "_R_inter", None)
+                props["RinterResidual"] = getattr(mat, "_R_residual", None)
+
+            # CrossPermeability
+            if getattr(mat, "_cross_permeability", None) == CrossPermeability.Semi_Permeable:
+                props["HydraulicResistance"] = getattr(mat, "_hydraulic_resistance", None)
+            
+            _set_many_props(plx_mat, props)
 
         # 5) Additional initial K0
         if getattr(mat, "_set_additional_initial", False):
             props = {
-                "K0Determination": getattr(mat, "_K_0_define", None),
-                "K0Primary":           getattr(mat, "_K_0_x", None),
-                "K0Secondary":           getattr(mat, "_K_0_y", None),
+                "K0Determination":      getattr(mat, "_K_0_define", None),
+                "POP":                  getattr(mat, "_POP", None),
+                "OCR":                  getattr(mat, "_OCR", None),
             }
-            SoilMaterialMapper._set_many_props(plx_mat, props)
+            
+            if getattr(mat, "_K_0_define") == K0Define.Manual:
+                props["K0Primary"] = getattr(mat, "_K_0_x", None)
+            if getattr(mat, "_K_0_x_K_0_y") == False:
+                props["K0PrimaryIsK0Secondary"] = False
+                props["K0Secondary"] = getattr(mat, "_K_0_y", None)
+
+            _set_many_props(plx_mat, props)
 
 # =============================================================================
 # PlateMaterialMapper
@@ -533,11 +555,37 @@ class PlateMaterialMapper:
         if not isinstance(mat, (ElasticPlate, ElastoplasticPlate)):
             raise TypeError(f"Unsupported plate material class: {type(mat).__name__}")
 
-        PlateMaterialMapper._normalize_plate_object(mat)
-        PlateMaterialMapper._ensure_isotropic_G(mat)
-
+        # 1) Create raw PLAXIS material
         plx_mat = PlateMaterialMapper._create_raw_plate(g_i)
         plx_mat = _normalize_created_handle(plx_mat)
+        _write_backref(mat, plx_mat)
+
+        # 2) Update properties (common + elastic + elastoplastic + derived notes)
+        PlateMaterialMapper.update_material(mat)
+
+        # 3) log
+        _log_create("Plate", mat, plx_mat)
+        return plx_mat
+
+    @staticmethod
+    def update_material(mat: ElasticPlate) -> Any:
+        """
+        Update the parameters of the Plate Material.
+
+        Notes:
+        - Requires `mat.plx_id` already points to an existing PLAXIS plate material.
+        - Safe to call multiple times: will overwrite PLAXIS properties from `mat`.
+        """
+        if not isinstance(mat, (ElasticPlate, ElastoplasticPlate)):
+            raise TypeError(f"Unsupported plate material class: {type(mat).__name__}")
+
+        plx_mat = getattr(mat, "plx_id", None)
+        if plx_mat is None:
+            raise ValueError("PlateMaterialMapper.update_material() requires mat.plx_id to be set. Call create_material() first.")
+
+        # Normalize/repair in-memory object before mapping
+        PlateMaterialMapper._normalize_plate_object(mat)
+        PlateMaterialMapper._ensure_isotropic_G(mat)
 
         # Write properties
         PlateMaterialMapper._set_many_props(plx_mat, PlateMaterialMapper._map_common_props(mat))
@@ -545,11 +593,6 @@ class PlateMaterialMapper:
         if isinstance(mat, ElastoplasticPlate):
             PlateMaterialMapper._set_many_props(plx_mat, PlateMaterialMapper._map_elastoplastic_props(mat))
         PlateMaterialMapper._set_many_props(plx_mat, PlateMaterialMapper._map_derived_annotations(mat))
-
-        # Backref & log
-        _write_backref(mat, plx_mat)
-        _log_create("Plate", mat, plx_mat)
-        return plx_mat
 
     @staticmethod
     def delete_material(g_i: Any, mat_or_plx: Union[ElasticPlate, ElastoplasticPlate, Any]) -> bool:
@@ -776,8 +819,27 @@ class BeamMaterialMapper:
         if not isinstance(mat, (ElasticBeam, ElastoplasticBeam)):
             raise TypeError(f"Unsupported beam material class: {type(mat).__name__}")
 
+        # 1) Create raw PLAXIS material
         plx_mat = BeamMaterialMapper._create_raw_beam(g_i)
         plx_mat = _normalize_created_handle(plx_mat)
+        _write_backref(mat, plx_mat)
+
+        # 2) Update properties
+        BeamMaterialMapper.update_material(mat)
+
+        # 3) log
+        _log_create("Beam", mat, plx_mat)
+        return plx_mat
+
+    @staticmethod
+    def update_material(mat: Union[ElasticBeam, ElastoplasticBeam]) -> Any:
+        """Update the parameters of the Beam Material (requires mat.plx_id already set)."""
+        if not isinstance(mat, (ElasticBeam, ElastoplasticBeam)):
+            raise TypeError(f"Unsupported beam material class: {type(mat).__name__}")
+
+        plx_mat = getattr(mat, "plx_id", None)
+        if plx_mat is None:
+            raise ValueError("BeamMaterialMapper.update_material() requires mat.plx_id to be set. Call create_material() first.")
 
         BeamMaterialMapper._set_many_props(plx_mat, BeamMaterialMapper._map_common(mat))
         BeamMaterialMapper._set_many_props(plx_mat, BeamMaterialMapper._map_elastic_and_section(mat))
@@ -786,10 +848,6 @@ class BeamMaterialMapper:
             BeamMaterialMapper._set_many_props(plx_mat, BeamMaterialMapper._map_elastoplastic(mat))
 
         BeamMaterialMapper._maybe_apply_rayleigh(plx_mat, mat)
-
-        _write_backref(mat, plx_mat)
-        _log_create("Beam", mat, plx_mat)
-        return plx_mat
 
     @staticmethod
     def delete_material(g_i: Any, mat_or_plx: Union[ElasticBeam, ElastoplasticBeam, Any]) -> bool:
@@ -977,8 +1035,27 @@ class PileMaterialMapper:
         if not isinstance(mat, (ElasticPile, ElastoplasticPile)):
             raise TypeError(f"Unsupported pile material class: {type(mat).__name__}")
 
+        # 1) Create raw PLAXIS material
         plx_mat = PileMaterialMapper._create_raw_pile(g_i)
         plx_mat = _normalize_created_handle(plx_mat)
+        _write_backref(mat, plx_mat)
+
+        # 2) Update properties
+        PileMaterialMapper.update_material(mat)
+
+        # 3) log
+        _log_create("Pile", mat, plx_mat)
+        return plx_mat
+
+    @staticmethod
+    def update_material(mat: Union[ElasticPile, ElastoplasticPile]) -> Any:
+        """Update the parameters of the Pile Material (requires mat.plx_id already set)."""
+        if not isinstance(mat, (ElasticPile, ElastoplasticPile)):
+            raise TypeError(f"Unsupported pile material class: {type(mat).__name__}")
+
+        plx_mat = getattr(mat, "plx_id", None)
+        if plx_mat is None:
+            raise ValueError("PileMaterialMapper.update_material() requires mat.plx_id to be set. Call create_material() first.")
 
         PileMaterialMapper._set_many_props(plx_mat, PileMaterialMapper._map_common(mat))
         PileMaterialMapper._set_many_props(plx_mat, PileMaterialMapper._map_elastic_and_section(mat))
@@ -988,10 +1065,6 @@ class PileMaterialMapper:
             PileMaterialMapper._set_many_props(plx_mat, PileMaterialMapper._map_elastoplastic(mat))
 
         PileMaterialMapper._maybe_apply_rayleigh(plx_mat, mat)
-
-        _write_backref(mat, plx_mat)
-        _log_create("Pile", mat, plx_mat)
-        return plx_mat
 
     @staticmethod
     def delete_material(g_i: Any, mat_or_plx: Union[ElasticPile, ElastoplasticPile, Any]) -> bool:
@@ -1185,29 +1258,37 @@ class AnchorMaterialMapper:
     @staticmethod
     def create_material(
         g_i: Any,
-        mat: Union[ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor],
+        mat: Union[BaseMaterial, ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor],
     ) -> Any:
         if not isinstance(mat, (ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor)):
             raise TypeError(f"Unsupported anchor material class: {type(mat).__name__}")
 
         plx_mat = AnchorMaterialMapper._create_raw_anchor(g_i)
         plx_mat = _normalize_created_handle(plx_mat)
+        _write_backref(mat, plx_mat)
 
-        # Common
+        # Common properties
+        AnchorMaterialMapper.update_material(mat)
+        # log
+        _log_create("Anchor", mat, plx_mat)
+        return plx_mat
+
+    @staticmethod
+    def update_material(
+        mat: Union[BaseAnchor, ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor],
+    ) -> Any:
+        if not isinstance(mat, (ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor)):
+            raise TypeError(f"Unsupported anchor material class: {type(mat).__name__}")
+        
+        plx_mat = mat.plx_id
+
         AnchorMaterialMapper._set_many_props(plx_mat, AnchorMaterialMapper._map_common(mat))
-
         # Elastoplastic additions
         if isinstance(mat, ElastoplasticAnchor):
             AnchorMaterialMapper._set_many_props(plx_mat, AnchorMaterialMapper._map_elastoplastic(mat))
-
         # Residual additions
         if isinstance(mat, ElastoPlasticResidualAnchor):
             AnchorMaterialMapper._set_many_props(plx_mat, AnchorMaterialMapper._map_residual(mat))
-
-        # Backref & log
-        _write_backref(mat, plx_mat)
-        _log_create("Anchor", mat, plx_mat)
-        return plx_mat
 
     @staticmethod
     def delete_material(
@@ -1256,25 +1337,29 @@ class AnchorMaterialMapper:
         """Prefer per-key setproperties(k, v); fallback to setattr/setproperty; skip None."""
         if not props:
             return
+        new_props = props.copy()
+        props_list = []
         for k, v in props.items():
+            if isinstance(v, Enum):
+                v = Enum.value
             if v is None:
                 continue
-            try:
-                if hasattr(plx_obj, "setproperties"):
-                    plx_obj.setproperties(k, v)
-                    continue
-            except Exception:
-                pass
-            try:
-                setattr(plx_obj, k, v)
+            if hasattr(plx_obj, k):
+                props_list.extend([k, v])
                 continue
-            except Exception:
-                pass
-            try:
-                if hasattr(plx_obj, "setproperty"):
-                    plx_obj.setproperty(k, v)
-            except Exception:
-                pass
+            if k == "EA":
+                # Avoid ingoring on EA property.
+                props_list.extend([k, v])
+            del new_props[k]
+        try:
+            if hasattr(plx_obj, "setproperties"):
+                plx_obj.setproperties(*props_list)
+                return
+        except:
+            raise RuntimeError(f"Using setproperties method to set the properties of {str(plx_obj)} failed!")
+        for k, v in new_props.items():
+            setattr(plx_obj, k, v)
+
 
     # ########################### mappings ###################################
     @staticmethod

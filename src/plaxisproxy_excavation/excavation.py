@@ -46,7 +46,7 @@ T = TypeVar('T', bound='FoundationPit')
 class StructureType(str, Enum):
     """
     Canonical structure bucket names used throughout the project.
-    Values are set to the existing string keys to保持完全兼容.
+    Values are set to the existing string keys to completely compatible.
     """
     RETAINING_WALLS = "retaining_walls"
     ANCHORS = "anchors"
@@ -54,6 +54,17 @@ class StructureType(str, Enum):
     WELLS = "wells"
     EMBEDDED_PILES = "embedded_piles"
     SOIL_BLOCKS = "soil_blocks"
+
+class MaterialType(Enum):
+    """
+    Canonical material bucket names used throughout the project.
+    Values are set to the existing string keys to completely compatible.
+    """
+    SOILMATERIAL = "soil_materials"
+    PLATEMATERIAL = "plate_materials"
+    ANCHORMATERIAL = "anchor_materials"
+    BEAMMATERIAL = "beam_materials"
+    PILEMATERIAL = "pile_materials"
 
 # Allowed canonical keys for quick membership checks
 _STRUCTURE_ALLOWED = {t.value for t in StructureType}
@@ -116,6 +127,7 @@ class FoundationPit(SerializableBase):
         "_version",
         "project_information",
         "_excava_depth",
+        "_excava_levels",
         "borehole_set",
         "materials",
         "structures",
@@ -136,6 +148,7 @@ class FoundationPit(SerializableBase):
         self.project_information = project_information
         self.borehole_set: BoreholeSet = BoreholeSet(boreholes=[])
         self._excava_depth = 0.0
+        self._excava_levels: List[float] = []
         # Material library: managed in categories using a dictionary
         self.materials: Dict[str, List[Any]] = {
             "soil_materials": [],
@@ -171,6 +184,18 @@ class FoundationPit(SerializableBase):
             value = -value
         print(f"[INFO] Set {value} m as the depth of the excavation.")
         self._excava_depth = value
+    
+    @property
+    def excava_levels(self):
+        return self._excava_levels
+
+    @excava_levels.setter
+    def excava_levels(self, value):
+        if isinstance(value, list):
+            self._excava_levels = value
+            print(f"[INFO] Set {value} as the excavation levels.")
+        else:
+            raise ValueError(f"[ERROR] The levels {value} must be List[float]!")
 
     def _is_duplicate(self, new_obj: PlaxisObject, existing_list: Sequence[PlaxisObject]) -> bool:
         """

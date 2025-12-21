@@ -42,6 +42,18 @@ from .phasemapper import PhaseMapper
 from .plaxisrunner import PlaxisRunner
 from .plaxisoutput import PlaxisOutput
 
+from .resulttypes import (
+    Beam,
+    EmbeddedBeam,
+    FixedEndAnchor,
+    NodeToNodeAnchor,
+    Plate,
+    RigidBody,
+    Soil,
+    SurfaceLoad,
+    Well,
+)
+
 __all__ = [
     # Geometry / project / boreholes
     "GeometryMapper",
@@ -72,12 +84,13 @@ __all__ = [
     "PlaxisRunner",
     # Output
     "PlaxisOutput",
-    "ResultDomain",
-    "ResultLocation",
-    "SoilResult",
-    "PlateResult",
-    "BeamResult",
-    "EmbeddedBeamResult",
-    "AnchorResult",
-    "WellResult"
+    "Beam",
+    "EmbeddedBeam",
+    "FixedEndAnchor",
+    "NodeToNodeAnchor",
+    "Plate",
+    "RigidBody",
+    "Soil",
+    "SurfaceLoad",
+    "Well",
 ]

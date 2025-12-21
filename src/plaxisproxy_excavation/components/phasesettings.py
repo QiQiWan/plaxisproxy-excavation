@@ -328,7 +328,7 @@ class StageSettingsBase:
 class PlasticStageSettings(StageSettingsBase):
     calc_type: CalcType = CalcType.Plastic
     load_type: LoadType = LoadType.StageConstruction
-    pore_cal_type: PoreCalType = PoreCalType.LastStage
+    pore_cal_type: PoreCalType = PoreCalType.Phreatic
 
     # Stage-specific defaults
     ΣM_stage: float = 0.5

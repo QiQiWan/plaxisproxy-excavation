@@ -36,12 +36,12 @@ from .phasemapper import PhaseMapper
 
 # Domain class imports for typ`e hints / isinstance dispatch
 from ..borehole import BoreholeSet
-from ..materials import BaseSoilMaterial
+from ..materials import BaseMaterial, BaseSoilMaterial
 from ..materials import ElasticPlate, ElastoplasticPlate
 from ..materials import ElasticBeam, ElastoplasticBeam
 from ..materials import ElasticPile, ElastoplasticPile
 from ..materials import (
-    ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor,
+    BaseAnchor, ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor,
 )
 from ..structures import RetainingWall
 from ..structures import Beam
@@ -274,6 +274,22 @@ class PlaxisRunner:
             return PileMaterialMapper.create_material(self.g_i, mat)   # type: ignore[arg-type]
         if isinstance(mat, (ElasticAnchor, ElastoplasticAnchor, ElastoPlasticResidualAnchor)):
             return AnchorMaterialMapper.create_material(self.g_i, mat) # type: ignore[arg-type]
+        raise TypeError(f"Unsupported material type: {type(mat).__name__}")
+
+    def update_material(self, mat: BaseMaterial) -> Any:
+        if self.g_i is None:
+            raise RuntimeError("Not connected: g_i is None.")
+        if isinstance(mat, BaseSoilMaterial):
+            return SoilMaterialMapper.update_material(mat)
+        if isinstance(mat, ElasticPlate):
+            return PlateMaterialMapper.update_material(mat)
+        if isinstance(mat, ElasticBeam):
+            return BeamMaterialMapper.update_material(mat)
+        if isinstance(mat, ElasticPile):
+            return PileMaterialMapper.update_material(mat)
+        if isinstance(mat, BaseAnchor):
+            return AnchorMaterialMapper.update_material(mat)
+
         raise TypeError(f"Unsupported material type: {type(mat).__name__}")
 
     def delete_material(self, mat_or_handle: Any) -> bool:

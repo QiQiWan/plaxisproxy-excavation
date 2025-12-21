@@ -90,6 +90,7 @@ class PlaxisOutput:
         self.close()
         self.connect_via_input(g_i, phase)
 
+    #region GetResults
     # ########## resulttypes resolution ##########
 
     def _resolve_leaf(self, leaf: Enum) -> object:
@@ -337,3 +338,5 @@ class PlaxisOutput:
             return float(val)
         except Exception:
             return val
+    
+    #endregion

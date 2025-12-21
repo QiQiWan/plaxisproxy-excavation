@@ -32,6 +32,23 @@ class RayleighInputMethod(Enum):
     Direct         = "Direct"
     SDOFEquivalent = "SDOFEquivalent"
 
+class InterfaceStrength(Enum):
+    Rigid = "Rigid"
+    Manual = "Manual"
+    Residual = "Manual with residual strength"
+    
+class CrossPermeability(Enum):
+    Impermeable = "Impermeable"
+    Semi_Permeable = "Semi-permeable"
+    Fully_Permeable = "Fully permeable"
+
+class InterfaceStiffness(Enum):
+    Derived = "Derived"
+    Direct = "Direct"
+
+class K0Define(Enum):
+    Automatic = "Automatic"
+    Manual = "Manual"
 
 # ###########################################################################
 # Base class and concrete soil material classes
@@ -105,19 +122,22 @@ class BaseSoilMaterial(BaseMaterial):
         self._kz: Optional[float] = None
         self._Gw_Psiunsat: Optional[float] = None
 
-        self._stiffness_define: Any = None
-        self._strengthen_define: Any = None
+        self._stiffness_define: InterfaceStiffness = InterfaceStiffness.Derived
+        self._strengthen_define: InterfaceStrength = InterfaceStrength.Rigid
         self._k_n: Optional[float] = None
         self._k_s: Optional[float] = None
-        self._R_inter: float = 0.67
-        self._gap_closure: Any = None
-        self._cross_permeability: Any = None
-        self._drainage_conduct1: Any = None
-        self._drainage_conduct2: Any = None
+        self._R_inter: float = 1
+        self._gap_closure: bool = True
+        self._cross_permeability: CrossPermeability = CrossPermeability.Impermeable
+        self._drainage_conduct1: Optional[float] = 0.0
+        self._drainage_conduct2: Optional[float] = 0.0
 
-        self._K_0_define: Any = None
-        self._K_0_x: Optional[float] = None
-        self._K_0_y: Optional[float] = None
+        self._K_0_define: K0Define = K0Define.Automatic
+        self._K_0_x: float = 0.5
+        self._K_0_y: float = 0.5
+        self._K_0_x_K_0_y: bool = True
+        self._POP: float = 0.0
+        self._OCR: float = 1.0
 
     # ################ Optional groups consumed by the mapper #################
 
@@ -170,15 +190,17 @@ class BaseSoilMaterial(BaseMaterial):
 
     def set_additional_interface_parameters(
         self,
-        stiffness_define: Any,
-        strengthen_define: Any,
-        k_n: float,
-        k_s: float,
-        R_inter: float,
-        gap_closure: Any,
-        cross_permeability: Any,
-        drainage_conduct1: Any,
-        drainage_conduct2: Any,
+        stiffness_define = InterfaceStiffness.Derived,
+        strengthen_define = InterfaceStrength.Rigid,
+        k_n: float = 5e4,
+        k_s: float = 2.5e5,
+        R_inter = 1.0,
+        R_residual = 1.0,
+        gap_closure = True,
+        cross_permeability = CrossPermeability.Impermeable,
+        HydraulicResistance = 1.0,
+        drainage_conduct1 = 0.0,
+        drainage_conduct2 = 0.0,
     ) -> None:
         """
         Configure additional interface parameters (forwarded by the mapper).
@@ -188,21 +210,27 @@ class BaseSoilMaterial(BaseMaterial):
         self._set_additional_interface = True
         self._stiffness_define = stiffness_define
         self._strengthen_define = strengthen_define
-        self._k_n, self._k_s = float(k_n), float(k_s)
-        self._R_inter = float(R_inter)
+        self._k_n, self._k_s = k_n, k_s
+        self._R_inter = R_inter
+        self._R_residual = R_residual
         self._gap_closure = gap_closure
         self._cross_permeability = cross_permeability
+        self._hydraulic_resistance = HydraulicResistance
         self._drainage_conduct1 = drainage_conduct1
         self._drainage_conduct2 = drainage_conduct2
 
     def set_additional_initial_parameters(
-        self, K_0_define: Any, K_0_x: float = 0.5, K_0_y: float = 0.5
+        self, K_0_define = K0Define.Manual, K_0_x: float = 0.5, K_0_y: float = 0.5,
+        K0PrimaryIsK0Secondary = True, POP = 0.0, OCR = 1.0
     ) -> None:
         """Configure additional K0 parameters (forwarded by the mapper)."""
         self._set_additional_initial = True
         self._K_0_define = K_0_define
         self._K_0_x = float(K_0_x)
         self._K_0_y = float(K_0_y)
+        self._K_0_x_K_0_y = K0PrimaryIsK0Secondary
+        self._POP = POP
+        self._OCR = OCR
 
     # ########################## Representation & props #######################
 

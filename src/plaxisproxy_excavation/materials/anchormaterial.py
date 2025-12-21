@@ -1,6 +1,8 @@
 from __future__ import annotations
 from typing import Optional, Union
 from enum import Enum
+
+from .basematerial import BaseMaterial
 from ..core.plaxisobject import PlaxisObject
 
 class AnchorType(Enum):
@@ -15,7 +17,7 @@ def _normalize_anchor_type(t: Union[str, AnchorType]) -> str:
     return str(t)
 
 # =============================== BaseAnchor ==================================
-class BaseAnchor(PlaxisObject):
+class BaseAnchor(BaseMaterial):
     """
     Base class for all anchor materials. Holds common fields:
 
@@ -37,7 +39,7 @@ class BaseAnchor(PlaxisObject):
         F_res_tens: Optional[float] = None,
         F_res_comp: Optional[float] = None,
     ) -> None:
-        super().__init__(name, comment)
+        super().__init__(name=name, type=BaseAnchor, comment="", E=20e8, nu=0.3, gamma=25)
         self._type = type
         self._EA = float(EA)
         self._F_max_tens = None if F_max_tens is None else float(F_max_tens)

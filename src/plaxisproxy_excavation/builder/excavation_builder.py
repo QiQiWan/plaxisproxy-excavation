@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from math import ceil
-from typing import Iterable, List, Dict, Any, Optional, Tuple, Union, Sequence
+from typing import Iterable, List, Dict, Any, Optional, Tuple, Union, Sequence, Type
 import numpy as np
 from ..utils import NeighborPointPicker
 
@@ -13,6 +13,8 @@ from ..structures.basestructure import BaseStructure
 from ..structures.soilblock import SoilBlock
 from ..geometry import Polygon3D
 from ..components import Mesh, Phase
+from ..materials import BaseMaterial
+
 
 from ..plaxishelper.plaxisoutput import PlaxisOutput
 from ..plaxishelper.resulttypes import (
@@ -451,7 +453,11 @@ class ExcavationBuilder:
         walls = []
         if pit is not None and isinstance(getattr(pit, "structures", None), dict):
             walls = pit.structures.get(StructureType.RETAINING_WALLS.value, []) or []
-        return self._make_bottom_polygon3d(walls, z_value, tol=tol)
+        
+        poly = self._make_bottom_polygon3d(walls, z_value, tol=tol)
+        if poly is None:
+            raise ValueError("[build] Warning: could not derive bottom polygon from walls (need >=3 points).")
+        return poly
 
     def get_wall_footprint_xy(self, z_value: float = 0.0, tol: float = 1e-6):
         """
@@ -488,7 +494,7 @@ class ExcavationBuilder:
         Returns:
         Polygon3D or None if outline cannot be reconstructed.
         """
-        from src.plaxisproxy_excavation.geometry import Point, PointSet, Line3D, Polygon3D
+        from ..geometry import Point, PointSet, Line3D, Polygon3D
 
         segs = _segments_from_wall_surfaces(walls, tol=tol)
         if not segs:
@@ -644,15 +650,22 @@ class ExcavationBuilder:
         try:
             excava_depth = float(getattr(pit, "excava_depth", 0.0))
             bottom_poly = self.get_wall_footprint_polygon3d(z_value=excava_depth, tol=1e-6)
-            if bottom_poly is None:
-                print("[build] Warning: could not derive bottom polygon from walls (need >=3 points).")
-                return False
             app.create_surface(bottom_poly, name="ExcavationBottom", auto_close=True)
             print(f"[build] Bottom surface created at z={excava_depth:.3f} using wall-enclosed polygon.")
-            return True
+        
         except Exception as e:
-            print(f"[build] Warning: bottom polygon creation failed: {e}")
-            return False
+            raise RuntimeError(f"[build] Warning: bottom polygon creation failed: {e}")
+        
+        excava_levels = getattr(pit, "excava_levels", None)
+        if excava_levels and isinstance(excava_levels, list):
+            for l in excava_levels:
+                l = -abs(l)
+                l_poly = self.get_wall_footprint_polygon3d(z_value=l, tol=1e-6)
+                app.create_surface(l_poly, name=f"ExcavationLevel{int(l)}", auto_close=True)
+                print(f"[build] level surface created at z={l:.3f} using wall-enclosed polygon.")
+            
+        return True
+
 
     def build_beams(self) -> int:
         pit = self.excavation_object
@@ -849,6 +862,12 @@ class ExcavationBuilder:
             "phases_created": phases_created,
             "meshed": meshed,
         }
+
+    def update_material(self, mat: BaseMaterial) -> Any:
+        """
+        Update the material parameters.
+        """
+        return self.App.update_material(mat)
 
     # ================= Keep all your original non-build helpers =============
     # (apply_phases, soil block utilities, Output helpers, save/load, results, etc.)
