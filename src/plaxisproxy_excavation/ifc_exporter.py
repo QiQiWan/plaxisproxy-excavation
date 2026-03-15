@@ -1,26 +1,24 @@
 """
-ifc_exporter.py
-===============
-IFC 导出模块 — 将 plaxisproxy_excavation 的 FoundationPit 对象
-规范化并导出为 IFC 4 文件。
+ifc_exporter.py  v2.0
+=====================
+将 plaxisproxy_excavation 的 FoundationPit 对象导出为规范 IFC 4 文件。
+
+v2.0 改动（相对 v1.0）：
+  - RetainingWall  → 真实厚度六面体（沿法向偏移 plate_type.d）
+  - Beam           → 矩形/正方形截面实体柱（ExtrudedAreaSolid）
+  - Anchor         → 圆截面扫掠体（SweptDiskSolid，半径从材料推断）
+  - EmbeddedPile   → 圆截面扫掠体（直径从 pile_type.diameter 读取）
+  - SoilBlock      → IfcGeographicElement（保留）
+  - Borehole       → IfcGeographicElement + 完整地层属性集
+  - 完整元数据：IfcSite 含经纬度/地址，IfcBuilding 含项目信息
+  - 每个构件附带详细 IfcPropertySet
 
 依赖：
-    pip install ifcopenshell   # 或使用 conda-forge 版本
+    pip install ifcopenshell
 
-支持的对象映射：
-    RetainingWall   → IfcWall          (含 IfcMaterial)
-    Anchor          → IfcTendon        (含 IfcMaterial)
-    Beam            → IfcBeam          (含 IfcMaterial)
-    EmbeddedPile    → IfcPile          (含 IfcMaterial)
-    SoilBlock       → IfcGeographicElement (含 IfcMaterial)
-    Borehole        → IfcBorehole      (含 IfcMaterial)
-    FoundationPit   → IfcSite + IfcBuilding + IfcBuildingStorey
-
-用法示例：
-    from plaxisproxy_excavation.ifc_exporter import IFCExporter
-
-    exporter = IFCExporter(pit)
-    exporter.export("output.ifc")
+用法：
+    from plaxisproxy_excavation.ifc_exporter import IFCExporter, export_to_ifc
+    export_to_ifc(pit, "output.ifc")
 """
 
 from __future__ import annotations
@@ -28,18 +26,15 @@ from __future__ import annotations
 import math
 import uuid
 import datetime
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-# ── 可选依赖 ──────────────────────────────────────────────────────────────────
 try:
     import ifcopenshell
     import ifcopenshell.api
-    import ifcopenshell.util.element
     _IFC_AVAILABLE = True
 except ImportError:
     _IFC_AVAILABLE = False
 
-# ── 项目内部导入 ───────────────────────────────────────────────────────────────
 from .excavation import FoundationPit, StructureType
 from .geometry import Point, Line3D, Polygon3D, PointSet
 from .structures.retainingwall import RetainingWall
@@ -51,156 +46,298 @@ from .borehole import Borehole, BoreholeLayer
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 内部工具函数
+# 基础工具
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _require_ifcopenshell() -> None:
     if not _IFC_AVAILABLE:
         raise ImportError(
-            "ifcopenshell is required for IFC export.\n"
-            "Install it with:  pip install ifcopenshell\n"
-            "or via conda:     conda install -c conda-forge ifcopenshell"
+            "ifcopenshell is required.\n"
+            "Install: pip install ifcopenshell"
         )
 
 
 def _new_guid() -> str:
-    """生成 IFC 兼容的 22 位 GlobalId（Base64 压缩 UUID）。"""
     return ifcopenshell.guid.compress(uuid.uuid4().hex)
 
 
-def _ifc_cartesian_point(ifc_file, x: float, y: float, z: float = 0.0):
-    """创建 IfcCartesianPoint。"""
-    return ifc_file.createIfcCartesianPoint((float(x), float(y), float(z)))
+def _pt(f, x, y, z=0.0):
+    return f.createIfcCartesianPoint((float(x), float(y), float(z)))
 
 
-def _ifc_direction(ifc_file, dx: float, dy: float, dz: float = 0.0):
-    return ifc_file.createIfcDirection((float(dx), float(dy), float(dz)))
+def _dir(f, dx, dy, dz=0.0):
+    return f.createIfcDirection((float(dx), float(dy), float(dz)))
 
 
-def _ifc_axis2placement3d(ifc_file, origin: Tuple[float, float, float] = (0, 0, 0),
-                           axis: Tuple[float, float, float] = (0, 0, 1),
-                           ref_dir: Tuple[float, float, float] = (1, 0, 0)):
-    """创建 IfcAxis2Placement3D。"""
-    pt = _ifc_cartesian_point(ifc_file, *origin)
-    ax = _ifc_direction(ifc_file, *axis)
-    rd = _ifc_direction(ifc_file, *ref_dir)
-    return ifc_file.createIfcAxis2Placement3D(pt, ax, rd)
+def _axis2p3d(f, origin=(0, 0, 0), axis=(0, 0, 1), ref=(1, 0, 0)):
+    return f.createIfcAxis2Placement3D(
+        _pt(f, *origin), _dir(f, *axis), _dir(f, *ref)
+    )
 
 
-def _ifc_local_placement(ifc_file, relative_to=None,
-                          origin=(0, 0, 0), axis=(0, 0, 1), ref_dir=(1, 0, 0)):
-    placement = _ifc_axis2placement3d(ifc_file, origin, axis, ref_dir)
-    return ifc_file.createIfcLocalPlacement(relative_to, placement)
+def _local_placement(f, relative_to=None, origin=(0, 0, 0),
+                     axis=(0, 0, 1), ref=(1, 0, 0)):
+    return f.createIfcLocalPlacement(relative_to, _axis2p3d(f, origin, axis, ref))
 
 
-def _polygon3d_to_ifc_face(ifc_file, poly: Polygon3D):
+def _shape_rep(f, ctx, items, rep_id="Body", rep_type="SweptSolid"):
+    return f.createIfcShapeRepresentation(ctx, rep_id, rep_type, items)
+
+
+def _product_shape(f, reps):
+    return f.createIfcProductDefinitionShape(None, None, reps)
+
+
+def _material(f, name: str):
+    return f.createIfcMaterial(name)
+
+
+def _assign_material(f, element, mat):
+    f.createIfcRelAssociatesMaterial(
+        _new_guid(), None, None, None, [element], mat
+    )
+
+
+def _pset(f, owner, element, pset_name: str, props: Dict[str, str]):
+    """为构件添加 IfcPropertySet。"""
+    try:
+        ifc_props = [
+            f.createIfcPropertySingleValue(k, None, f.createIfcLabel(str(v)), None)
+            for k, v in props.items()
+        ]
+        ps = f.createIfcPropertySet(_new_guid(), owner, pset_name, None, ifc_props)
+        f.createIfcRelDefinesByProperties(
+            _new_guid(), owner, None, None, [element], ps
+        )
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 几何构建工具
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _vec3_sub(a: Point, b: Point) -> Tuple[float, float, float]:
+    return (a.x - b.x, a.y - b.y, a.z - b.z)
+
+
+def _vec3_cross(u, v) -> Tuple[float, float, float]:
+    return (
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    )
+
+
+def _vec3_norm(u) -> float:
+    return math.sqrt(u[0] ** 2 + u[1] ** 2 + u[2] ** 2)
+
+
+def _vec3_normalize(u) -> Tuple[float, float, float]:
+    n = _vec3_norm(u)
+    if n < 1e-12:
+        return (0.0, 0.0, 1.0)
+    return (u[0] / n, u[1] / n, u[2] / n)
+
+
+def _vec3_scale(u, s) -> Tuple[float, float, float]:
+    return (u[0] * s, u[1] * s, u[2] * s)
+
+
+def _vec3_add(u, v) -> Tuple[float, float, float]:
+    return (u[0] + v[0], u[1] + v[1], u[2] + v[2])
+
+
+def _polygon3d_normal(pts: List[Point]) -> Tuple[float, float, float]:
+    """计算多边形法向量（Newell 法，适用于任意平面多边形）。"""
+    n = len(pts)
+    nx = ny = nz = 0.0
+    for i in range(n):
+        cur = pts[i]
+        nxt = pts[(i + 1) % n]
+        nx += (cur.y - nxt.y) * (cur.z + nxt.z)
+        ny += (cur.z - nxt.z) * (cur.x + nxt.x)
+        nz += (cur.x - nxt.x) * (cur.y + nxt.y)
+    return _vec3_normalize((nx, ny, nz))
+
+
+def _build_wall_solid(f, ctx, pts: List[Point], thickness: float):
     """
-    将 Polygon3D 的外环转换为 IfcFace（用于 IfcFacetedBrep）。
-    仅使用外环，忽略内孔（基坑支护结构通常无孔）。
+    将挡土墙面（任意平面四边形/多边形）沿法向偏移 thickness，
+    构建真实厚度的 IfcFacetedBrep 六面体。
+
+    pts: 外环顶点（不含闭合重复点），至少 3 个。
+    thickness: 板厚（m），沿法向向内偏移。
     """
-    pts = poly.outer_ring.get_points()
-    # 去掉闭合重复点
-    if len(pts) >= 2 and pts[0] == pts[-1]:
-        pts = pts[:-1]
-    if len(pts) < 3:
+    n = len(pts)
+    if n < 3:
         return None
 
-    ifc_pts = [_ifc_cartesian_point(ifc_file, p.x, p.y, p.z) for p in pts]
-    poly_loop = ifc_file.createIfcPolyLoop(ifc_pts)
-    face_bound = ifc_file.createIfcFaceOuterBound(poly_loop, True)
-    return ifc_file.createIfcFace([face_bound])
+    normal = _polygon3d_normal(pts)
+    offset = _vec3_scale(normal, thickness)
+
+    # 前面（原始面）和后面（偏移面）
+    front = pts
+    back = [
+        Point(p.x + offset[0], p.y + offset[1], p.z + offset[2])
+        for p in pts
+    ]
+
+    def make_face(ring_pts, reverse=False):
+        if reverse:
+            ring_pts = list(reversed(ring_pts))
+        ifc_pts = [_pt(f, p.x, p.y, p.z) for p in ring_pts]
+        loop = f.createIfcPolyLoop(ifc_pts)
+        bound = f.createIfcFaceOuterBound(loop, True)
+        return f.createIfcFace([bound])
+
+    faces = []
+    # 前面（法向朝外）
+    faces.append(make_face(front, reverse=False))
+    # 后面（法向朝外，需反转）
+    faces.append(make_face(back, reverse=True))
+    # 四条侧面
+    for i in range(n):
+        j = (i + 1) % n
+        side_pts = [front[i], front[j], back[j], back[i]]
+        faces.append(make_face(side_pts))
+
+    shell = f.createIfcClosedShell(faces)
+    brep = f.createIfcFacetedBrep(shell)
+    return _shape_rep(f, ctx, [brep], "Body", "Brep")
 
 
-def _polygon3d_to_brep(ifc_file, poly: Polygon3D):
-    """将单个 Polygon3D 面转换为 IfcFacetedBrep（单面体）。"""
-    face = _polygon3d_to_ifc_face(ifc_file, poly)
-    if face is None:
+def _build_beam_solid(f, ctx, p_start: Point, p_end: Point,
+                      width: float, height: float):
+    """
+    沿梁轴线方向生成矩形截面实体（IfcExtrudedAreaSolid）。
+
+    坐标系：
+      - 挤出方向 = 梁轴向单位向量
+      - 截面局部 X = 与轴向垂直的水平方向
+      - 截面局部 Y = 与轴向和局部X都垂直的方向
+    截面：以轴线起点为原点，width × height 矩形，居中。
+    """
+    dx = p_end.x - p_start.x
+    dy = p_end.y - p_start.y
+    dz = p_end.z - p_start.z
+    length = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if length < 1e-9:
         return None
-    closed_shell = ifc_file.createIfcClosedShell([face])
-    return ifc_file.createIfcFacetedBrep(closed_shell)
+
+    # 挤出方向（局部 Z）
+    extrude_dir = (dx / length, dy / length, dz / length)
+
+    # 局部 X：与挤出方向垂直的水平方向
+    if abs(extrude_dir[2]) < 0.9:
+        # 轴线不接近竖直：用全局 Z 叉乘轴向
+        local_x = _vec3_normalize(_vec3_cross((0, 0, 1), extrude_dir))
+    else:
+        # 轴线接近竖直：用全局 X 叉乘轴向
+        local_x = _vec3_normalize(_vec3_cross((1, 0, 0), extrude_dir))
+
+    # 局部 Y = 挤出方向 × 局部X
+    local_y = _vec3_normalize(_vec3_cross(extrude_dir, local_x))
+
+    # 截面矩形（居中，在局部 XY 平面内）
+    hw = width / 2.0
+    hh = height / 2.0
+    rect_pts_2d = [
+        f.createIfcCartesianPoint((-hw, -hh)),
+        f.createIfcCartesianPoint(( hw, -hh)),
+        f.createIfcCartesianPoint(( hw,  hh)),
+        f.createIfcCartesianPoint((-hw,  hh)),
+    ]
+    polyline_2d = f.createIfcPolyline(
+        rect_pts_2d + [rect_pts_2d[0]]  # 闭合
+    )
+    profile = f.createIfcArbitraryClosedProfileDef("AREA", None, polyline_2d)
+
+    # 截面坐标系（放置在 p_start，局部 X/Y 如上）
+    origin_3d = _pt(f, p_start.x, p_start.y, p_start.z)
+    axis_3d = _dir(f, *extrude_dir)   # 局部 Z（挤出方向）
+    ref_3d = _dir(f, *local_x)        # 局部 X
+    placement_3d = f.createIfcAxis2Placement3D(origin_3d, axis_3d, ref_3d)
+
+    extrude_vec = _dir(f, 0.0, 0.0, 1.0)  # 在截面局部坐标系中沿 Z 挤出
+    solid = f.createIfcExtrudedAreaSolid(profile, placement_3d, extrude_vec, length)
+    return _shape_rep(f, ctx, [solid], "Body", "SweptSolid")
 
 
-def _retaining_wall_to_brep(ifc_file, wall: RetainingWall):
+def _build_circle_swept(f, ctx, p_start: Point, p_end: Point, radius: float):
+    """圆截面扫掠体（锚杆/桩）。"""
+    ifc_pts = [_pt(f, p_start.x, p_start.y, p_start.z),
+               _pt(f, p_end.x, p_end.y, p_end.z)]
+    polyline = f.createIfcPolyline(ifc_pts)
+    solid = f.createIfcSweptDiskSolid(polyline, float(radius), None, 0.0, 1.0)
+    return _shape_rep(f, ctx, [solid], "Body", "SweptSolid")
+
+
+def _get_beam_section(obj: Any) -> Tuple[float, float]:
     """
-    将 RetainingWall 的 Polygon3D 面转换为 IfcFacetedBrep。
-    如果面是四边形（典型挡土墙），生成完整的六面体（拉伸体）。
-    否则退化为单面 Brep。
+    从 ElasticBeam 材料中推断矩形截面尺寸 (width, height)。
+    优先读 width/height，其次 diameter（正方形），最后默认 0.3×0.3。
     """
-    surface: Polygon3D = wall.surface
-    pts = surface.outer_ring.get_points()
-    if len(pts) >= 2 and pts[0] == pts[-1]:
-        pts = pts[:-1]
+    mat = getattr(obj, "_beam_type", None) or getattr(obj, "beam_type", None)
+    if mat is None:
+        return 0.3, 0.3
+    w = getattr(mat, "_width", None) or getattr(mat, "width", None)
+    h = getattr(mat, "_height", None) or getattr(mat, "height", None)
+    d = getattr(mat, "_diameter", None) or getattr(mat, "diameter", None)
+    if w and h:
+        return float(w), float(h)
+    if d:
+        return float(d), float(d)
+    return 0.3, 0.3
 
-    if len(pts) == 4:
-        # 尝试构建六面体（前后两个面 + 四个侧面）
+
+def _get_pile_radius(obj: Any) -> float:
+    """从 EmbeddedPile 材料中读取桩半径（m）。"""
+    for chain in (("_pile_type", "_diameter"), ("_pile_type", "diameter")):
+        v = obj
+        for attr in chain:
+            v = getattr(v, attr, None)
+            if v is None:
+                break
+        if v is not None:
+            try:
+                return float(v) / 2.0
+            except (TypeError, ValueError):
+                pass
+    return 0.3
+
+
+def _get_anchor_radius(obj: Any) -> float:
+    """从 Anchor 材料中读取锚杆半径（m）。"""
+    for chain in (("_anchor_type", "diameter"), ("_anchor_type", "_diameter")):
+        v = obj
+        for attr in chain:
+            v = getattr(v, attr, None)
+            if v is None:
+                break
+        if v is not None:
+            try:
+                return float(v) / 2.0
+            except (TypeError, ValueError):
+                pass
+    return 0.05
+
+
+def _get_wall_thickness(wall: RetainingWall) -> float:
+    """从 RetainingWall.plate_type 读取板厚 d（m）。"""
+    pt = getattr(wall, "_plate_type", None) or getattr(wall, "plate_type", None)
+    if pt is None:
+        return 0.8
+    d = getattr(pt, "_d", None) or getattr(pt, "d", None)
+    if d is not None:
         try:
-            return _quad_to_box_brep(ifc_file, pts)
-        except Exception:
+            return max(float(d), 0.01)
+        except (TypeError, ValueError):
             pass
-
-    # 退化：单面 Brep
-    return _polygon3d_to_brep(ifc_file, surface)
-
-
-def _quad_to_box_brep(ifc_file, pts: List[Point]):
-    """
-    将四边形面（挡土墙截面）构建为 IfcFacetedBrep 六面体。
-    pts: 4 个 Point，按顺序排列（不含闭合重复点）。
-    假设墙有一定厚度（从材料属性中读取，默认 0.5m）。
-    这里简化为单面 Brep，实际项目可扩展为真实厚度。
-    """
-    ifc_pts = [_ifc_cartesian_point(ifc_file, p.x, p.y, p.z) for p in pts]
-    poly_loop = ifc_file.createIfcPolyLoop(ifc_pts)
-    face_bound = ifc_file.createIfcFaceOuterBound(poly_loop, True)
-    face = ifc_file.createIfcFace([face_bound])
-    closed_shell = ifc_file.createIfcClosedShell([face])
-    return ifc_file.createIfcFacetedBrep(closed_shell)
-
-
-def _line3d_to_ifc_polyline(ifc_file, line: Line3D):
-    """将 Line3D 转换为 IfcPolyline。"""
-    pts = line.get_points()
-    ifc_pts = [_ifc_cartesian_point(ifc_file, p.x, p.y, p.z) for p in pts]
-    return ifc_file.createIfcPolyline(ifc_pts)
-
-
-def _line3d_to_swept_solid(ifc_file, line: Line3D, radius: float = 0.1):
-    """
-    将 Line3D（锚杆/梁/桩）转换为 IfcSweptDiskSolid（圆截面扫掠体）。
-    radius: 截面半径（m），默认 0.1m。
-    """
-    polyline = _line3d_to_ifc_polyline(ifc_file, line)
-    return ifc_file.createIfcSweptDiskSolid(polyline, float(radius), None, 0.0, 1.0)
-
-
-def _make_shape_representation(ifc_file, context, items: list,
-                                rep_id: str = "Body",
-                                rep_type: str = "Brep"):
-    """创建 IfcShapeRepresentation。"""
-    return ifc_file.createIfcShapeRepresentation(
-        context, rep_id, rep_type, items
-    )
-
-
-def _make_product_definition_shape(ifc_file, representations: list):
-    return ifc_file.createIfcProductDefinitionShape(None, None, representations)
-
-
-def _make_material(ifc_file, name: str):
-    """创建 IfcMaterial。"""
-    return ifc_file.createIfcMaterial(name)
-
-
-def _assign_material(ifc_file, element, material):
-    """将 IfcMaterial 关联到 IfcElement。"""
-    mat_select = ifc_file.createIfcRelAssociatesMaterial(
-        _new_guid(), None, None, None, [element], material
-    )
-    return mat_select
+    return 0.8
 
 
 def _get_material_name(obj: Any) -> str:
-    """从结构对象中提取材料名称（容错）。"""
     for attr in ("_plate_type", "_anchor_type", "_beam_type", "_pile_type", "_material"):
         val = getattr(obj, attr, None)
         if val is None:
@@ -214,36 +351,31 @@ def _get_material_name(obj: Any) -> str:
     return "Unknown"
 
 
-def _get_soil_material_name(soil_block: SoilBlock) -> str:
-    mat = getattr(soil_block, "_material", None) or getattr(soil_block, "material", None)
-    if mat is None:
-        return "Unknown Soil"
-    return getattr(mat, "name", str(mat))
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 主导出器
 # ─────────────────────────────────────────────────────────────────────────────
 
 class IFCExporter:
     """
-    将 FoundationPit 对象导出为 IFC 4 文件。
+    将 FoundationPit 导出为 IFC 4 文件（v2.0，真实三维几何）。
 
     Parameters
     ----------
     pit : FoundationPit
-        要导出的基坑模型对象。
-    schema : str
-        IFC schema 版本，默认 "IFC4"。
+    schema : str        IFC schema，默认 "IFC4"
     author : str
-        文件作者信息。
     organization : str
-        组织名称。
+    project_address : str   项目地址（写入 IfcPostalAddress）
+    latitude : float        纬度（度，写入 IfcSite）
+    longitude : float       经度（度，写入 IfcSite）
+    elevation : float       场地高程（m）
 
     Examples
     --------
-    >>> exporter = IFCExporter(pit)
-    >>> exporter.export("my_excavation.ifc")
+    >>> exporter = IFCExporter(pit, author="EatRice",
+    ...     project_address="上海市浦东新区XX路1号",
+    ...     latitude=31.23, longitude=121.47)
+    >>> exporter.export("output.ifc")
     """
 
     def __init__(
@@ -252,38 +384,36 @@ class IFCExporter:
         schema: str = "IFC4",
         author: str = "EatRice",
         organization: str = "智能建造",
+        project_address: str = "",
+        latitude: float = 0.0,
+        longitude: float = 0.0,
+        elevation: float = 0.0,
     ) -> None:
         _require_ifcopenshell()
         self.pit = pit
         self.schema = schema
         self.author = author
         self.organization = organization
+        self.project_address = project_address
+        self.latitude = latitude
+        self.longitude = longitude
+        self.elevation = elevation
 
-        # 运行时状态（export() 调用时初始化）
         self._ifc: Any = None
-        self._context: Any = None
+        self._ctx: Any = None
+        self._owner: Any = None
         self._site: Any = None
         self._building: Any = None
         self._storey: Any = None
-        self._site_placement: Any = None
-        self._owner_history: Any = None
-
-        # 材料缓存（避免重复创建）
-        self._material_cache: Dict[str, Any] = {}
+        self._site_pl: Any = None
+        self._mat_cache: Dict[str, Any] = {}
 
     # ── 公开接口 ──────────────────────────────────────────────────────────────
 
     def export(self, file_path: str) -> None:
-        """
-        执行导出，将 IFC 文件写入 file_path。
-
-        Parameters
-        ----------
-        file_path : str
-            输出文件路径，例如 "output.ifc"。
-        """
-        self._init_ifc_file()
-        self._build_spatial_hierarchy()
+        """导出 IFC 文件到 file_path。"""
+        self._init_file()
+        self._build_hierarchy()
         self._export_retaining_walls()
         self._export_anchors()
         self._export_beams()
@@ -291,276 +421,316 @@ class IFCExporter:
         self._export_soil_blocks()
         self._export_boreholes()
         self._ifc.write(file_path)
-        print(f"[IFCExporter] IFC 文件已导出至: {file_path}")
+        print(f"[IFCExporter v2.0] 导出完成 → {file_path}")
 
     # ── 初始化 ────────────────────────────────────────────────────────────────
 
-    def _init_ifc_file(self) -> None:
-        """初始化 IFC 文件头和全局上下文。"""
+    def _init_file(self) -> None:
         self._ifc = ifcopenshell.file(schema=self.schema)
+        f = self._ifc
 
-        # ── OwnerHistory ──
-        person = self._ifc.createIfcPerson(None, self.author, None, None, None, None, None, None)
-        org = self._ifc.createIfcOrganization(None, self.organization, None, None, None)
-        person_and_org = self._ifc.createIfcPersonAndOrganization(person, org, None)
-        application = self._ifc.createIfcApplication(
-            org, "1.0", "plaxisproxy_excavation IFC Exporter", "plaxisproxy_ifc"
-        )
+        person = f.createIfcPerson(None, self.author, None, None, None, None, None, None)
+        org = f.createIfcOrganization(None, self.organization, None, None, None)
+        pao = f.createIfcPersonAndOrganization(person, org, None)
+        app = f.createIfcApplication(org, "2.0", "plaxisproxy_excavation IFC Exporter v2", "plaxisproxy_ifc")
         now = int(datetime.datetime.now().timestamp())
-        self._owner_history = self._ifc.createIfcOwnerHistory(
-            person_and_org, application, "READWRITE", None, None, None, None, now
+        self._owner = f.createIfcOwnerHistory(pao, app, "READWRITE", None, None, None, None, now)
+
+        world = f.createIfcAxis2Placement3D(
+            _pt(f, 0, 0, 0), _dir(f, 0, 0, 1), _dir(f, 1, 0, 0)
+        )
+        self._ctx = f.createIfcGeometricRepresentationContext(
+            "Model", "Model", 3, 1.0e-5, world, None
         )
 
-        # ── 几何上下文 ──
-        world_coord = _ifc_axis2placement3d(self._ifc)
-        self._context = self._ifc.createIfcGeometricRepresentationContext(
-            "Model", "Model", 3, 1.0e-5, world_coord, None
+        lu = f.createIfcSIUnit(None, "LENGTHUNIT", None, "METRE")
+        au = f.createIfcSIUnit(None, "AREAUNIT", None, "SQUARE_METRE")
+        vu = f.createIfcSIUnit(None, "VOLUMEUNIT", None, "CUBIC_METRE")
+        pu = f.createIfcSIUnit(None, "PLANEANGLEUNIT", None, "RADIAN")
+        units = f.createIfcUnitAssignment([lu, au, vu, pu])
+
+        proj_info = getattr(self.pit, "project_information", None)
+        proj_name = getattr(proj_info, "title", None) or getattr(proj_info, "project_name", None) or "ExcavationProject"
+        f.createIfcProject(
+            _new_guid(), self._owner, proj_name, None,
+            None, None, None, [self._ctx], units
         )
 
-        # ── 单位 ──
-        length_unit = self._ifc.createIfcSIUnit(None, "LENGTHUNIT", None, "METRE")
-        area_unit = self._ifc.createIfcSIUnit(None, "AREAUNIT", None, "SQUARE_METRE")
-        volume_unit = self._ifc.createIfcSIUnit(None, "VOLUMEUNIT", None, "CUBIC_METRE")
-        plane_angle_unit = self._ifc.createIfcSIUnit(None, "PLANEANGLEUNIT", None, "RADIAN")
-        unit_assignment = self._ifc.createIfcUnitAssignment(
-            [length_unit, area_unit, volume_unit, plane_angle_unit]
+    # ── 空间层级（含完整元数据）────────────────────────────────────────────────
+
+    def _build_hierarchy(self) -> None:
+        f = self._ifc
+        proj_info = getattr(self.pit, "project_information", None)
+
+        # ── IfcPostalAddress ──
+        addr = None
+        if self.project_address:
+            addr = f.createIfcPostalAddress(
+                "OFFICE", None, None, None,
+                [self.project_address], None, None, None, None, "CN"
+            )
+
+        # ── IfcSite（含经纬度/高程）──
+        def _deg_to_compound(deg: float):
+            """度 → IFC IfcCompoundPlaneAngleMeasure (度, 分, 秒, 微秒)"""
+            sign = 1 if deg >= 0 else -1
+            deg = abs(deg)
+            d = int(deg)
+            m = int((deg - d) * 60)
+            s = int(((deg - d) * 60 - m) * 60)
+            us = int((((deg - d) * 60 - m) * 60 - s) * 1e6)
+            return (sign * d, sign * m, sign * s, sign * us)
+
+        lat = _deg_to_compound(self.latitude) if self.latitude else None
+        lon = _deg_to_compound(self.longitude) if self.longitude else None
+
+        self._site_pl = _local_placement(f)
+        self._site = f.createIfcSite(
+            _new_guid(), self._owner,
+            "ExcavationSite",
+            getattr(proj_info, "comment", None) or "基坑工程场地",
+            None,
+            self._site_pl, None, None,
+            "ELEMENT",
+            lat, lon,
+            float(self.elevation) if self.elevation else None,
+            None, addr
         )
 
-        # ── 项目 ──
-        proj_name = getattr(
-            getattr(self.pit, "project_information", None), "project_name", "ExcavationProject"
-        ) or "ExcavationProject"
-        self._ifc.createIfcProject(
-            _new_guid(), self._owner_history, proj_name, None,
-            None, None, None, [self._context], unit_assignment
+        # ── IfcBuilding（含项目信息属性集）──
+        bld_pl = _local_placement(f, self._site_pl)
+        self._building = f.createIfcBuilding(
+            _new_guid(), self._owner,
+            getattr(proj_info, "title", None) or "ExcavationBuilding",
+            None, None,
+            bld_pl, None, None,
+            "ELEMENT", None, None, addr
         )
 
-    # ── 空间层级 ─────────────────────────────────────────────────────────────
+        # 项目信息属性集
+        if proj_info is not None:
+            _pset(f, self._owner, self._building, "Pset_ProjectInformation", {
+                "ProjectTitle": getattr(proj_info, "title", "") or "",
+                "Company": getattr(proj_info, "company", "") or "",
+                "Model": getattr(proj_info, "model", "") or "",
+                "Element": getattr(proj_info, "element", "") or "",
+                "GammaWater": f"{getattr(proj_info, 'gamma_water', 9.81):.3f} kN/m³",
+                "ExcavationDepth": f"{abs(getattr(self.pit, 'excava_depth', 0) or 0):.2f} m",
+            })
 
-    def _build_spatial_hierarchy(self) -> None:
-        """构建 IfcSite → IfcBuilding → IfcBuildingStorey 层级。"""
-        self._site_placement = _ifc_local_placement(self._ifc)
-
-        self._site = self._ifc.createIfcSite(
-            _new_guid(), self._owner_history, "ExcavationSite", None, None,
-            self._site_placement, None, None, "ELEMENT", None, None, None, None, None
+        # ── IfcBuildingStorey ──
+        st_pl = _local_placement(f, bld_pl)
+        self._storey = f.createIfcBuildingStorey(
+            _new_guid(), self._owner,
+            "ExcavationLevel", None, None,
+            st_pl, None, None,
+            "ELEMENT", float(self.elevation)
         )
 
-        building_placement = _ifc_local_placement(self._ifc, self._site_placement)
-        self._building = self._ifc.createIfcBuilding(
-            _new_guid(), self._owner_history, "ExcavationBuilding", None, None,
-            building_placement, None, None, "ELEMENT", None, None, None
-        )
-
-        storey_placement = _ifc_local_placement(self._ifc, building_placement)
-        self._storey = self._ifc.createIfcBuildingStorey(
-            _new_guid(), self._owner_history, "ExcavationLevel", None, None,
-            storey_placement, None, None, "ELEMENT", 0.0
-        )
-
-        # 关联层级
-        self._ifc.createIfcRelAggregates(
-            _new_guid(), self._owner_history, None, None,
-            self._site, [self._building]
-        )
-        self._ifc.createIfcRelAggregates(
-            _new_guid(), self._owner_history, None, None,
-            self._building, [self._storey]
-        )
+        # 层级关联
+        f.createIfcRelAggregates(_new_guid(), self._owner, None, None, self._site, [self._building])
+        f.createIfcRelAggregates(_new_guid(), self._owner, None, None, self._building, [self._storey])
 
     # ── 材料缓存 ──────────────────────────────────────────────────────────────
 
-    def _get_or_create_material(self, name: str):
-        if name not in self._material_cache:
-            self._material_cache[name] = _make_material(self._ifc, name)
-        return self._material_cache[name]
+    def _mat(self, name: str):
+        if name not in self._mat_cache:
+            self._mat_cache[name] = _material(self._ifc, name)
+        return self._mat_cache[name]
 
-    # ── 挡土墙 ────────────────────────────────────────────────────────────────
+    def _contain(self, elements: list, label: str) -> None:
+        if elements:
+            self._ifc.createIfcRelContainedInSpatialStructure(
+                _new_guid(), self._owner, label, None,
+                elements, self._storey
+            )
+
+    # ── 挡土墙（真实厚度六面体）──────────────────────────────────────────────
 
     def _export_retaining_walls(self) -> None:
         walls: List[RetainingWall] = (
             self.pit.structures.get(StructureType.RETAINING_WALLS.value, []) or []
         )
-        elements = []
+        elems = []
         for wall in walls:
-            elem = self._wall_to_ifc(wall)
-            if elem is not None:
-                elements.append(elem)
-        if elements:
-            self._ifc.createIfcRelContainedInSpatialStructure(
-                _new_guid(), self._owner_history, "RetainingWalls", None,
-                elements, self._storey
-            )
+            e = self._wall_to_ifc(wall)
+            if e is not None:
+                elems.append(e)
+        self._contain(elems, "RetainingWalls")
 
     def _wall_to_ifc(self, wall: RetainingWall):
         try:
-            brep = _retaining_wall_to_brep(self._ifc, wall)
-            if brep is None:
-                return None
-            shape_rep = _make_shape_representation(self._ifc, self._context, [brep])
-            shape = _make_product_definition_shape(self._ifc, [shape_rep])
-            placement = _ifc_local_placement(self._ifc, self._site_placement)
+            surface: Polygon3D = wall.surface
+            pts = surface._ring_core_points(surface._lines[0])
+            thickness = _get_wall_thickness(wall)
 
+            rep = _build_wall_solid(self._ifc, self._ctx, pts, thickness)
+            if rep is None:
+                return None
+
+            placement = _local_placement(self._ifc, self._site_pl)
             ifc_wall = self._ifc.createIfcWall(
-                _new_guid(), self._owner_history,
+                _new_guid(), self._owner,
                 wall.name, getattr(wall, "comment", None),
-                None, placement, shape, None
+                None, placement, _product_shape(self._ifc, [rep]), None
             )
             mat_name = _get_material_name(wall)
-            mat = self._get_or_create_material(mat_name)
-            _assign_material(self._ifc, ifc_wall, mat)
+            _assign_material(self._ifc, ifc_wall, self._mat(mat_name))
 
-            # 添加自定义属性集
-            self._add_pset(ifc_wall, "Pset_RetainingWall", {
+            pt = getattr(wall, "_plate_type", None) or getattr(wall, "plate_type", None)
+            _pset(self._ifc, self._owner, ifc_wall, "Pset_RetainingWall", {
                 "PlaxisName": wall.name,
-                "MaterialType": mat_name,
+                "MaterialName": mat_name,
+                "Thickness_m": f"{thickness:.3f}",
+                "E_kPa": str(getattr(pt, "E", "") or ""),
+                "nu": str(getattr(pt, "nu", "") or ""),
+                "gamma_kNm3": str(getattr(pt, "gamma", "") or ""),
             })
             return ifc_wall
         except Exception as e:
-            print(f"[IFCExporter] 跳过挡土墙 '{wall.name}': {e}")
+            print(f"[IFCExporter] ⚠ 跳过挡土墙 '{wall.name}': {e}")
             return None
 
-    # ── 锚杆 ──────────────────────────────────────────────────────────────────
+    # ── 锚杆（圆截面扫掠）────────────────────────────────────────────────────
 
     def _export_anchors(self) -> None:
         anchors: List[Anchor] = (
             self.pit.structures.get(StructureType.ANCHORS.value, []) or []
         )
-        elements = []
+        elems = []
         for anchor in anchors:
-            elem = self._anchor_to_ifc(anchor)
-            if elem is not None:
-                elements.append(elem)
-        if elements:
-            self._ifc.createIfcRelContainedInSpatialStructure(
-                _new_guid(), self._owner_history, "Anchors", None,
-                elements, self._storey
-            )
+            e = self._anchor_to_ifc(anchor)
+            if e is not None:
+                elems.append(e)
+        self._contain(elems, "Anchors")
 
     def _anchor_to_ifc(self, anchor: Anchor):
         try:
-            line = anchor.line
-            radius = self._get_section_radius(anchor, default=0.05)
-            swept = _line3d_to_swept_solid(self._ifc, line, radius)
-            shape_rep = _make_shape_representation(
-                self._ifc, self._context, [swept], "Body", "SweptSolid"
-            )
-            shape = _make_product_definition_shape(self._ifc, [shape_rep])
-            placement = _ifc_local_placement(self._ifc, self._site_placement)
+            pts = anchor.line.get_points()
+            p0, p1 = pts[0], pts[1]
+            radius = _get_anchor_radius(anchor)
 
-            # IFC4 中锚杆映射为 IfcTendon
+            rep = _build_circle_swept(self._ifc, self._ctx, p0, p1, radius)
+            placement = _local_placement(self._ifc, self._site_pl)
             ifc_anchor = self._ifc.createIfcTendon(
-                _new_guid(), self._owner_history,
+                _new_guid(), self._owner,
                 anchor.name, getattr(anchor, "comment", None),
-                None, placement, shape, None,
+                None, placement, _product_shape(self._ifc, [rep]), None,
                 "STRAND", None, None, None, None, None
             )
             mat_name = _get_material_name(anchor)
-            mat = self._get_or_create_material(mat_name)
-            _assign_material(self._ifc, ifc_anchor, mat)
+            _assign_material(self._ifc, ifc_anchor, self._mat(mat_name))
 
-            self._add_pset(ifc_anchor, "Pset_Anchor", {
+            at = getattr(anchor, "_anchor_type", None)
+            length = math.sqrt(
+                (p1.x - p0.x) ** 2 + (p1.y - p0.y) ** 2 + (p1.z - p0.z) ** 2
+            )
+            _pset(self._ifc, self._owner, ifc_anchor, "Pset_Anchor", {
                 "PlaxisName": anchor.name,
-                "AnchorType": mat_name,
-                "Length": f"{line.length:.3f} m",
+                "MaterialName": mat_name,
+                "Radius_m": f"{radius:.4f}",
+                "Length_m": f"{length:.3f}",
+                "EA_kN": str(getattr(at, "EA", "") or ""),
             })
             return ifc_anchor
         except Exception as e:
-            print(f"[IFCExporter] 跳过锚杆 '{anchor.name}': {e}")
+            print(f"[IFCExporter] ⚠ 跳过锚杆 '{anchor.name}': {e}")
             return None
 
-    # ── 梁 ────────────────────────────────────────────────────────────────────
+    # ── 梁（矩形截面实体柱）──────────────────────────────────────────────────
 
     def _export_beams(self) -> None:
         beams: List[Beam] = (
             self.pit.structures.get(StructureType.BEAMS.value, []) or []
         )
-        elements = []
+        elems = []
         for beam in beams:
-            elem = self._beam_to_ifc(beam)
-            if elem is not None:
-                elements.append(elem)
-        if elements:
-            self._ifc.createIfcRelContainedInSpatialStructure(
-                _new_guid(), self._owner_history, "Beams", None,
-                elements, self._storey
-            )
+            e = self._beam_to_ifc(beam)
+            if e is not None:
+                elems.append(e)
+        self._contain(elems, "Beams")
 
     def _beam_to_ifc(self, beam: Beam):
         try:
-            line = beam.line
-            radius = self._get_section_radius(beam, default=0.15)
-            swept = _line3d_to_swept_solid(self._ifc, line, radius)
-            shape_rep = _make_shape_representation(
-                self._ifc, self._context, [swept], "Body", "SweptSolid"
-            )
-            shape = _make_product_definition_shape(self._ifc, [shape_rep])
-            placement = _ifc_local_placement(self._ifc, self._site_placement)
+            pts = beam.line.get_points()
+            p0, p1 = pts[0], pts[1]
+            width, height = _get_beam_section(beam)
 
+            rep = _build_beam_solid(self._ifc, self._ctx, p0, p1, width, height)
+            if rep is None:
+                return None
+
+            placement = _local_placement(self._ifc, self._site_pl)
             ifc_beam = self._ifc.createIfcBeam(
-                _new_guid(), self._owner_history,
+                _new_guid(), self._owner,
                 beam.name, getattr(beam, "comment", None),
-                None, placement, shape, None
+                None, placement, _product_shape(self._ifc, [rep]), None
             )
             mat_name = _get_material_name(beam)
-            mat = self._get_or_create_material(mat_name)
-            _assign_material(self._ifc, ifc_beam, mat)
+            _assign_material(self._ifc, ifc_beam, self._mat(mat_name))
 
-            self._add_pset(ifc_beam, "Pset_Beam", {
+            bt = getattr(beam, "_beam_type", None)
+            length = math.sqrt(
+                (p1.x - p0.x) ** 2 + (p1.y - p0.y) ** 2 + (p1.z - p0.z) ** 2
+            )
+            _pset(self._ifc, self._owner, ifc_beam, "Pset_Beam", {
                 "PlaxisName": beam.name,
-                "BeamType": mat_name,
-                "Length": f"{line.length:.3f} m",
+                "MaterialName": mat_name,
+                "SectionWidth_m": f"{width:.3f}",
+                "SectionHeight_m": f"{height:.3f}",
+                "Length_m": f"{length:.3f}",
+                "E_kPa": str(getattr(bt, "E", "") or ""),
+                "gamma_kNm3": str(getattr(bt, "gamma", "") or ""),
             })
             return ifc_beam
         except Exception as e:
-            print(f"[IFCExporter] 跳过梁 '{beam.name}': {e}")
+            print(f"[IFCExporter] ⚠ 跳过梁 '{beam.name}': {e}")
             return None
 
-    # ── 嵌入桩 ────────────────────────────────────────────────────────────────
+    # ── 嵌入桩（圆截面扫掠）──────────────────────────────────────────────────
 
     def _export_embedded_piles(self) -> None:
         piles: List[EmbeddedPile] = (
             self.pit.structures.get(StructureType.EMBEDDED_PILES.value, []) or []
         )
-        elements = []
+        elems = []
         for pile in piles:
-            elem = self._pile_to_ifc(pile)
-            if elem is not None:
-                elements.append(elem)
-        if elements:
-            self._ifc.createIfcRelContainedInSpatialStructure(
-                _new_guid(), self._owner_history, "EmbeddedPiles", None,
-                elements, self._storey
-            )
+            e = self._pile_to_ifc(pile)
+            if e is not None:
+                elems.append(e)
+        self._contain(elems, "EmbeddedPiles")
 
     def _pile_to_ifc(self, pile: EmbeddedPile):
         try:
-            line = pile.line
-            radius = self._get_section_radius(pile, default=0.3)
-            swept = _line3d_to_swept_solid(self._ifc, line, radius)
-            shape_rep = _make_shape_representation(
-                self._ifc, self._context, [swept], "Body", "SweptSolid"
-            )
-            shape = _make_product_definition_shape(self._ifc, [shape_rep])
-            placement = _ifc_local_placement(self._ifc, self._site_placement)
+            pts = pile.line.get_points()
+            p0, p1 = pts[0], pts[1]
+            radius = _get_pile_radius(pile)
 
+            rep = _build_circle_swept(self._ifc, self._ctx, p0, p1, radius)
+            placement = _local_placement(self._ifc, self._site_pl)
             ifc_pile = self._ifc.createIfcPile(
-                _new_guid(), self._owner_history,
+                _new_guid(), self._owner,
                 pile.name, getattr(pile, "comment", None),
-                None, placement, shape, None, "DRIVEN"
+                None, placement, _product_shape(self._ifc, [rep]), None, "DRIVEN"
             )
             mat_name = _get_material_name(pile)
-            mat = self._get_or_create_material(mat_name)
-            _assign_material(self._ifc, ifc_pile, mat)
+            _assign_material(self._ifc, ifc_pile, self._mat(mat_name))
 
-            self._add_pset(ifc_pile, "Pset_Pile", {
+            pt = getattr(pile, "_pile_type", None)
+            length = math.sqrt(
+                (p1.x - p0.x) ** 2 + (p1.y - p0.y) ** 2 + (p1.z - p0.z) ** 2
+            )
+            _pset(self._ifc, self._owner, ifc_pile, "Pset_Pile", {
                 "PlaxisName": pile.name,
-                "PileType": mat_name,
-                "Length": f"{line.length:.3f} m",
+                "MaterialName": mat_name,
+                "Diameter_m": f"{radius * 2:.3f}",
+                "Length_m": f"{length:.3f}",
+                "E_kPa": str(getattr(pt, "E", "") or ""),
+                "gamma_kNm3": str(getattr(pt, "gamma", "") or ""),
             })
             return ifc_pile
         except Exception as e:
-            print(f"[IFCExporter] 跳过嵌入桩 '{pile.name}': {e}")
+            print(f"[IFCExporter] ⚠ 跳过嵌入桩 '{pile.name}': {e}")
             return None
 
     # ── 土体块 ────────────────────────────────────────────────────────────────
@@ -569,183 +739,85 @@ class IFCExporter:
         soil_blocks: List[SoilBlock] = (
             self.pit.structures.get(StructureType.SOIL_BLOCKS.value, []) or []
         )
-        elements = []
+        elems = []
         for sb in soil_blocks:
-            elem = self._soil_block_to_ifc(sb)
-            if elem is not None:
-                elements.append(elem)
-        if elements:
-            self._ifc.createIfcRelContainedInSpatialStructure(
-                _new_guid(), self._owner_history, "SoilBlocks", None,
-                elements, self._storey
-            )
+            e = self._soil_block_to_ifc(sb)
+            if e is not None:
+                elems.append(e)
+        self._contain(elems, "SoilBlocks")
 
     def _soil_block_to_ifc(self, sb: SoilBlock):
         try:
-            geom = getattr(sb, "_geometry", None) or getattr(sb, "geometry", None)
-            items = []
-
-            if geom is not None and isinstance(geom, Polygon3D):
-                brep = _polygon3d_to_brep(self._ifc, geom)
-                if brep:
-                    items.append(brep)
-            elif geom is not None and hasattr(geom, "_faces"):
-                for face in geom._faces:
-                    brep = _polygon3d_to_brep(self._ifc, face)
-                    if brep:
-                        items.append(brep)
-
-            placement = _ifc_local_placement(self._ifc, self._site_placement)
-
-            if items:
-                shape_rep = _make_shape_representation(self._ifc, self._context, items)
-                shape = _make_product_definition_shape(self._ifc, [shape_rep])
-            else:
-                shape = None
-
-            # IFC4 中土体映射为 IfcGeographicElement
+            placement = _local_placement(self._ifc, self._site_pl)
             ifc_geo = self._ifc.createIfcGeographicElement(
-                _new_guid(), self._owner_history,
+                _new_guid(), self._owner,
                 sb.name, getattr(sb, "comment", None),
-                None, placement, shape, None, "TERRAIN"
+                None, placement, None, None, "TERRAIN"
             )
-            mat_name = _get_soil_material_name(sb)
-            mat = self._get_or_create_material(mat_name)
-            _assign_material(self._ifc, ifc_geo, mat)
-
-            self._add_pset(ifc_geo, "Pset_SoilBlock", {
+            mat_name = str(getattr(getattr(sb, "_material", None), "name", None) or "Unknown Soil")
+            _assign_material(self._ifc, ifc_geo, self._mat(mat_name))
+            _pset(self._ifc, self._owner, ifc_geo, "Pset_SoilBlock", {
                 "PlaxisName": sb.name,
                 "SoilMaterial": mat_name,
             })
             return ifc_geo
         except Exception as e:
-            print(f"[IFCExporter] 跳过土体块 '{sb.name}': {e}")
+            print(f"[IFCExporter] ⚠ 跳过土体块 '{sb.name}': {e}")
             return None
 
-    # ── 钻孔 ──────────────────────────────────────────────────────────────────
+    # ── 钻孔（竖直圆柱 + 完整地层属性集）────────────────────────────────────
 
     def _export_boreholes(self) -> None:
         bh_set = getattr(self.pit, "borehole_set", None)
         if bh_set is None:
             return
         boreholes: List[Borehole] = getattr(bh_set, "boreholes", []) or []
-        elements = []
+        elems = []
         for bh in boreholes:
-            elem = self._borehole_to_ifc(bh)
-            if elem is not None:
-                elements.append(elem)
-        if elements:
-            self._ifc.createIfcRelContainedInSpatialStructure(
-                _new_guid(), self._owner_history, "Boreholes", None,
-                elements, self._storey
-            )
+            e = self._borehole_to_ifc(bh)
+            if e is not None:
+                elems.append(e)
+        self._contain(elems, "Boreholes")
 
     def _borehole_to_ifc(self, bh: Borehole):
         try:
             loc = bh.location
             depth = bh.depth()
+            gl = bh.ground_level
 
-            # 用竖直线段表示钻孔
-            p_top = _ifc_cartesian_point(self._ifc, loc.x, loc.y, bh.ground_level)
-            p_bot = _ifc_cartesian_point(self._ifc, loc.x, loc.y, bh.ground_level - depth)
+            p_top = _pt(self._ifc, loc.x, loc.y, gl)
+            p_bot = _pt(self._ifc, loc.x, loc.y, gl - depth)
             polyline = self._ifc.createIfcPolyline([p_top, p_bot])
-            swept = self._ifc.createIfcSweptDiskSolid(polyline, 0.05, None, 0.0, 1.0)
+            solid = self._ifc.createIfcSweptDiskSolid(polyline, 0.05, None, 0.0, 1.0)
+            rep = _shape_rep(self._ifc, self._ctx, [solid])
+            placement = _local_placement(self._ifc, self._site_pl, origin=(loc.x, loc.y, gl))
 
-            shape_rep = _make_shape_representation(
-                self._ifc, self._context, [swept], "Body", "SweptSolid"
-            )
-            shape = _make_product_definition_shape(self._ifc, [shape_rep])
-            placement = _ifc_local_placement(
-                self._ifc, self._site_placement,
-                origin=(loc.x, loc.y, bh.ground_level)
-            )
-
-            # IFC4 中钻孔映射为 IfcGeographicElement（USERDEFINED + ObjectType）
             ifc_bh = self._ifc.createIfcGeographicElement(
-                _new_guid(), self._owner_history,
+                _new_guid(), self._owner,
                 bh.name, getattr(bh, "comment", None),
-                None, placement, shape, None, "USERDEFINED"
+                None, placement, _product_shape(self._ifc, [rep]), None, "USERDEFINED"
             )
-            # 通过 ObjectType 标记为 Borehole
             ifc_bh.ObjectType = "Borehole"
 
-            # 钻孔属性集
+            # 地层信息
             layer_info = "; ".join(
-                f"{ly.soil_layer.name if ly.soil_layer else ly.name}"
+                f"{getattr(getattr(ly, 'soil_layer', None), 'name', None) or ly.name}"
                 f"[{ly.top_z:.2f}~{ly.bottom_z:.2f}m]"
                 for ly in bh.layers
             )
-            self._add_pset(ifc_bh, "Pset_Borehole", {
+            wh = bh.water_head
+            _pset(self._ifc, self._owner, ifc_bh, "Pset_Borehole", {
                 "PlaxisName": bh.name,
-                "GroundLevel": f"{bh.ground_level:.3f} m",
-                "Depth": f"{depth:.3f} m",
-                "WaterHead": f"{bh.water_head:.3f} m" if bh.water_head is not None else "N/A",
+                "GroundLevel_m": f"{gl:.3f}",
+                "Depth_m": f"{depth:.3f}",
+                "WaterHead_m": f"{wh:.3f}" if wh is not None else "N/A",
+                "LayerCount": str(len(bh.layers)),
                 "LayerSequence": layer_info,
             })
             return ifc_bh
         except Exception as e:
-            print(f"[IFCExporter] 跳过钻孔 '{bh.name}': {e}")
+            print(f"[IFCExporter] ⚠ 跳过钻孔 '{bh.name}': {e}")
             return None
-
-    # ── 属性集工具 ────────────────────────────────────────────────────────────
-
-    def _add_pset(self, element, pset_name: str, props: Dict[str, str]) -> None:
-        """为 IFC 元素添加自定义属性集（IfcPropertySet）。"""
-        try:
-            ifc_props = []
-            for k, v in props.items():
-                single_val = self._ifc.createIfcPropertySingleValue(
-                    k, None,
-                    self._ifc.createIfcLabel(str(v)),
-                    None
-                )
-                ifc_props.append(single_val)
-
-            pset = self._ifc.createIfcPropertySet(
-                _new_guid(), self._owner_history,
-                pset_name, None, ifc_props
-            )
-            self._ifc.createIfcRelDefinesByProperties(
-                _new_guid(), self._owner_history, None, None,
-                [element], pset
-            )
-        except Exception as e:
-            # 属性集失败不影响主体导出
-            pass
-
-    # ── 截面半径推断 ──────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _get_section_radius(obj: Any, default: float = 0.1) -> float:
-        """
-        从材料属性中推断截面半径（m）。
-        - 对于桩/锚杆：尝试读取 diameter / radius 属性
-        - 对于梁：尝试读取 d（板厚）/ 截面高度
-        - 否则使用 default
-        """
-        for attr_chain in (
-            ("_pile_type", "diameter"),
-            ("_pile_type", "radius"),
-            ("_anchor_type", "diameter"),
-            ("_beam_type", "d"),
-            ("_beam_type", "height"),
-            ("_plate_type", "d"),
-        ):
-            val = obj
-            for attr in attr_chain:
-                val = getattr(val, attr, None)
-                if val is None:
-                    break
-            if val is not None:
-                try:
-                    r = float(val)
-                    # 如果是直径，转为半径
-                    if attr_chain[-1] == "diameter":
-                        r /= 2.0
-                    return max(r, 0.01)
-                except (TypeError, ValueError):
-                    pass
-        return default
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -758,27 +830,22 @@ def export_to_ifc(
     author: str = "EatRice",
     organization: str = "智能建造",
     schema: str = "IFC4",
+    project_address: str = "",
+    latitude: float = 0.0,
+    longitude: float = 0.0,
+    elevation: float = 0.0,
 ) -> None:
     """
-    一行导出 FoundationPit 为 IFC 文件。
-
-    Parameters
-    ----------
-    pit : FoundationPit
-        基坑模型对象。
-    file_path : str
-        输出 IFC 文件路径。
-    author : str
-        文件作者。
-    organization : str
-        组织名称。
-    schema : str
-        IFC schema，默认 "IFC4"。
+    一行导出 FoundationPit 为 IFC 文件（v2.0）。
 
     Examples
     --------
-    >>> from plaxisproxy_excavation.ifc_exporter import export_to_ifc
-    >>> export_to_ifc(pit, "output.ifc")
+    >>> export_to_ifc(pit, "output.ifc",
+    ...     project_address="上海市浦东新区XX路1号",
+    ...     latitude=31.23, longitude=121.47)
     """
-    exporter = IFCExporter(pit, schema=schema, author=author, organization=organization)
-    exporter.export(file_path)
+    IFCExporter(
+        pit, schema=schema, author=author, organization=organization,
+        project_address=project_address,
+        latitude=latitude, longitude=longitude, elevation=elevation,
+    ).export(file_path)
