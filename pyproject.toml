@@ -28,7 +28,8 @@ dependencies = [
   "scipy>=1.13.1",
   "matplotlib>=0.1.7",
   "openpyxl>=3.1.5",
-  "pandas>=2.2.3"
+  "pandas>=2.2.3",
+  "ifcopenshell>=0.8.0",   # IFC 导出支持（可选，仅 ifc_exporter 模块需要）
 ]
 
 [project.optional-dependencies]
