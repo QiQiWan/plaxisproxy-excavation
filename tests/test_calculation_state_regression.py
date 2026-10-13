@@ -69,6 +69,29 @@ def test_builder_rejects_calculation_failure():
         builder.calculate()
     assert builder._calc_done is False
 
+def test_builder_skips_phase_explicitly_excluded_from_calculation():
+    builder = _builder([1, 2])
+    builder.excavation_object.phases[1].plx_id.ShouldCalculate = False
+    builder.calculate()
+    assert builder._calc_done is True
+
+
+def test_builder_handles_proxy_boolean_for_phase_selection():
+    builder = _builder([1, 2])
+    builder.excavation_object.phases[1].plx_id.ShouldCalculate = (
+        SimpleNamespace(value="False")
+    )
+    builder.calculate()
+    assert builder._calc_done is True
+
+
+def test_builder_rejects_all_phases_disabled():
+    builder = _builder([1])
+    builder.excavation_object.phases[0].plx_id.ShouldCalculate = False
+    with pytest.raises(RuntimeError, match="No phases are selected"):
+        builder.calculate()
+    assert builder._calc_done is False
+
 
 def test_phase_lookup_does_not_trust_builder_cache():
     builder = _builder([2])
