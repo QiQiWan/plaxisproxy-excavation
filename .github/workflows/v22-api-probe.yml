@@ -1,0 +1,25 @@
+name: V22 API probe tests
+
+on:
+  push:
+    branches:
+      - feat/v22-api-probe-20261013
+  pull_request:
+    paths:
+      - scripts/probe_plaxis_v22.py
+      - tests/test_plaxis_v22_probe.py
+      - .github/workflows/v22-api-probe.yml
+
+jobs:
+  read-only-probe-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run no-license V22 probe tests
+        run: python -m unittest discover -s tests -p test_plaxis_v22_probe.py -v
