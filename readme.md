@@ -94,7 +94,7 @@ Plaxis 官方提供的 `plxscripting` 库虽然能实现远程建模与控制计
 ### 🧩 依赖环境
 
 * Python **3.9.x**
-* Plaxis **3D 2023 或以上版本**
+* PLAXIS 3D；当前面向 **V22（22.1.0.452）** 开展兼容测试，脚本客户端必须与实际安装版本匹配
 * 需启用 Plaxis Remote Scripting 服务
 
 ### 📦 Python 包依赖
@@ -103,7 +103,8 @@ Plaxis 官方提供的 `plxscripting` 库虽然能实现远程建模与控制计
 
 ```bash
 pip install shapely==2.0.7
-pip install plxscripting==1.0.4
+# 仅PLAXIS 3D 2023.2使用对应客户端：pip install 'plxscripting==1.0.4'
+# V22应加载该版本PLAXIS安装目录自带的plxscripting客户端
 ```
 
 直接运行以下命令安装本框架：
@@ -372,7 +373,7 @@ if __name__ == "__main__":
 
 📚 **Language:** Python 3.9
 
-🧩 **Dependencies:** shapely==2.0.7, plxscripting==1.0.4
+🧩 **Dependencies:** shapely==2.0.7；PLAXIS脚本客户端按安装版本选择（V22不可直接假定兼容1.0.4）
 
 🏗️ **Application:** Plaxis 3D Excavation Automation Framework
 
