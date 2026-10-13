@@ -193,9 +193,26 @@ class ExcavationBuilder:
         self.App.connect().new()
 
     def calculate(self) -> None:
-        """Go to the stages interface, and start a calculation task."""
+        """Calculate and verify all registered phases before marking success.
+
+        The API can return a failure message without raising an exception.
+        A successful command response alone does not prove that every
+        required phase converged.
+        """
+        self._calc_done = False
         self.App.calculate()
-        # If no exception was raised, mark as calculated
+        phases = self.list_project_phases()
+        if not phases:
+            raise RuntimeError("No calculation phases are registered in the project.")
+        failed = [
+            getattr(phase, "name", repr(phase))
+            for phase in phases
+            if not self.App.is_calculated(phase)
+        ]
+        if failed:
+            raise RuntimeError(
+                "PLAXIS phases not converged: " + ", ".join(failed)
+            )
         self._calc_done = True
 
     # #########################################################################
@@ -1294,8 +1311,10 @@ class ExcavationBuilder:
         """
         Update a phase whether it should be calculated or not.
         """
-        if phase in self.excavation_object.phases:
-            print(f"The phase named {phase.name} does not exist, please check it.")
+        if phase not in self.excavation_object.phases:
+            raise ValueError(
+                f"The phase named {getattr(phase, 'name', phase)!r} does not exist."
+            )
         self.App.mark_phase_should_calculate(phase, should_cal)
 
     def mark_all_phases_calculate(self):
@@ -1317,18 +1336,7 @@ class ExcavationBuilder:
         return list(getattr(pit, "phases", []) or [])
 
     def _ensure_phase_is_calculated(self, phase: Phase) -> bool:
-        """
-        Ensure the given phase has been calculated before querying Output.
-        Strategy (in order):
-        1) If we've run builder.calculate() in this session -> trust flag.
-        2) Use Runner-provided probes when available:
-            - is_calculated(phase)
-
-        """
-        # Fast-path: we already ran calculate() in this builder session
-        if getattr(self, "_calc_done", False):
-            return False
-
+        """Read the actual phase status; the builder cache is not evidence."""
         return self.App.is_calculated(phase)
 
 
@@ -1471,7 +1479,9 @@ class ExcavationBuilder:
 
         # 1) must be calculated first
         if not self._ensure_phase_is_calculated(phase):
-            print(f"{phase.name} was not calculated yet!")
+            raise RuntimeError(
+                f"Results are unavailable: phase {phase.name!r} has not converged."
+            )
 
         # 2) ensure Output bound to this phase (creates/rebinds as needed)
         po = self._ensure_output_for_phase(phase)
