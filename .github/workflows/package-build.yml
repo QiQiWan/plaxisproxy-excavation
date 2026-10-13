@@ -1,0 +1,34 @@
+name: Package metadata smoke
+
+on:
+  push:
+    branches:
+      - fix/v22-packaging-and-config-20261013
+  pull_request:
+    paths:
+      - pyproject.toml
+      - requirements.txt
+      - config/plaxis_config.py
+      - examples/plaxis_config.py
+      - src/plaxisproxy_excavation/builder/plaxis_config.py
+      - .github/workflows/package-build.yml
+
+jobs:
+  wheel-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install build backend
+        run: python -m pip install --upgrade pip build setuptools wheel
+      - name: Build wheel from metadata
+        run: python -m build --wheel
+      - name: Install wheel without licensed solver dependencies
+        run: python -m pip install --no-deps dist/*.whl
+      - name: Check installed distribution metadata
+        run: python -c "import importlib.metadata as m; print(m.version('plaxisproxy_excavation'))"

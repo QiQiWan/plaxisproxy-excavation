@@ -90,7 +90,8 @@ Before installing this framework, you need to install the dependencies first:
 
 ```bash
 pip install shapely==2.0.7
-pip install plxscripting==1.0.4
+# Only PLAXIS 3D 2023.2: pip install 'plxscripting==1.0.4'
+# For V22, import the client shipped with the installed PLAXIS release
 ```
 
 Run the following command directly to install this framework:
