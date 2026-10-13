@@ -201,9 +201,12 @@ class ExcavationBuilder:
         """
         self._calc_done = False
         self.App.calculate()
-        phases = self.list_project_phases()
+        phases = [
+            phase for phase in self.list_project_phases()
+            if self._phase_is_required(phase)
+        ]
         if not phases:
-            raise RuntimeError("No calculation phases are registered in the project.")
+            raise RuntimeError("No phases are selected for calculation.")
         failed = [
             getattr(phase, "name", repr(phase))
             for phase in phases
@@ -214,6 +217,24 @@ class ExcavationBuilder:
                 "PLAXIS phases not converged: " + ", ".join(failed)
             )
         self._calc_done = True
+
+    @staticmethod
+    def _phase_is_required(phase) -> bool:
+        """Check phase selection, defaulting to required if unavailable."""
+        handle = getattr(phase, "plx_id", None)
+        raw = getattr(handle, "ShouldCalculate", True)
+        raw = getattr(raw, "value", raw)
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return raw != 0
+        if isinstance(raw, str):
+            text = raw.strip().lower()
+            if text in ("false", "no", "0"):
+                return False
+            if text in ("true", "yes", "1"):
+                return True
+        return True
 
     # #########################################################################
     # Validation (aligned with current FoundationPit definition)
