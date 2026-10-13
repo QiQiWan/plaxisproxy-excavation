@@ -153,10 +153,14 @@ class PlaxisRunner:
         """
         self.goto_stages()
         cal_func = getattr(self.g_i, "calculate", None)
-        if callable(cal_func):
-            return str(cal_func())
-        else:
-            raise TypeError("It should run 'gotostages()', before start calculate().")
+        if not callable(cal_func):
+            raise RuntimeError("PLAXIS Input does not expose a calculate() command.")
+        response = str(cal_func()).strip()
+        # PLAXIS reports unconverged phases in the command response even
+        # when the Remote Scripting call itself raises no exception.
+        if response != "OK":
+            raise RuntimeError(f"PLAXIS calculation failed: {response}")
+        return response
 
     # ===================== convenience wrappers to GeometryPlaxisMapper =====================
 
@@ -520,13 +524,19 @@ class PlaxisRunner:
         """
         Return whether the phase is calculated.
         """
-        if not phase.plx_id:
+        phase_handle = getattr(phase, "plx_id", None)
+        if phase_handle is None:
             raise ValueError("This phase was not defined yet.")
-        
-        calculated = getattr(phase.plx_id, "CalculationResult", None)
-        if calculated == 1:
-            return True
-        return False
+
+        # A PLAXIS remote property can be a scalar or a proxy with .value.
+        # Documented CalculationResult codes: 0=pending, 1=converged,
+        # 2=unconverged. Unknown values are never treated as success.
+        result = getattr(phase_handle, "CalculationResult", None)
+        result = getattr(result, "value", result)
+        try:
+            return int(str(result).strip()) == 1
+        except (TypeError, ValueError):
+            return False
             
     
     # ===================================================================================
