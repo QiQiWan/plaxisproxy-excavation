@@ -1,0 +1,30 @@
+name: Phase-specific API contract
+
+on:
+  push:
+    branches:
+      - feat/phase-specific-property-gateway-20261013
+  pull_request:
+    paths:
+      - src/plaxisproxy_excavation/plaxishelper/phase_properties.py
+      - src/plaxisproxy_excavation/plaxishelper/phase_results.py
+      - tests/test_phase_*.py
+      - scripts/verify_v22_phase_prestress.py
+      - .github/workflows/phase-property-gateway.yml
+
+jobs:
+  no-license-api-contract:
+    # Python 3.9 is unavailable on the current ubuntu-latest (26.04) image.
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Validate license-free contracts (not real V22 validation)
+        run: python -m unittest discover -s tests -p 'test_phase_*.py' -v
+      - name: Compile Windows V22 probe (does not execute PLAXIS)
+        run: python -m py_compile scripts/verify_v22_phase_prestress.py
