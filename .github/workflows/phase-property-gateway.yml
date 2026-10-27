@@ -14,7 +14,8 @@ on:
 
 jobs:
   no-license-api-contract:
-    runs-on: ubuntu-latest
+    # Python 3.9 is unavailable on the current ubuntu-latest (26.04) image.
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         python-version: ["3.9", "3.11"]
