@@ -1,0 +1,134 @@
+{
+  "date": "2026-11-03",
+  "base_sha": "8a30dfe2604fab16343e2604b9d667ba9b905786",
+  "source_prs": [
+    {
+      "number": 1,
+      "head_sha": "afb939d282168e7e98d3ab43f1c9820c0622a15d",
+      "state": "closed_unmerged"
+    },
+    {
+      "number": 2,
+      "head_sha": "37d3734b949afc48597d8635b7c1d3010fdc5c52",
+      "state": "closed_unmerged"
+    },
+    {
+      "number": 3,
+      "head_sha": "87a1e6a8e002e7bcfcbe5a84e58f344760239e65",
+      "state": "closed_unmerged"
+    },
+    {
+      "number": 4,
+      "head_sha": "3d62315431adc89f150b3b90563a472074685ef7",
+      "state": "closed_unmerged"
+    }
+  ],
+  "contract_runs": [
+    {
+      "python": "3.9.25",
+      "tests": 76,
+      "status": "passed"
+    },
+    {
+      "python": "3.11.17",
+      "tests": 76,
+      "subtests": 35,
+      "status": "passed"
+    }
+  ],
+  "builds": {
+    "python_3_9": "wheel_and_sdist_passed",
+    "python_3_11": "wheel_and_sdist_passed",
+    "sdist_contains_validation_scripts_docs_tests": true
+  },
+  "installed_wheel_import": {
+    "client_installed": false,
+    "outside_checkout": true,
+    "python_3_9": "passed",
+    "python_3_11": "passed"
+  },
+  "whole_repository_pytest": {
+    "status": "blocked_at_collection",
+    "error_modules": [
+      "tests/Plaxishelper/test_plaxismapper.py",
+      "tests/components/test_phase.py",
+      "tests/materials/test_pilematerial.py",
+      "tests/test_plaxisexcavation.py",
+      "third_party/plxscripting/unittests/test_plxproxy.py",
+      "third_party/plxscripting/unittests/test_selection.py",
+      "third_party/plxscripting/unittests/test_server.py",
+      "third_party/plxscripting/unittests/test_tokenizer.py"
+    ]
+  },
+  "legacy_suite_continued": {
+    "command": "python -m pytest --continue-on-collection-errors -q tests",
+    "passed": 127,
+    "failed": 48,
+    "collection_errors": 4,
+    "subtests_passed": 35,
+    "failed_tests": [
+      "tests/Plaxishelper/test_phasemapper.py::TestPhaseMapper::test_create_phases_empty",
+      "tests/Plaxishelper/test_phasemapper.py::TestPhaseMapper::test_create_phases_full",
+      "tests/Plaxishelper/test_plaxisrunner.py::TestPlaxisRunner::test_build_model_calls_mapper",
+      "tests/Plaxishelper/test_plaxisrunner.py::TestPlaxisRunner::test_calculate_phase_selection",
+      "tests/Plaxishelper/test_plaxisrunner.py::TestPlaxisRunner::test_connect_failure",
+      "tests/Plaxishelper/test_plaxisrunner.py::TestPlaxisRunner::test_connect_success_and_new_project",
+      "tests/Plaxishelper/test_plaxisrunner.py::TestPlaxisRunner::test_generate_mesh",
+      "tests/Plaxishelper/test_plaxisrunner.py::TestPlaxisRunner::test_get_results_and_close",
+      "tests/Plaxishelper/test_plaxisrunner.py::TestPlaxisRunner::test_save_functionality",
+      "tests/core/test_core.py::TestCore::test_plaxisobject_init_and_properties",
+      "tests/core/test_core.py::TestCore::test_serializable_uuid_helpers",
+      "tests/materials/test_basematerial.py::TestBaseMaterial::test_invalid_name_raises",
+      "tests/materials/test_beammaterial.py::TestElasticBeam::test_properties_and_repr",
+      "tests/materials/test_beammaterial.py::TestElastoplasticBeam::test_properties_and_repr",
+      "tests/materials/test_soilmaterial.py::TestBaseSoilMaterial::test_initial_state_and_repr",
+      "tests/materials/test_soilmaterial.py::TestBaseSoilMaterial::test_set_under_ground_water",
+      "tests/materials/test_soilmaterial.py::TestSoilMaterialSubclasses::test_hss_material_properties",
+      "tests/materials/test_soilmaterial.py::TestSoilMaterialSubclasses::test_mc_material_properties",
+      "tests/materials/test_soilmaterial.py::TestSoilMaterialSubclasses::test_mcc_material_properties",
+      "tests/materials/test_soilmaterial.py::TestSoilMaterialFactory::test_create_hss_material_missing_arg",
+      "tests/materials/test_soilmaterial.py::TestSoilMaterialFactory::test_create_mc_material_missing_arg",
+      "tests/materials/test_soilmaterial.py::TestSoilMaterialFactory::test_create_mcc_material_missing_arg",
+      "tests/structures/test_anchor.py::TestAnchor::test_invalid_line_length",
+      "tests/structures/test_anchor.py::TestAnchor::test_repr",
+      "tests/structures/test_anchor.py::TestAnchor::test_valid_anchor",
+      "tests/structures/test_basestructure.py::TestBaseStructure::test_invalid_name",
+      "tests/structures/test_beam.py::TestBeam::test_repr",
+      "tests/structures/test_embeddedpile.py::TestEmbeddedPile::test_invalid_line",
+      "tests/structures/test_load.py::TestLoadMultiplier::test_harmonic_signal_validation",
+      "tests/structures/test_load.py::TestLoadMultiplier::test_table_signal_validation",
+      "tests/structures/test_load.py::TestPointLoad::test_repr_format",
+      "tests/structures/test_load.py::TestLineLoad::test_invalid_parameters",
+      "tests/structures/test_load.py::TestLineLoad::test_repr_contains_key_info",
+      "tests/structures/test_load.py::TestSurfaceLoad::test_invalid_surface_input",
+      "tests/structures/test_load.py::TestSurfaceLoad::test_repr_contains_key_info",
+      "tests/structures/test_load.py::TestDynamicLoads::test_dynamic_repr_includes_multipliers",
+      "tests/structures/test_load.py::TestDynamicLoads::test_dynlineload_multiplier_keys",
+      "tests/structures/test_load.py::TestDynamicLoads::test_dynpointload_multiplier_handling",
+      "tests/structures/test_soilblock.py::TestSoilBlock::test_repr_output",
+      "tests/structures/test_well.py::TestWell::test_invalid_initial_args",
+      "tests/structures/test_well.py::TestWell::test_repr",
+      "tests/structures/test_well.py::TestWell::test_well_type_setter",
+      "tests/test_borehole.py::TestBorehole::test_borehole_properties",
+      "tests/test_borehole.py::TestBorehole::test_boreholeset_collection",
+      "tests/test_geometry.py::TestGeometry::test_line3d_basic_and_length",
+      "tests/test_geometry.py::TestGeometry::test_polygon3d_serialization",
+      "tests/test_geometry.py::TestGeometry::test_polygon3d_validation_and_properties",
+      "tests/test_geometry.py::TestGeometry::test_volume_and_subclasses"
+    ],
+    "error_modules": [
+      "tests/Plaxishelper/test_plaxismapper.py",
+      "tests/components/test_phase.py",
+      "tests/materials/test_pilematerial.py",
+      "tests/test_plaxisexcavation.py"
+    ]
+  },
+  "independent_review": {
+    "completed": true,
+    "finding_fixed": "Deferred vendor initialization errors now propagate through public Runner.connect; RED/GREEN regression added"
+  },
+  "windows_v22": "NOT_RUN",
+  "solver_started": false,
+  "merge_performed": false,
+  "ci_scope": "76 integrated contracts and installed wheel are gating; full legacy audit is explicitly non-gating and uploaded as an artifact"
+}

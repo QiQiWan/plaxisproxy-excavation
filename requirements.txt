@@ -1,4 +1,4 @@
-python==3.9.10
-shapely==2.0.7
-plxscripting>=1.0.4
-pykrige>=1.7.3
+# Install Python separately; pip cannot install an interpreter.
+# V22 scripting client must come from the compatible PLAXIS installation.
+# For PLAXIS 3D 2023.2 only, use pip install -e ".[plaxis2023]" instead.
+-e .

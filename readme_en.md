@@ -1,5 +1,7 @@
 # 🧱 plaxisproxy-excavation
 
+Historical PRs #1–#4 are consolidated as of 2026-11-03. See [integration evidence and pending gates](docs/PR_INTEGRATION_20261103.md); real V22 validation remains pending.
+
 *A Pythonic automation framework for Plaxis 3D excavation modeling and simulation*
 
 ###
@@ -90,7 +92,8 @@ Before installing this framework, you need to install the dependencies first:
 
 ```bash
 pip install shapely==2.0.7
-pip install plxscripting==1.0.4
+# Only PLAXIS 3D 2023.2: pip install 'plxscripting==1.0.4'
+# For V22, import the client shipped with the installed PLAXIS release
 ```
 
 Run the following command directly to install this framework:

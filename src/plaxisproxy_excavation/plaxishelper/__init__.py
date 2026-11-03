@@ -54,7 +54,15 @@ from .resulttypes import (
     Well,
 )
 
+from .phase_properties import (
+    PhasePropertyError, set_phase_property, set_phase_properties,
+    set_node_to_node_prestress,
+)
+from .phase_results import PhaseResultError, read_node_to_node_axial_force
+
 __all__ = [
+    "PhasePropertyError", "set_phase_property", "set_phase_properties",
+    "set_node_to_node_prestress", "PhaseResultError", "read_node_to_node_axial_force",
     # Geometry / project / boreholes
     "GeometryMapper",
     "ProjectInformationMapper",

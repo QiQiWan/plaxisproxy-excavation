@@ -3,10 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Iterable, List, Optional, Sequence, Tuple, Union
 from enum import Enum
-try:
-    from plxscripting.easy import new_server
-except:
-    from plxscripting.server import new_server
+from .scripting import new_server
 
 from ..components import Phase
 

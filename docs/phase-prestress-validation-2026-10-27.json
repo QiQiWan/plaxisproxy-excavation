@@ -1,0 +1,83 @@
+{
+  "date": "2026-10-27",
+  "pull_request": 4,
+  "base_commit": "92a9501f51988b755f64c254a636df5032597bd0",
+  "scope": "License-free contracts only; not a real PLAXIS V22 validation",
+  "contract_tests": {
+    "command": "python -m unittest discover -s tests -p 'test_phase_*.py' -v",
+    "runs": [
+      {
+        "python": "3.9.25",
+        "platform": "Linux",
+        "tests": 41,
+        "result": "PASS"
+      },
+      {
+        "python": "3.11.17",
+        "platform": "Linux",
+        "tests": 41,
+        "result": "PASS"
+      }
+    ]
+  },
+  "focused_pytest": {
+    "python": "3.11.17",
+    "tests": 41,
+    "subtests": 33,
+    "result": "PASS"
+  },
+  "probe_compile": {
+    "python_versions": [
+      "3.9.25",
+      "3.11.17"
+    ],
+    "result": "PASS",
+    "windows_execution": false
+  },
+  "repository_pytest": {
+    "result": "BLOCKED_AT_COLLECTION",
+    "error_count": 11,
+    "same_errors_on_unmodified_base": true,
+    "error_modules": [
+      "tests/Plaxishelper/test_geometrymapper.py",
+      "tests/Plaxishelper/test_phasemapper.py",
+      "tests/Plaxishelper/test_plaxismapper.py",
+      "tests/Plaxishelper/test_plaxisrunner.py",
+      "tests/components/test_phase.py",
+      "tests/materials/test_pilematerial.py",
+      "tests/test_plaxisexcavation.py",
+      "third_party/plxscripting/unittests/test_plxproxy.py",
+      "third_party/plxscripting/unittests/test_selection.py",
+      "third_party/plxscripting/unittests/test_server.py",
+      "third_party/plxscripting/unittests/test_tokenizer.py"
+    ],
+    "causes": [
+      "missing plaxisproxy_excavation.ifc_exporter",
+      "missing StageSettings export",
+      "missing LaterialResistanceType export",
+      "bundled third-party circular import",
+      "legacy collections.MutableMapping import incompatible with Python 3.11"
+    ]
+  },
+  "review": {
+    "independent_review_completed": true,
+    "important_findings_fixed": [
+      "restore complete target snapshot after coupled setter side effects",
+      "compensate then preserve KeyboardInterrupt/SystemExit",
+      "fault injection must prove second forward write was reached"
+    ],
+    "additional_result_validation": "reject mapping payloads instead of interpreting numeric keys as forces"
+  },
+  "real_windows_plaxis_v22": {
+    "status": "NOT_RUN",
+    "remaining_gates": [
+      "compression sign in installed V22 build",
+      "stage activation and support connectivity",
+      "Input phase inheritance and monitored-stage isolation",
+      "Output result-type path and converged phase identity",
+      "actual axial force and mechanical force balance"
+    ]
+  },
+  "engineering_calculation_started": false,
+  "merge_performed": false
+}

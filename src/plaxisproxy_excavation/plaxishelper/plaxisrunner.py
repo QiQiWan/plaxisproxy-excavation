@@ -7,7 +7,7 @@ import time
 # from ..plaxisexcavation import *  # noqa: F401,F403  (keep existing usage)
 # Legacy facade (optional). Some codebases import PlaxisRunner.PlaxisMapper for DI.
 # Avoid hard failure if the old facade module is not present.
-from plxscripting.server import new_server, Server, PlxProxyFactory
+from .scripting import load_new_server
 from ..geometry import *
 
 # NEW: use the static geometry mapper that wraps g_i.point/line/surface
@@ -84,10 +84,10 @@ class PlaxisRunner:
 
         self.is_connected = False
 
-        self.input_server: Optional[Server] = None  # The Server object for the Input application
-        self.output_server: Optional[Server] = None  # The Server object for the Output application
-        self.g_i: Optional[PlxProxyFactory] = None  # The global input object (for modeling)
-        self.g_o: Optional[PlxProxyFactory] = None  # The global output object (for results)
+        self.input_server: Optional[Any] = None  # The Server object for the Input application
+        self.output_server: Optional[Any] = None  # The Server object for the Output application
+        self.g_i: Optional[Any] = None  # The global input object (for modeling)
+        self.g_o: Optional[Any] = None  # The global output object (for results)
 
     # ######################### connection management #########################
 
@@ -95,14 +95,19 @@ class PlaxisRunner:
         """
         Establishes connections with the Plaxis Input server.
         """
+        connector = load_new_server()
         try:
             print(f"Attempting to connect to Plaxis Input at {self.host}:{self.input_port}...")
             # Note: new_server returns (server, g_i)
-            self.input_server, self.g_i = new_server(self.host, self.input_port, password=self.password)
+            self.input_server, self.g_i = connector(self.host, self.input_port, password=self.password)
             print("Successfully connected to Plaxis Input.")
             time.sleep(1)
             self.is_connected = True
             return self
+
+        except ImportError:
+            # Missing/incompatible vendor clients are actionable environment errors.
+            raise
 
         except ConnectionRefusedError:
             print("#######################################################################")
@@ -153,10 +158,14 @@ class PlaxisRunner:
         """
         self.goto_stages()
         cal_func = getattr(self.g_i, "calculate", None)
-        if callable(cal_func):
-            return str(cal_func())
-        else:
-            raise TypeError("It should run 'gotostages()', before start calculate().")
+        if not callable(cal_func):
+            raise RuntimeError("PLAXIS Input does not expose a calculate() command.")
+        response = str(cal_func()).strip()
+        # PLAXIS reports unconverged phases in the command response even
+        # when the Remote Scripting call itself raises no exception.
+        if response != "OK":
+            raise RuntimeError(f"PLAXIS calculation failed: {response}")
+        return response
 
     # ===================== convenience wrappers to GeometryPlaxisMapper =====================
 
@@ -520,13 +529,19 @@ class PlaxisRunner:
         """
         Return whether the phase is calculated.
         """
-        if not phase.plx_id:
+        phase_handle = getattr(phase, "plx_id", None)
+        if phase_handle is None:
             raise ValueError("This phase was not defined yet.")
-        
-        calculated = getattr(phase.plx_id, "CalculationResult", None)
-        if calculated == 1:
-            return True
-        return False
+
+        # A PLAXIS remote property can be a scalar or a proxy with .value.
+        # Documented CalculationResult codes: 0=pending, 1=converged,
+        # 2=unconverged. Unknown values are never treated as success.
+        result = getattr(phase_handle, "CalculationResult", None)
+        result = getattr(result, "value", result)
+        try:
+            return int(str(result).strip()) == 1
+        except (TypeError, ValueError):
+            return False
             
     
     # ===================================================================================

@@ -7,8 +7,13 @@ from .borehole import Borehole, BoreholeSet, BoreholeLayer, SoilLayer
 from .components.projectinformation import ProjectInformation
 from .components.phase import Phase
 
-# IFC 导出（需要 ifcopenshell）
-from .ifc_exporter import IFCExporter, export_to_ifc
+# IFC export is optional. Some distributions do not contain this module;
+# keep the core excavation API importable in that case.
+try:
+    from .ifc_exporter import IFCExporter, export_to_ifc
+except ModuleNotFoundError as exc:
+    if exc.name != f"{__name__}.ifc_exporter":
+        raise
 
 __all__ = [
     # 核心模型
@@ -29,7 +34,7 @@ __all__ = [
     "BoreholeSet",
     "BoreholeLayer",
     "SoilLayer",
-    # IFC 导出
-    "IFCExporter",
-    "export_to_ifc",
 ]
+
+if "IFCExporter" in globals():
+    __all__.extend(["IFCExporter", "export_to_ifc"])
