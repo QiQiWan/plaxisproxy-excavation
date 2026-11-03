@@ -1,13 +1,13 @@
 # test_geometry_mapper_creation.py
 from __future__ import annotations
 from typing import List
-from plxscripting.server import new_server
+import os
 
 # ### 根据你的项目结构调整这行导入 ###
-from src.plaxisproxy_excavation.mappers.geometry_mapper import GeometryMapper
+from plaxisproxy_excavation.plaxishelper.geometrymapper import GeometryMapper
 
 # 几何基础模型（与你的库保持一致）
-from src.plaxisproxy_excavation.geometry import Point, PointSet, Line3D, Polygon3D
+from plaxisproxy_excavation.geometry import Point, PointSet, Line3D, Polygon3D
 
 # ############################ helpers ############################
 def make_rectangle(z: float = 0.0, width: float = 10.0, height: float = 6.0, x0: float = 0.0, y0: float = 0.0):
@@ -35,8 +35,9 @@ def assert_plx_id_cleared(obj, name: str):
 # ############################ demo runner ############################
 def run_demo():
     # 连接 PLAXIS 远程
-    passwd = 'yS9f$TMP?$uQ@rW3'
-    s_i, g_i = new_server(passwd, 'localhost', 10000)
+    passwd = os.environ['PLAXIS_PASSWORD']
+    from plaxisproxy_excavation.plaxishelper.scripting import new_server
+    s_i, g_i = new_server('localhost', 10000, password=passwd)
     s_i.new()  # 新工程
 
     # 1) 点：批量创建

@@ -1,0 +1,63 @@
+name: Integrated API and package checks
+
+on:
+  push:
+    branches:
+      - main
+      - 'integrate/**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts-and-package:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install core package and test/build tools (no PLAXIS client)
+        run: python -m pip install -e . pytest build
+      - name: Run all integrated PR contracts without a licensed solver
+        run: >-
+          python -m pytest -q
+          tests/test_calculation_state_regression.py
+          tests/test_integrated_public_api.py
+          tests/test_phase_*.py
+          tests/test_plaxis_v22_probe.py
+      - name: Audit legacy suite (known failures; non-gating)
+        continue-on-error: true
+        run: python -m pytest --continue-on-collection-errors -q > legacy-suite.log 2>&1
+      - name: Preserve legacy test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-suite-python-${{ matrix.python-version }}
+          path: legacy-suite.log
+      - name: Compile real V22 probes without executing them
+        run: python -m py_compile scripts/probe_plaxis_v22.py scripts/verify_v22_phase_prestress.py
+      - name: Build wheel and source distribution
+        run: python -m build
+      - name: Replace editable install with wheel
+        run: python -m pip install --force-reinstall --no-deps dist/*.whl
+      - name: Import installed wheel outside the checkout
+        working-directory: ${{ runner.temp }}
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import plaxisproxy_excavation as package
+          from plaxisproxy_excavation.builder import ExcavationBuilder
+          from plaxisproxy_excavation.plaxishelper import (
+              PlaxisRunner, PlaxisOutput, set_phase_properties,
+              set_node_to_node_prestress, read_node_to_node_axial_force,
+          )
+          assert 'site-packages' in package.__file__, package.__file__
+          assert importlib.util.find_spec('plxscripting') is None
+          print('Installed wheel imports without a PLAXIS client:', package.__file__)
+          PY

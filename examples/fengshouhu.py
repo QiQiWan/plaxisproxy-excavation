@@ -1,12 +1,13 @@
+import os
 from math import ceil
 from typing import List, Tuple, Iterable, Any, Dict, Optional
 
 try:
     from plaxis_config import HOST, PORT, PASSWORD
-except:
-    HOST = "localhost"
-    PORT = 10000
-    PASSWORD = "yS9f$TMP?$uQ@rW3"
+except ImportError:
+    HOST = os.getenv("PLAXIS_HOST", "localhost")
+    PORT = int(os.getenv("PLAXIS_PORT", "10000"))
+    PASSWORD = os.getenv("PLAXIS_PASSWORD", "")
 
 # Runner / Builder / Container
 from plaxisproxy_excavation.plaxishelper.plaxisrunner import PlaxisRunner

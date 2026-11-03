@@ -1,5 +1,7 @@
 # 🧱 plaxisproxy-excavation
 
+2026-11-03 整合历史 PR #1–#4；当前回归、安装方法边界与待验证事项见 [整合说明](docs/PR_INTEGRATION_20261103.md)。真实 V22 验证尚未完成。
+
 *A Pythonic automation framework for Plaxis 3D excavation modeling and simulation*
 （一个面向 Plaxis 3D 的基坑工程建模与仿真自动化框架）
 
@@ -94,7 +96,7 @@ Plaxis 官方提供的 `plxscripting` 库虽然能实现远程建模与控制计
 ### 🧩 依赖环境
 
 * Python **3.9.x**
-* Plaxis **3D 2023 或以上版本**
+* PLAXIS 3D；当前面向 **V22（22.1.0.452）** 开展兼容测试，脚本客户端必须与实际安装版本匹配
 * 需启用 Plaxis Remote Scripting 服务
 
 ### 📦 Python 包依赖
@@ -103,7 +105,8 @@ Plaxis 官方提供的 `plxscripting` 库虽然能实现远程建模与控制计
 
 ```bash
 pip install shapely==2.0.7
-pip install plxscripting==1.0.4
+# 仅PLAXIS 3D 2023.2使用对应客户端：pip install 'plxscripting==1.0.4'
+# V22应加载该版本PLAXIS安装目录自带的plxscripting客户端
 ```
 
 直接运行以下命令安装本框架：
@@ -372,7 +375,7 @@ if __name__ == "__main__":
 
 📚 **Language:** Python 3.9
 
-🧩 **Dependencies:** shapely==2.0.7, plxscripting==1.0.4
+🧩 **Dependencies:** shapely==2.0.7；PLAXIS脚本客户端按安装版本选择（V22不可直接假定兼容1.0.4）
 
 🏗️ **Application:** Plaxis 3D Excavation Automation Framework
 

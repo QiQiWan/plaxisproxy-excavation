@@ -6,7 +6,7 @@ Plaxis 3D 远程连接配置
   环境变量：
     PLAXIS_HOST               (默认: "localhost")
     PLAXIS_PORT               (默认: "10000")
-    PLAXIS_PASSWORD           (默认: 见下方)
+    PLAXIS_PASSWORD           (无默认值，必须由部署环境提供)
     PLAXIS_DIR                (默认: 见下方安装目录)
     PLAXIS_PATH               (默认: <PLAXIS_DIR>/Plaxis3DInput.exe)
     PLAXIS_START              (默认: "1"，启动新进程；"0" 表示仅连接)
@@ -19,7 +19,7 @@ from pathlib import Path
 # 基本连接信息
 HOST = os.getenv("PLAXIS_HOST", "localhost")
 PORT = int(os.getenv("PLAXIS_PORT", "10000"))
-PASSWORD = os.getenv("PLAXIS_PASSWORD", "yS9f$TMP?$uQ@rW3")
+PASSWORD = os.getenv("PLAXIS_PASSWORD", "")
 
 # 安装路径 / 可执行文件（可被环境变量覆盖）
 DEFAULT_PLAXIS_DIR = os.getenv(

@@ -1,10 +1,11 @@
-include README.md
+include readme.md
+include readme_en.md
 include LICENSE
-include CHANGELOG.md
-
+include NOTICE
+recursive-include docs *.md *.json
+recursive-include scripts *.py
+recursive-include tests *.py
 recursive-include src/plaxisproxy_excavation/data *
 recursive-include src/plaxisproxy_excavation/resources *
-
-prune tests
 prune examples
-prune scripts
+prune third_party
